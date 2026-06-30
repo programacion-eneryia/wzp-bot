@@ -23,7 +23,10 @@ COPY packages/shared/package.json packages/shared/
 COPY apps/api/package.json apps/api/
 
 # 2) Instala TODAS las dependencias del workspace (con devDeps para compilar).
-RUN pnpm install --frozen-lockfile
+#    --ignore-scripts: NO ejecutamos postinstalls. La API se compila con tsc y
+#    corre con dependencias puras de JS; los scripts nativos (msgpackr-extract,
+#    unrs-resolver…) no son necesarios y además pnpm 11 falla si no se aprueban.
+RUN pnpm install --frozen-lockfile --ignore-scripts
 
 # 3) Copia el código fuente necesario y compila shared + api.
 COPY packages/shared packages/shared
@@ -33,7 +36,7 @@ RUN pnpm --filter @wzp/shared build \
 
 # 4) Genera un paquete de despliegue autocontenido SOLO con prod deps en /app.
 #    Incluye dist/ (ya compilado) + node_modules podado.
-RUN pnpm --filter @wzp/api deploy --prod /app
+RUN pnpm --filter @wzp/api deploy --prod --ignore-scripts /app
 
 # ---- Runner: imagen final mínima -------------------------------------------
 FROM base AS runner
