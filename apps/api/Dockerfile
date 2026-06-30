@@ -48,9 +48,6 @@ WORKDIR /app
 # Copiamos el paquete de despliegue (app + node_modules de producción).
 COPY --from=builder /app ./
 
-# Migraciones + runner por si quieres aplicarlas como tarea puntual.
-COPY --from=builder /repo/supabase ./supabase
-
 EXPOSE 3001
 # Usuario sin privilegios (la imagen node trae el usuario `node`).
 USER node
