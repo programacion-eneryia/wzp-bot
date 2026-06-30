@@ -1,0 +1,243 @@
+.eyebrow {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.28em;
+  text-transform: uppercase;
+  color: var(--text-faint);
+}
+
+.title {
+  margin-top: 12px;
+  font-size: clamp(1.8rem, 4vw, 2.6rem);
+  font-weight: 900;
+  letter-spacing: -0.035em;
+  line-height: 1.04;
+}
+
+.lead {
+  margin-top: 14px;
+  max-width: 62ch;
+  color: var(--text-muted);
+  font-size: 16px;
+  line-height: 1.6;
+}
+
+.wrap {
+  margin-top: 28px;
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+}
+
+/* --- Banners --- */
+.banner {
+  border-radius: 12px;
+  padding: 12px 16px;
+  font-size: 14px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  background: var(--bg-2);
+  color: var(--text-muted);
+}
+.bannerOk {
+  border-color: rgba(70, 220, 130, 0.4);
+  color: #8af0b0;
+}
+.bannerErr {
+  border-color: rgba(255, 90, 90, 0.4);
+  color: #ff9c9c;
+}
+
+/* --- Tarjetas de proveedor --- */
+.providerGrid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 16px;
+}
+
+.providerCard {
+  border-radius: var(--radius);
+  padding: 22px;
+  background:
+    linear-gradient(var(--bg-2), var(--bg-2)) padding-box,
+    linear-gradient(150deg, rgba(255, 230, 0, 0.3), rgba(255, 255, 255, 0.04)) border-box;
+  border: 1px solid transparent;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.providerHead {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.providerName {
+  font-size: 1.15rem;
+  font-weight: 800;
+  letter-spacing: -0.02em;
+}
+.providerHint {
+  color: var(--text-muted);
+  font-size: 13.5px;
+  line-height: 1.5;
+  flex: 1;
+}
+
+.connectBtn {
+  margin-top: 8px;
+  align-self: flex-start;
+  background: var(--accent);
+  color: #111;
+  border: none;
+  border-radius: 10px;
+  padding: 9px 18px;
+  font-weight: 700;
+  font-size: 14px;
+  cursor: pointer;
+  transition: filter 0.15s ease, transform 0.05s ease;
+}
+.connectBtn:hover:not(:disabled) {
+  filter: brightness(1.08);
+}
+.connectBtn:active:not(:disabled) {
+  transform: translateY(1px);
+}
+.connectBtn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+/* --- Lista de canales --- */
+.listHead {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-top: 8px;
+}
+.listTitle {
+  font-size: 1.2rem;
+  font-weight: 800;
+  letter-spacing: -0.02em;
+}
+.ghostBtn {
+  background: transparent;
+  color: var(--text-muted);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 10px;
+  padding: 8px 14px;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: border-color 0.15s ease, color 0.15s ease;
+}
+.ghostBtn:hover:not(:disabled) {
+  border-color: var(--accent);
+  color: var(--text);
+}
+.ghostBtn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.empty {
+  color: var(--text-faint);
+  font-size: 14px;
+  padding: 18px;
+  border: 1px dashed rgba(255, 255, 255, 0.12);
+  border-radius: 12px;
+  text-align: center;
+}
+
+.channelList {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.channelRow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 14px 18px;
+  border-radius: 12px;
+  background: var(--bg-2);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+}
+.channelInfo {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+}
+.channelProvider {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.22em;
+  text-transform: uppercase;
+  color: var(--accent);
+}
+.channelName {
+  font-weight: 700;
+  font-size: 15px;
+}
+.channelError {
+  font-size: 12.5px;
+  color: #ff9c9c;
+}
+
+.channelActions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-shrink: 0;
+}
+.status {
+  font-size: 12px;
+  font-weight: 700;
+  padding: 4px 10px;
+  border-radius: 999px;
+  border: 1px solid transparent;
+}
+.status_connected {
+  color: #8af0b0;
+  border-color: rgba(70, 220, 130, 0.4);
+}
+.status_pending {
+  color: var(--accent);
+  border-color: rgba(255, 230, 0, 0.4);
+}
+.status_error {
+  color: #ff9c9c;
+  border-color: rgba(255, 90, 90, 0.4);
+}
+.status_disconnected {
+  color: var(--text-faint);
+  border-color: rgba(255, 255, 255, 0.14);
+}
+
+.disconnectBtn {
+  background: transparent;
+  color: var(--text-muted);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 8px;
+  padding: 6px 12px;
+  font-size: 13px;
+  cursor: pointer;
+  transition: border-color 0.15s ease, color 0.15s ease;
+}
+.disconnectBtn:hover:not(:disabled) {
+  border-color: #ff5a5a;
+  color: #ff9c9c;
+}
+.disconnectBtn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+@media (max-width: 900px) {
+  .providerGrid {
+    grid-template-columns: 1fr;
+  }
+}

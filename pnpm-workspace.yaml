@@ -1,0 +1,16 @@
+packages:
+  - "apps/*"
+  - "packages/*"
+
+allowBuilds:
+  msgpackr-extract: set this to true or false
+  sharp: set this to true or false
+  unrs-resolver: set this to true or false
+
+onlyBuiltDependencies:
+  - sharp
+  - unrs-resolver
+  - esbuild
+  - "@swc/core"
+  - "@nestjs/core"
+  - msgpackr-extract

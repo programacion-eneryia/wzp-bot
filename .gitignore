@@ -1,0 +1,32 @@
+# Dependencias
+node_modules/
+.pnpm-store/
+
+# Builds
+dist/
+build/
+.next/
+out/
+
+# Entorno / secretos (NUNCA commitear)
+.env
+.env.local
+.env.*.local
+*.pem
+*.key
+
+# Logs
+*.log
+npm-debug.log*
+pnpm-debug.log*
+
+# Sistema operativo / editor
+.DS_Store
+.idea/
+*.swp
+
+# Cobertura de tests
+coverage/
+
+# Carpetas internas de herramientas
+agent-tools/

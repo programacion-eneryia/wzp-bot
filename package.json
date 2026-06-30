@@ -1,0 +1,20 @@
+{
+  "name": "wzp-bot",
+  "version": "0.1.0",
+  "private": true,
+  "description": "SaaS bot setter multicanal (WhatsApp/Instagram/Messenger)",
+  "packageManager": "pnpm@11.9.0",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "dev": "pnpm -r --parallel dev",
+    "build": "pnpm -r build",
+    "lint": "pnpm -r lint",
+    "dev:web": "pnpm --filter @wzp/web dev",
+    "dev:api": "pnpm --filter @wzp/api start:dev"
+  },
+  "devDependencies": {
+    "prettier": "^3.3.3"
+  }
+}

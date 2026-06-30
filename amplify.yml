@@ -1,0 +1,33 @@
+# =============================================================================
+# Build spec de AWS Amplify Hosting para el frontend Next.js (apps/web).
+# Monorepo pnpm: instalamos desde la raíz y construimos shared + web.
+#
+# Variables de entorno a definir en la consola de Amplify (build-time):
+#   NEXT_PUBLIC_API_URL            -> URL pública de la API (App Runner)
+#   NEXT_PUBLIC_SUPABASE_URL       -> URL de Supabase
+#   NEXT_PUBLIC_SUPABASE_ANON_KEY  -> anon key de Supabase
+#   NEXT_PUBLIC_META_APP_ID        -> (opcional) Embedded Signup
+#   NEXT_PUBLIC_META_CONFIG_ID     -> (opcional) Embedded Signup
+# =============================================================================
+version: 1
+applications:
+  - appRoot: apps/web
+    frontend:
+      phases:
+        preBuild:
+          commands:
+            - corepack enable
+            - corepack prepare pnpm@11.9.0 --activate
+            - cd ../.. && pnpm install --frozen-lockfile
+        build:
+          commands:
+            - cd ../.. && pnpm --filter @wzp/shared build
+            - cd ../.. && pnpm --filter @wzp/web build
+      artifacts:
+        baseDirectory: .next
+        files:
+          - "**/*"
+      cache:
+        paths:
+          - ../../node_modules/**/*
+          - .next/cache/**/*

@@ -1,0 +1,34 @@
+# Dependencias e instalaciones locales (se reinstalan en el build)
+**/node_modules
+.pnpm-store
+
+# Builds previos
+**/dist
+**/.next
+**/out
+**/build
+**/*.tsbuildinfo
+
+# Secretos y entorno (NUNCA entran en la imagen)
+.env
+.env.*
+!.env.example
+
+# Git e historial
+.git
+.gitignore
+
+# Logs y temporales
+**/*.log
+coverage
+
+# Sistema operativo / editor
+**/.DS_Store
+.idea
+.vscode
+
+# Frontend: no es necesario para la imagen de la API
+apps/web
+
+# Herramientas internas
+agent-tools
