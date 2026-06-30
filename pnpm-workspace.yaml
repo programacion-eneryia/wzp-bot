@@ -2,15 +2,18 @@ packages:
   - "apps/*"
   - "packages/*"
 
-allowBuilds:
-  msgpackr-extract: set this to true or false
-  sharp: set this to true or false
-  unrs-resolver: set this to true or false
-
+# Dependencias con BINARIOS PRECOMPILADOS (no requieren compilador): se permite
+# ejecutar su script de instalación con normalidad.
 onlyBuiltDependencies:
   - sharp
-  - unrs-resolver
   - esbuild
   - "@swc/core"
   - "@nestjs/core"
+
+# Dependencias con build NATIVO (necesitarían toolchain de compilación). No son
+# necesarias en runtime (son optimizaciones opcionales con fallback en JS), así
+# que aprobamos OMITIR su build para que `pnpm install` no falle en imágenes
+# slim sin compilador (ERR_PNPM_IGNORED_BUILDS).
+ignoredBuiltDependencies:
   - msgpackr-extract
+  - unrs-resolver
