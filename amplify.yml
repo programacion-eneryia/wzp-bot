@@ -2,12 +2,18 @@
 # Build spec de AWS Amplify Hosting para el frontend Next.js (apps/web).
 # Monorepo pnpm: instalamos desde la raíz y construimos shared + web.
 #
+# Notas importantes (pnpm + monorepo + Next SSR en Amplify):
+#  - Amplify exige node-linker=hoisted para pnpm (node_modules con ficheros
+#    reales, no symlinks) o el runtime SSR no encuentra `next`. Lo añadimos al
+#    .npmrc SOLO en el build (no afecta a Docker/local).
+#  - Ejecutamos tsc/next directamente desde node_modules/.bin (raíz, por el
+#    hoisting) para evitar el chequeo verify-deps-before-run de pnpm 11, que
+#    relanza `pnpm install` y falla con EACCES en el entorno de Amplify.
+#
 # Variables de entorno a definir en la consola de Amplify (build-time):
-#   NEXT_PUBLIC_API_URL            -> URL pública de la API (App Runner)
+#   NEXT_PUBLIC_API_URL            -> URL pública de la API
 #   NEXT_PUBLIC_SUPABASE_URL       -> URL de Supabase
 #   NEXT_PUBLIC_SUPABASE_ANON_KEY  -> anon key de Supabase
-#   NEXT_PUBLIC_META_APP_ID        -> (opcional) Embedded Signup
-#   NEXT_PUBLIC_META_CONFIG_ID     -> (opcional) Embedded Signup
 # =============================================================================
 version: 1
 applications:
@@ -18,19 +24,16 @@ applications:
           commands:
             - corepack enable
             - corepack prepare pnpm@11.9.0 --activate
-            - cd ../.. && pnpm install --frozen-lockfile --ignore-scripts
+            - cd "$(git rev-parse --show-toplevel)" && grep -q '^node-linker=' .npmrc || echo "node-linker=hoisted" >> .npmrc
+            - cd "$(git rev-parse --show-toplevel)" && pnpm install --frozen-lockfile --ignore-scripts
         build:
-          # Ejecutamos los binarios directamente (sin `pnpm run`/`pnpm exec`)
-          # para evitar el chequeo verify-deps-before-run de pnpm 11, que relanza
-          # `pnpm install` y falla con EACCES en el entorno de build de Amplify.
           commands:
-            - cd "$(git rev-parse --show-toplevel)/packages/shared" && node_modules/.bin/tsc -p tsconfig.json
-            - cd "$(git rev-parse --show-toplevel)/apps/web" && node_modules/.bin/next build
+            - ROOT="$(git rev-parse --show-toplevel)"; cd "$ROOT/packages/shared" && "$ROOT/node_modules/.bin/tsc" -p tsconfig.json
+            - ROOT="$(git rev-parse --show-toplevel)"; cd "$ROOT/apps/web" && "$ROOT/node_modules/.bin/next" build
       artifacts:
         baseDirectory: .next
         files:
           - "**/*"
       cache:
         paths:
-          - ../../node_modules/**/*
           - .next/cache/**/*
