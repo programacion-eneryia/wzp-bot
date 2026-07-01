@@ -24,8 +24,10 @@ applications:
           commands:
             - corepack enable
             - corepack prepare pnpm@11.9.0 --activate
-            - cd "$(git rev-parse --show-toplevel)" && grep -q '^node-linker=' .npmrc || echo "node-linker=hoisted" >> .npmrc
-            - cd "$(git rev-parse --show-toplevel)" && pnpm install --frozen-lockfile --ignore-scripts
+            # --node-linker=hoisted: node_modules plano con ficheros reales (no
+            # symlinks) en la RAÍZ del workspace, requisito de Amplify SSR + pnpm.
+            # (pnpm 11 ignora node-linker en .npmrc, por eso lo pasamos como flag.)
+            - cd "$(git rev-parse --show-toplevel)" && pnpm install --frozen-lockfile --ignore-scripts --node-linker=hoisted
         build:
           commands:
             - ROOT="$(git rev-parse --show-toplevel)"; cd "$ROOT/packages/shared" && "$ROOT/node_modules/.bin/tsc" -p tsconfig.json
