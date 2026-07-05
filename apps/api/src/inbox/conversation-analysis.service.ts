@@ -106,6 +106,9 @@ export class ConversationAnalysisService {
         model: this.config.get<string>('OPENROUTER_DEFAULT_MODEL') ?? undefined,
         temperature: 0.3,
         maxTokens: 1200,
+        orgId,
+        conversationId,
+        purpose: 'analyze',
       },
     );
 

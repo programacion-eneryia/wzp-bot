@@ -41,6 +41,7 @@ type SetterConfig = {
   timezone: string;
   ignore_followed: boolean;
   model: string | null;
+  daily_token_limit: number;
   is_active: boolean;
 };
 
@@ -558,6 +559,25 @@ export default function SetterForm() {
                 value={cfg.model ?? ""}
                 onChange={(e) => set("model", e.target.value)}
                 placeholder="anthropic/claude-sonnet-4.6"
+              />
+            </label>
+          </section>
+
+          <section className={styles.card}>
+            <h2 className={styles.cardTitle}>Control de coste</h2>
+            <label className={styles.field}>
+              <span className={styles.label}>
+                Límite de tokens de IA por día{" "}
+                <span className={styles.hint}>— 0 = sin límite. Al superarlo, el bot deja de responder hasta el día siguiente.</span>
+              </span>
+              <input
+                className={styles.input}
+                type="number"
+                min={0}
+                step={10000}
+                value={cfg.daily_token_limit ?? 0}
+                onChange={(e) => set("daily_token_limit", Number(e.target.value))}
+                placeholder="0"
               />
             </label>
           </section>

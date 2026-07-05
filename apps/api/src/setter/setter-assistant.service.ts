@@ -38,7 +38,7 @@ export class SetterAssistantService {
    * A partir del brief del negocio, genera una configuración COMPLETA del setter
    * (identidad, oferta, fases del embudo, cualificación, reglas, tono, etc.).
    */
-  async generateFromBrief(brief: string): Promise<GeneratedSetterFields> {
+  async generateFromBrief(brief: string, orgId?: string): Promise<GeneratedSetterFields> {
     const system = `Eres un experto en montar "setters" de IA (closers conversacionales) para captar y cualificar leads por WhatsApp/Instagram y agendar llamadas.
 A partir del brief de un negocio, diseñas la configuración del setter.
 
@@ -77,6 +77,8 @@ IMPORTANTE: cada valor debe ser BREVE (1-4 frases por campo; las listas como poc
         model: this.config.get<string>('OPENROUTER_DEFAULT_MODEL') ?? undefined,
         temperature: 0.6,
         maxTokens: 6000,
+        orgId,
+        purpose: 'generate',
       },
     );
 

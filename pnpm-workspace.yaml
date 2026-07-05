@@ -21,3 +21,16 @@ onlyBuiltDependencies:
 ignoredBuiltDependencies:
   - msgpackr-extract
   - unrs-resolver
+
+# IMPORTANTE (pnpm 11+): a partir de pnpm 11 la aprobación de build scripts NO se
+# lee de las listas de arriba (eso es pnpm 10), sino de este mapa `allowBuilds`.
+# Vercel usa pnpm 11 (packageManager), así que sin esto falla con
+# ERR_PNPM_IGNORED_BUILDS. `true` = ejecutar su script; `false` = omitirlo (sin
+# error). Se dejan también las listas de arriba por compatibilidad con pnpm 10.
+allowBuilds:
+  sharp: true
+  esbuild: true
+  "@swc/core": true
+  "@nestjs/core": true
+  msgpackr-extract: false
+  unrs-resolver: false

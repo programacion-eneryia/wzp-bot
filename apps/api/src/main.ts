@@ -75,7 +75,9 @@ async function bootstrap() {
     });
   }
 
-  const port = config.get<number>('API_PORT') ?? 3001;
+  // Los hosts gestionados (Render, Railway, Fly, etc.) inyectan PORT y esperan
+  // que la app escuche ahí. En local usamos API_PORT (3001) del .env.
+  const port = Number(process.env.PORT) || config.get<number>('API_PORT') || 3001;
   // En dev, el watcher reinicia y a veces el proceso anterior tarda en soltar
   // el puerto. Reintentamos en vez de morir con EADDRINUSE.
   await listenWithRetry(app, port);

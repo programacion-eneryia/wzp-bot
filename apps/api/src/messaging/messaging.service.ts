@@ -3,6 +3,7 @@ import { Injectable, Logger } from '@nestjs/common';
 import { Queue } from 'bullmq';
 import { SupabaseService } from '../supabase/supabase.service';
 import { UnipileService } from '../unipile/unipile.service';
+import { OpenRouterService } from '../openrouter/openrouter.service';
 import { SetterService } from '../setter/setter.service';
 import { SetterConfigService } from '../setter/setter-config.service';
 import { SilencedContactsService } from '../setter/silenced-contacts.service';
@@ -34,6 +35,7 @@ export class MessagingService {
   constructor(
     private readonly supabase: SupabaseService,
     private readonly unipile: UnipileService,
+    private readonly openrouter: OpenRouterService,
     private readonly setter: SetterService,
     private readonly setterConfig: SetterConfigService,
     private readonly silenced: SilencedContactsService,
@@ -405,6 +407,35 @@ export class MessagingService {
   async generateAndSend(job: RespondJob) {
     const { orgId, conversationId, chatId, provider } = job;
 
+    // Lock por conversación: garantiza que SOLO un worker responde a la vez a
+    // este chat. Evita respuestas duplicadas si por lo que sea se solapan dos
+    // jobs para la misma tanda de mensajes.
+    const redis = (await this.respondQueue.client) as unknown as {
+      set(key: string, val: string, mode: 'EX', ttl: number, nx: 'NX'): Promise<string | null>;
+      del(key: string): Promise<number>;
+    };
+    const lockKey = `respond:lock:${conversationId}`;
+    const acquired = await redis.set(lockKey, '1', 'EX', 120, 'NX');
+    if (!acquired) {
+      this.logger.log(`Respuesta en curso para ${conversationId}; se omite duplicado`);
+      return;
+    }
+
+    try {
+      await this.generateAndSendLocked(job, orgId, conversationId, chatId, provider);
+    } finally {
+      await redis.del(lockKey).catch(() => undefined);
+    }
+  }
+
+  private async generateAndSendLocked(
+    job: RespondJob,
+    orgId: string,
+    conversationId: string,
+    chatId: string,
+    provider: string,
+  ) {
+    void job;
     const { data: conv } = await this.supabase.admin
       .from('conversations')
       .select(
@@ -416,6 +447,17 @@ export class MessagingService {
 
     const cfg = await this.setterConfig.getOrCreate(orgId);
     if (!cfg.is_active) return;
+
+    // Control de coste: si la org superó su tope de tokens del día, no responde.
+    if (cfg.daily_token_limit && cfg.daily_token_limit > 0) {
+      const used = await this.openrouter.tokensUsedToday(orgId);
+      if (used >= cfg.daily_token_limit) {
+        this.logger.warn(
+          `Límite diario de tokens alcanzado (org ${orgId}: ${used}/${cfg.daily_token_limit}); no se responde`,
+        );
+        return;
+      }
+    }
 
     for (const id of [conv.contact_external_id, conv.contact_handle].filter(Boolean) as string[]) {
       if (await this.silenced.isSilenced(orgId, id)) {

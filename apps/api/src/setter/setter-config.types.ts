@@ -57,6 +57,8 @@ export type SetterConfig = {
   model: string | null;
   language: string;
   is_active: boolean;
+  // Control de coste: tope de tokens de IA por día y organización (0 = ilimitado).
+  daily_token_limit: number;
   updated_at?: string;
 };
 

@@ -60,6 +60,7 @@ export default async function DashboardLayout({
     {
       label: "Mi negocio",
       items: [
+        { label: "CRM", href: "/dashboard/crm" },
         { label: "Chats", href: "/dashboard/inbox" },
         { label: "Probar IA", href: "/dashboard/playground" },
         { label: "Mi Setter", href: "/dashboard/setter" },

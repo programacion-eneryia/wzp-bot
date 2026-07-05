@@ -1,6 +1,7 @@
 import { ForbiddenException, Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { SupabaseService } from '../supabase/supabase.service';
+import { LeadsService } from '../leads/leads.service';
 import { SetterService } from '../setter/setter.service';
 
 /** Respuesta en el formato Dynamic Block v2 que ManyChat renderiza y envía. */
@@ -29,6 +30,7 @@ export class ManyChatService {
     private readonly supabase: SupabaseService,
     private readonly setter: SetterService,
     private readonly config: ConfigService,
+    private readonly leads: LeadsService,
   ) {}
 
   private async resolveOrgId(token: string): Promise<string> {
@@ -62,6 +64,22 @@ export class ManyChatService {
     }
 
     const convId = await this.upsertConversation(orgId, subscriberId, name);
+
+    // Registramos el lead en el CRM con todo lo que manda ManyChat.
+    try {
+      await this.leads.record(orgId, {
+        conversationId: convId,
+        name,
+        provider: 'instagram',
+        source: 'manychat',
+        externalId: subscriberId,
+        firstMessage: text || undefined,
+        consentOptin: true,
+        raw: body,
+      });
+    } catch (err) {
+      this.logger.warn(`No se pudo registrar el lead de ManyChat en el CRM: ${String(err)}`);
+    }
 
     if (text) {
       await this.supabase.admin.from('messages').insert({

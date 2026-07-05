@@ -17,6 +17,7 @@ export function buildSystemPrompt(
   mode: ChatMode = 'setter',
   contactName?: string | null,
   availabilityText?: string | null,
+  leadContext?: string | null,
 ): string {
   const company = cfg.company_name ? ` de ${cfg.company_name}` : '';
 
@@ -48,6 +49,17 @@ export function buildSystemPrompt(
   if (cleanName) {
     sections.push(
       `# CON QUIÉN HABLAS\nLa persona se llama ${cleanName}. Puedes llamarla por su nombre de vez en cuando para que sea cercano, pero SIN abusar (no en cada mensaje).`,
+    );
+  }
+
+  // Contexto que dejó el lead al registrarse (respuestas del formulario, incluida
+  // la de cualificación). El bot DEBE tenerlo en cuenta para adaptar el trato.
+  const ctx = (leadContext ?? '').trim();
+  if (ctx) {
+    sections.push(
+      `# INFO DEL LEAD (lo que dejó al registrarse — TENLO MUY EN CUENTA)\n` +
+        `Esto es lo que esta persona indicó en el formulario/anuncio por el que entró. ` +
+        `Úsalo para adaptar tu enfoque desde el primer mensaje (p. ej. si dijo que NO quiere ayuda o que no le interesa, respétalo y NO insistas como si fuera un lead caliente; si mostró interés, ve al grano con naturalidad). No repitas esta info literalmente ni la leas en voz alta:\n${ctx}`,
     );
   }
 

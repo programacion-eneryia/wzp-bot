@@ -190,3 +190,35 @@
   border: 1px solid var(--border, rgba(255, 255, 255, 0.06));
   border-radius: 8px;
 }
+
+.tableWrap {
+  border: 1px solid var(--border, rgba(255, 255, 255, 0.08));
+  border-radius: 12px;
+  overflow: hidden;
+  background: var(--surface, #141414);
+}
+.table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 14px;
+}
+.table thead th {
+  text-align: left;
+  padding: 12px 14px;
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-faint, #8a8a8a);
+  border-bottom: 1px solid var(--border, rgba(255, 255, 255, 0.08));
+}
+.table td {
+  padding: 11px 14px;
+  border-bottom: 1px solid var(--border, rgba(255, 255, 255, 0.05));
+}
+.table tbody tr:last-child td {
+  border-bottom: none;
+}
+.totalRow td {
+  border-top: 1px solid var(--border, rgba(255, 255, 255, 0.12));
+  background: rgba(255, 230, 0, 0.04);
+}

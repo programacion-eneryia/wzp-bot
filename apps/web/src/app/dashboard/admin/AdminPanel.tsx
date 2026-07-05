@@ -35,13 +35,38 @@ type AuditLog = {
   metadata: Record<string, unknown>;
 };
 
-type Tab = "orgs" | "users" | "audit";
+type CostRow = {
+  organization_id: string;
+  name: string;
+  slug: string;
+  plan: string;
+  ai_tokens: number;
+  ai_cost_usd: number;
+  channels: number;
+  unipile_cost_usd: number;
+  total_cost_usd: number;
+};
+type Costs = {
+  period_start: string;
+  unipile_usd_per_account: number;
+  rows: CostRow[];
+  totals: {
+    ai_tokens: number;
+    ai_cost_usd: number;
+    channels: number;
+    unipile_cost_usd: number;
+    total_cost_usd: number;
+  };
+};
+
+type Tab = "orgs" | "users" | "costs" | "audit";
 
 export default function AdminPanel() {
   const [tab, setTab] = useState<Tab>("orgs");
   const [orgs, setOrgs] = useState<Org[]>([]);
   const [users, setUsers] = useState<User[]>([]);
   const [audit, setAudit] = useState<AuditLog[]>([]);
+  const [costs, setCosts] = useState<Costs | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [search, setSearch] = useState("");
@@ -56,6 +81,9 @@ export default function AdminPanel() {
   const loadAudit = useCallback(async () => {
     setAudit(await apiFetch<AuditLog[]>("/api/admin/audit"));
   }, []);
+  const loadCosts = useCallback(async () => {
+    setCosts(await apiFetch<Costs>("/api/admin/costs"));
+  }, []);
 
   useEffect(() => {
     loadOrgs().catch((e) => setError(e.message));
@@ -63,7 +91,8 @@ export default function AdminPanel() {
   useEffect(() => {
     if (tab === "users") loadUsers().catch((e) => setError(e.message));
     if (tab === "audit") loadAudit().catch((e) => setError(e.message));
-  }, [tab, loadUsers, loadAudit]);
+    if (tab === "costs") loadCosts().catch((e) => setError(e.message));
+  }, [tab, loadUsers, loadAudit, loadCosts]);
 
   async function run(fn: () => Promise<unknown>, reload: () => Promise<void>) {
     setBusy(true);
@@ -237,13 +266,19 @@ export default function AdminPanel() {
   return (
     <div className={styles.wrap}>
       <div className={styles.tabs}>
-        {(["orgs", "users", "audit"] as Tab[]).map((t) => (
+        {(["orgs", "users", "costs", "audit"] as Tab[]).map((t) => (
           <button
             key={t}
             className={`${styles.tab} ${tab === t ? styles.tabActive : ""}`}
             onClick={() => setTab(t)}
           >
-            {t === "orgs" ? "Organizaciones" : t === "users" ? "Usuarios" : "Auditoría"}
+            {t === "orgs"
+              ? "Organizaciones"
+              : t === "users"
+                ? "Usuarios"
+                : t === "costs"
+                  ? "Costes"
+                  : "Auditoría"}
           </button>
         ))}
       </div>
@@ -374,6 +409,63 @@ export default function AdminPanel() {
               </li>
             ))}
           </ul>
+        </>
+      )}
+
+      {tab === "costs" && (
+        <>
+          <section className={styles.card}>
+            <h2 className={styles.cardTitle}>Costes del mes en curso</h2>
+            <span className={styles.hint}>
+              Consumo de IA (tokens + coste real de OpenRouter) y cuentas conectadas de Unipile
+              (a {costs ? `$${costs.unipile_usd_per_account}` : "$5"}/cuenta). Desde{" "}
+              {costs ? new Date(costs.period_start).toLocaleDateString("es-ES") : "—"}.
+            </span>
+          </section>
+
+          {costs && (
+            <div className={styles.tableWrap}>
+              <table className={styles.table}>
+                <thead>
+                  <tr>
+                    <th>Organización</th>
+                    <th>Tokens IA</th>
+                    <th>Coste IA</th>
+                    <th>Canales</th>
+                    <th>Coste Unipile</th>
+                    <th>Total</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {costs.rows.map((r) => (
+                    <tr key={r.organization_id}>
+                      <td className={styles.itemName}>{r.name}</td>
+                      <td>{r.ai_tokens.toLocaleString("es-ES")}</td>
+                      <td>${r.ai_cost_usd.toFixed(2)}</td>
+                      <td>{r.channels}</td>
+                      <td>${r.unipile_cost_usd.toFixed(2)}</td>
+                      <td>
+                        <strong>${r.total_cost_usd.toFixed(2)}</strong>
+                      </td>
+                    </tr>
+                  ))}
+                  <tr className={styles.totalRow}>
+                    <td>
+                      <strong>TOTAL</strong>
+                    </td>
+                    <td>{costs.totals.ai_tokens.toLocaleString("es-ES")}</td>
+                    <td>${costs.totals.ai_cost_usd.toFixed(2)}</td>
+                    <td>{costs.totals.channels}</td>
+                    <td>${costs.totals.unipile_cost_usd.toFixed(2)}</td>
+                    <td>
+                      <strong>${costs.totals.total_cost_usd.toFixed(2)}</strong>
+                    </td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          )}
+          {costs && costs.rows.length === 0 && <p className={styles.hint}>Sin datos de consumo.</p>}
         </>
       )}
 

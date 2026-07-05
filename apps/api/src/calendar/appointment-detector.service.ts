@@ -49,7 +49,7 @@ export class AppointmentDetectorService {
       const blob = recent.map((m) => m.content).join(' ');
       if (!SCHEDULING_HINTS.test(blob)) return;
 
-      const detection = await this.classify(recent);
+      const detection = await this.classify(recent, orgId, conversationId);
       if (!detection.booked || detection.confidence === 'baja') return;
 
       // Marca la conversación como "llamada agendada".
@@ -86,7 +86,11 @@ export class AppointmentDetectorService {
     }
   }
 
-  private async classify(messages: StoredMessage[]): Promise<{
+  private async classify(
+    messages: StoredMessage[],
+    orgId: string,
+    conversationId: string,
+  ): Promise<{
     booked: boolean;
     datetime_iso: string | null;
     confidence: 'alta' | 'media' | 'baja';
@@ -120,6 +124,9 @@ export class AppointmentDetectorService {
         model: this.config.get<string>('OPENROUTER_DEFAULT_MODEL') ?? undefined,
         temperature: 0,
         maxTokens: 200,
+        orgId,
+        conversationId,
+        purpose: 'detect',
       },
     );
 

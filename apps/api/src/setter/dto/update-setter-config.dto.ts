@@ -67,6 +67,9 @@ export class UpdateSetterConfigDto {
   @IsOptional() @Type(() => Number) @IsInt() @Min(1) @Max(50) typing_cps?: number;
   @IsOptional() @Type(() => Number) @IsInt() @Min(0) @Max(23) active_hours_start?: number;
   @IsOptional() @Type(() => Number) @IsInt() @Min(0) @Max(23) active_hours_end?: number;
+
+  // Control de coste: tope de tokens de IA por día (0 = ilimitado).
+  @IsOptional() @Type(() => Number) @IsInt() @Min(0) @Max(100_000_000) daily_token_limit?: number;
 }
 
 export class GenerateSetterDto {

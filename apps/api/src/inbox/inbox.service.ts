@@ -112,6 +112,7 @@ export class InboxService {
       notes?: string;
       blocked?: boolean;
       unread?: boolean;
+      assigned_to?: string | null;
     },
   ) {
     await this.assertOwned(orgId, id);
@@ -125,6 +126,10 @@ export class InboxService {
     }
     if (typeof patch.notes === 'string') update.notes = patch.notes;
     if (typeof patch.unread === 'boolean') update.unread_count = patch.unread ? 1 : 0;
+    // Asignar (o desasignar con cadena vacía / null) el chat a un miembro.
+    if (patch.assigned_to !== undefined) {
+      update.assigned_to = patch.assigned_to ? patch.assigned_to : null;
+    }
     if (typeof patch.blocked === 'boolean') {
       update.blocked = patch.blocked;
       // Al bloquear, la IA deja de responder a este contacto.
@@ -136,9 +141,18 @@ export class InboxService {
       .update(update)
       .eq('id', id)
       .eq('organization_id', orgId)
-      .select('id, stage, mode, ai_enabled, blocked, notes, unread_count')
+      .select('id, stage, mode, ai_enabled, blocked, notes, unread_count, assigned_to')
       .single();
     if (error) throw error;
+
+    // Mantenemos el CRM sincronizado: si cambia la etapa, actualizamos el lead.
+    if (patch.stage) {
+      await this.supabase.admin
+        .from('leads')
+        .update({ status: patch.stage })
+        .eq('organization_id', orgId)
+        .eq('conversation_id', id);
+    }
 
     // Atribución a Meta: al CUALIFICAR (o GANAR) un lead que vino de un anuncio
     // click-to-WhatsApp, devolvemos el evento a la Conversions API.
@@ -353,7 +367,7 @@ export class InboxService {
     const { data } = await this.supabase.admin
       .from('conversations')
       .select(
-        'id, provider, contact_name, contact_handle, stage, mode, mode_locked, ai_enabled, blocked, notes, unread_count, unipile_chat_id, ai_analysis, ai_analysis_at, last_message_at, created_at',
+        'id, provider, contact_name, contact_handle, stage, mode, mode_locked, ai_enabled, blocked, notes, unread_count, assigned_to, unipile_chat_id, ai_analysis, ai_analysis_at, last_message_at, created_at',
       )
       .eq('id', id)
       .eq('organization_id', orgId)
@@ -361,6 +375,30 @@ export class InboxService {
       .maybeSingle();
     if (!data) throw new NotFoundException('Conversación no encontrada');
     return data;
+  }
+
+  /** Miembros de la organización (para asignar chats). */
+  async members(orgId: string) {
+    const { data: mems } = await this.supabase.admin
+      .from('memberships')
+      .select('user_id, role')
+      .eq('organization_id', orgId);
+    const ids = (mems ?? []).map((m) => m.user_id as string);
+    if (ids.length === 0) return [];
+    const { data: profiles } = await this.supabase.admin
+      .from('profiles')
+      .select('id, email, full_name')
+      .in('id', ids);
+    const byId = new Map((profiles ?? []).map((p) => [p.id as string, p]));
+    return (mems ?? []).map((m) => {
+      const p = byId.get(m.user_id as string);
+      return {
+        user_id: m.user_id as string,
+        role: m.role as string,
+        email: (p?.email as string) ?? null,
+        full_name: (p?.full_name as string) ?? null,
+      };
+    });
   }
 }
 

@@ -42,6 +42,8 @@ class UpdateConversationDto {
   @IsOptional() @IsString() @MaxLength(4000) notes?: string;
   @IsOptional() @IsBoolean() blocked?: boolean;
   @IsOptional() @IsBoolean() unread?: boolean;
+  // Cadena vacía => desasignar. UUID => asignar a ese miembro.
+  @IsOptional() @IsString() @MaxLength(64) assigned_to?: string | null;
 }
 
 class SendMessageDto {
@@ -69,6 +71,12 @@ export class InboxController {
   @Post('sync')
   sync(@CurrentUser() user: AuthContext) {
     return this.inbox.sync(user.organizationId);
+  }
+
+  /** Miembros de la organización (para asignar chats a personas del equipo). */
+  @Get('members')
+  members(@CurrentUser() user: AuthContext) {
+    return this.inbox.members(user.organizationId);
   }
 
   @Get('conversations/:id')

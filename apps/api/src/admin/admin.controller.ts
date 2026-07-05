@@ -66,6 +66,12 @@ export class AdminController {
     return this.admin.orgMetrics(id);
   }
 
+  // --- Costes (consumo de IA + cuentas Unipile) ---
+  @Get('costs')
+  costs() {
+    return this.admin.costs();
+  }
+
   // --- Usuarios ---
   @Get('users')
   listUsers(@Query('search') search?: string, @Query('organizationId') organizationId?: string) {

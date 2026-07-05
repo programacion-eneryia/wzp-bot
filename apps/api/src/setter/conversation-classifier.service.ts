@@ -78,6 +78,8 @@ export class ConversationClassifierService {
           model: this.config.get<string>('OPENROUTER_DEFAULT_MODEL') ?? undefined,
           temperature: 0,
           maxTokens: 8,
+          orgId,
+          purpose: 'classify',
         },
       );
       const word = raw.toUpperCase();

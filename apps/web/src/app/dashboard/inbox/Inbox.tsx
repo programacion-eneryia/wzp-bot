@@ -27,6 +27,8 @@ type Analysis = {
 
 type Mode = "setter" | "support" | "ignored" | "unclassified";
 
+type Member = { user_id: string; email: string | null; full_name: string | null; role: string };
+
 type Conversation = {
   id: string;
   provider: string | null;
@@ -37,6 +39,7 @@ type Conversation = {
   ai_enabled: boolean;
   blocked?: boolean;
   notes?: string | null;
+  assigned_to?: string | null;
   unread_count: number;
   ai_analysis?: Analysis | null;
   ai_analysis_at?: string | null;
@@ -138,6 +141,7 @@ export default function Inbox() {
   const [notesOpen, setNotesOpen] = useState(false);
   const [notesDraft, setNotesDraft] = useState("");
   const [savingNotes, setSavingNotes] = useState(false);
+  const [members, setMembers] = useState<Member[]>([]);
 
   const scrollRef = useRef<HTMLDivElement>(null);
 
@@ -171,6 +175,12 @@ export default function Inbox() {
   }, [loadList]);
 
   useEffect(() => {
+    apiFetch<Member[]>("/api/inbox/members")
+      .then(setMembers)
+      .catch(() => setMembers([]));
+  }, []);
+
+  useEffect(() => {
     if (!selectedId) return;
     loadConv(selectedId);
     const t = setInterval(() => loadConv(selectedId), 5000);
@@ -201,6 +211,12 @@ export default function Inbox() {
     setConv({ ...conv, ai_enabled: next });
     await patch({ ai_enabled: next });
     loadList();
+  }
+
+  async function changeAssignee(userId: string) {
+    if (!conv) return;
+    setConv({ ...conv, assigned_to: userId || null });
+    await patch({ assigned_to: userId });
   }
 
   async function changeStage(stage: Stage) {
@@ -441,9 +457,19 @@ export default function Inbox() {
                   </option>
                 ))}
               </select>
-              <button className={styles.toolBtn} disabled title="Próximamente">
-                Asignar
-              </button>
+              <select
+                className={styles.moveSelect}
+                value={conv.assigned_to ?? ""}
+                onChange={(e) => changeAssignee(e.target.value)}
+                title="Asignar a un miembro del equipo"
+              >
+                <option value="">Sin asignar</option>
+                {members.map((m) => (
+                  <option key={m.user_id} value={m.user_id}>
+                    {m.full_name || m.email || m.user_id.slice(0, 8)}
+                  </option>
+                ))}
+              </select>
               <button className={styles.toolBtn} disabled title="Próximamente">
                 Etiquetas
               </button>

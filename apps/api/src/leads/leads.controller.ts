@@ -24,7 +24,11 @@ export class LeadsController {
     @Query('token') token: string,
     @Body() body: Record<string, unknown>,
   ) {
-    return this.intake.intake({ ...(body as Partial<IntakeInput>), token } as IntakeInput);
+    return this.intake.intake({
+      ...(body as Partial<IntakeInput>),
+      token,
+      raw: body,
+    } as IntakeInput);
   }
 
   @Post('ghl')
@@ -62,5 +66,6 @@ function mapGhl(body: Record<string, unknown>, token: string): IntakeInput {
     source_detail: get('source') ?? get('form_name') ?? get('page_name'),
     campaign: get('campaign') ?? get('utm_campaign') ?? get('ad_id'),
     proactive: true,
+    raw: body,
   };
 }

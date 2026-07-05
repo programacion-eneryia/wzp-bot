@@ -2,6 +2,7 @@ import { ForbiddenException, Injectable, Logger } from '@nestjs/common';
 import { SupabaseService } from '../supabase/supabase.service';
 import { SetterConfigService } from '../setter/setter-config.service';
 import { MessagingService } from '../messaging/messaging.service';
+import { LeadsService } from './leads.service';
 
 export type IntakeInput = {
   /** Token de la org (intake_token de la tabla integrations). */
@@ -21,10 +22,13 @@ export type IntakeInput = {
   external_id?: string;
   /** Si false, no se envía el primer mensaje proactivo (solo se registra). */
   proactive?: boolean;
+  /** Payload original completo (para guardarlo íntegro en el CRM). */
+  raw?: Record<string, unknown>;
 };
 
 export type IntakeResult = {
-  conversationId: string;
+  conversationId: string | null;
+  leadId: string | null;
   proactiveSent: boolean;
   reason?: string;
 };
@@ -37,6 +41,7 @@ export class LeadIntakeService {
     private readonly supabase: SupabaseService,
     private readonly setterConfig: SetterConfigService,
     private readonly messaging: MessagingService,
+    private readonly leads: LeadsService,
   ) {}
 
   /** Resuelve la organización a partir del token de intake. */
@@ -80,32 +85,90 @@ export class LeadIntakeService {
     const org = await this.resolveOrg(input.token);
     const orgId = org.organization_id;
     const provider = input.channel ?? 'whatsapp';
-
     const phoneDigits = normalizePhone(input.phone);
+
+    // El lead entra SIEMPRE al CRM lo PRIMERO, con toda su información (incluido
+    // el payload original completo), aunque todavía no haya canal para escribirle
+    // o falte el teléfono. El CRM es la fuente de verdad de "quién ha entrado".
+    let leadId: string | null = null;
+    try {
+      const lead = await this.leads.record(orgId, {
+        name: input.name,
+        phone: phoneDigits ? `+${phoneDigits}` : input.phone,
+        email: input.email,
+        provider,
+        source: input.source,
+        sourceDetail: input.source_detail,
+        campaign: input.campaign,
+        externalId: input.external_id,
+        firstMessage: input.message,
+        consentOptin: true,
+        raw: input.raw ?? {},
+      });
+      leadId = (lead?.id as string | undefined) ?? null;
+    } catch (err) {
+      this.logger.warn(`No se pudo registrar el lead en el CRM: ${String(err)}`);
+    }
+
+    // Sin datos de contacto no podemos abrir conversación, pero el lead ya quedó
+    // registrado en el CRM para que el usuario lo vea y lo trabaje a mano.
     if (provider === 'whatsapp' && !phoneDigits && !input.external_id) {
-      throw new ForbiddenException('Falta el teléfono del lead');
+      return { conversationId: null, leadId, proactiveSent: false, reason: 'lead sin teléfono' };
     }
 
     const channel = await this.pickChannel(orgId, org.default_channel_id, provider);
     if (!channel) {
-      throw new ForbiddenException(`No hay canal de ${provider} conectado en esta cuenta`);
+      return {
+        conversationId: null,
+        leadId,
+        proactiveSent: false,
+        reason: `sin canal de ${provider} conectado`,
+      };
     }
 
     // Buscamos conversación existente por teléfono/subscriber para no duplicar.
     const conv = await this.findOrCreateConversation(orgId, channel, provider, phoneDigits, input);
 
+    // Enlazamos el lead del CRM con la conversación que abrirá el bot.
+    if (leadId) {
+      try {
+        await this.leads.linkConversation(orgId, leadId, conv.id);
+      } catch (err) {
+        this.logger.warn(`No se pudo enlazar el lead con su conversación: ${String(err)}`);
+      }
+    }
+
+    // Guardamos en la conversación el contexto que dejó el lead (respuestas del
+    // formulario, incluida la de cualificación) para que el bot lo tenga en cuenta.
+    const leadContext = buildLeadContext(input);
+    if (leadContext) {
+      try {
+        await this.supabase.admin
+          .from('conversations')
+          .update({ lead_context: leadContext })
+          .eq('id', conv.id);
+      } catch (err) {
+        this.logger.warn(`No se pudo guardar el contexto del lead: ${String(err)}`);
+      }
+    }
+
     const wantsProactive = (input.proactive ?? true) && org.proactive_enabled;
     if (!wantsProactive) {
-      return { conversationId: conv.id, proactiveSent: false, reason: 'proactivo desactivado' };
+      return { conversationId: conv.id, leadId, proactiveSent: false, reason: 'proactivo desactivado' };
     }
     if (conv.proactive_sent) {
-      return { conversationId: conv.id, proactiveSent: false, reason: 'ya se contactó antes' };
+      return { conversationId: conv.id, leadId, proactiveSent: false, reason: 'ya se contactó antes' };
     }
 
     // Por ahora el primer mensaje proactivo solo está soportado en WhatsApp
     // (en IG/Messenger la ventana de 24h obliga a pasar por ManyChat).
     if (provider !== 'whatsapp') {
-      return { conversationId: conv.id, proactiveSent: false, reason: 'proactivo solo en WhatsApp' };
+      return {
+        conversationId: conv.id,
+        leadId,
+        proactiveSent: false,
+        reason: 'proactivo solo en WhatsApp',
+      };
     }
 
     const cfg = await this.setterConfig.getOrCreate(orgId);
@@ -113,12 +176,18 @@ export class LeadIntakeService {
     if (!template) {
       return {
         conversationId: conv.id,
+        leadId,
         proactiveSent: false,
         reason: 'no hay plantilla proactiva configurada',
       };
     }
     if (!cfg.is_active) {
-      return { conversationId: conv.id, proactiveSent: false, reason: 'IA desactivada globalmente' };
+      return {
+        conversationId: conv.id,
+        leadId,
+        proactiveSent: false,
+        reason: 'IA desactivada globalmente',
+      };
     }
 
     const text = renderTemplate(template, { name: input.name ?? '' });
@@ -138,6 +207,7 @@ export class LeadIntakeService {
     );
     return {
       conversationId: conv.id,
+      leadId,
       proactiveSent: true,
       reason: delayMs > 1000 ? `programado en ~${Math.round(delayMs / 1000)}s` : undefined,
     };
@@ -221,6 +291,60 @@ export class LeadIntakeService {
     if (error) throw error;
     return created;
   }
+}
+
+/**
+ * Construye un texto legible con lo que dejó el lead: email, primer mensaje y,
+ * sobre todo, las respuestas del formulario (incluida la de cualificación, que
+ * en GHL viene como un campo personalizado con nombre arbitrario). Recorre el
+ * payload original e incluye todo lo que no sea un campo de control conocido.
+ */
+function buildLeadContext(input: IntakeInput): string | null {
+  const lines: string[] = [];
+  if (input.email) lines.push(`Email: ${input.email}`);
+  if (input.source_detail) lines.push(`Origen: ${input.source_detail}`);
+  if (input.campaign) lines.push(`Campaña: ${input.campaign}`);
+  if (input.message) lines.push(`Primer mensaje / comentario: ${input.message}`);
+
+  // Campos de control que NO son respuestas del formulario.
+  const CONTROL = new Set([
+    'token',
+    'name',
+    'full_name',
+    'first_name',
+    'last_name',
+    'phone',
+    'phone_number',
+    'email',
+    'channel',
+    'source',
+    'source_detail',
+    'form_name',
+    'page_name',
+    'campaign',
+    'utm_campaign',
+    'ad_id',
+    'message',
+    'external_id',
+    'proactive',
+    'raw',
+  ]);
+
+  const raw = input.raw ?? {};
+  for (const [key, value] of Object.entries(raw)) {
+    if (CONTROL.has(key.toLowerCase())) continue;
+    if (value === null || value === undefined || value === '') continue;
+    const val = typeof value === 'object' ? JSON.stringify(value) : String(value);
+    lines.push(`${humanizeKey(key)}: ${val}`);
+  }
+
+  return lines.length > 0 ? lines.join('\n') : null;
+}
+
+/** "utm_source" → "Utm source"; "qualification_answer" → "Qualification answer". */
+function humanizeKey(key: string): string {
+  const s = key.replace(/[_-]+/g, ' ').trim();
+  return s.charAt(0).toUpperCase() + s.slice(1);
 }
 
 /** Deja solo dígitos (formato internacional sin +). */

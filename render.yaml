@@ -1,0 +1,78 @@
+# =============================================================================
+# Blueprint de Render para la API (NestJS + workers BullMQ).
+#
+# Por qué Render y no Vercel para la API: la API ejecuta workers de BullMQ que
+# necesitan un PROCESO PERSISTENTE (siempre encendido) para procesar las colas
+# de mensajes entrantes/salientes. Vercel es serverless (funciones efímeras) y
+# no mantiene ese proceso vivo, así que las colas no se procesarían. Render
+# ejecuta el contenedor Docker de forma continua, con HTTPS y dominio propio.
+#
+# Cómo usarlo:
+#   1. Sube el repo a GitHub (ya hecho).
+#   2. En Render → New → Blueprint → conecta el repo. Detecta este archivo.
+#   3. Rellena las variables marcadas como `sync: false` (secretos) en el panel.
+#   4. Deploy. La URL pública será https://wzp-api.onrender.com (o similar).
+# =============================================================================
+
+services:
+  - type: web
+    name: wzp-api
+    runtime: docker
+    dockerfilePath: ./apps/api/Dockerfile
+    dockerContext: .
+    region: frankfurt          # misma región que Supabase (eu-central-1)
+    plan: starter              # proceso siempre encendido (no se duerme)
+    healthCheckPath: /api/health
+    autoDeploy: true
+    envVars:
+      - key: NODE_ENV
+        value: production
+      # Puerto: Render inyecta PORT automáticamente; la app ya lo respeta.
+      - key: OPENROUTER_DEFAULT_MODEL
+        value: anthropic/claude-sonnet-4.6
+      # --- Secretos (se rellenan en el panel de Render) ---
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_ANON_KEY
+        sync: false
+      - key: SUPABASE_SERVICE_ROLE_KEY
+        sync: false
+      - key: DATABASE_URL
+        sync: false
+      - key: REDIS_URL
+        sync: false
+      - key: UNIPILE_DSN
+        sync: false
+      - key: UNIPILE_API_KEY
+        sync: false
+      - key: UNIPILE_WEBHOOK_SECRET
+        sync: false
+      - key: OPENROUTER_API_KEY
+        sync: false
+      - key: FIELD_ENCRYPTION_KEY
+        sync: false
+      # URL pública base para los webhooks (la propia URL de este servicio,
+      # p.ej. https://wzp-api.onrender.com). La usan Unipile, ManyChat y calendario.
+      - key: WEBHOOK_BASE_URL
+        sync: false
+      # Orígenes permitidos por CORS (la URL del frontend en Vercel, p.ej.
+      # https://wzp.vercel.app). Se pueden poner varias separadas por comas.
+      - key: CORS_ORIGINS
+        sync: false
+      # URL del frontend (para enlaces y referer). Normalmente = CORS_ORIGINS.
+      - key: WEB_URL
+        sync: false
+      # --- WhatsApp Cloud API / Meta (OPCIONAL: solo si se usa la API oficial) ---
+      - key: META_APP_ID
+        sync: false
+      - key: META_APP_SECRET
+        sync: false
+      - key: META_WEBHOOK_VERIFY_TOKEN
+        sync: false
+      - key: META_CAPI_TOKEN
+        sync: false
+      - key: META_GRAPH_VERSION
+        value: v23.0
+      # Coste por cuenta de Unipile para el panel de Costes (por defecto 5 USD).
+      - key: UNIPILE_USD_PER_ACCOUNT
+        value: "5"

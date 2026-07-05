@@ -22,6 +22,9 @@ out/
 npm-debug.log*
 pnpm-debug.log*
 
+# Volcados locales de Redis (no deben subirse)
+*.rdb
+
 # Sistema operativo / editor
 .DS_Store
 .idea/

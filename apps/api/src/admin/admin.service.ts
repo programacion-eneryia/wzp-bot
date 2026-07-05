@@ -41,6 +41,92 @@ export class AdminService {
     return (orgs ?? []).map((o) => ({ ...o, member_count: memberCount.get(o.id as string) ?? 0 }));
   }
 
+  // ===========================================================================
+  // COSTES (consumo de IA + cuentas de Unipile conectadas)
+  // ===========================================================================
+
+  /**
+   * Resumen de costes por organización desde el inicio del mes (UTC):
+   *  - Consumo de IA: tokens + coste real (de OpenRouter).
+   *  - Cuentas conectadas (Unipile) × precio por cuenta (env UNIPILE_USD_PER_ACCOUNT).
+   */
+  async costs() {
+    const startOfMonth = new Date();
+    startOfMonth.setUTCDate(1);
+    startOfMonth.setUTCHours(0, 0, 0, 0);
+    const unipilePerAccount = Number(process.env.UNIPILE_USD_PER_ACCOUNT) || 5;
+
+    const { data: orgs } = await this.supabase.admin
+      .from('organizations')
+      .select('id, name, slug, plan')
+      .order('created_at', { ascending: false });
+
+    const { data: usage } = await this.supabase.admin
+      .from('ai_usage')
+      .select('organization_id, total_tokens, cost_usd')
+      .gte('created_at', startOfMonth.toISOString());
+
+    const { data: channels } = await this.supabase.admin
+      .from('channels')
+      .select('organization_id, status');
+
+    const aiByOrg = new Map<string, { tokens: number; cost: number }>();
+    for (const u of usage ?? []) {
+      const id = u.organization_id as string;
+      const prev = aiByOrg.get(id) ?? { tokens: 0, cost: 0 };
+      prev.tokens += (u.total_tokens as number) ?? 0;
+      prev.cost += Number(u.cost_usd ?? 0);
+      aiByOrg.set(id, prev);
+    }
+
+    const channelsByOrg = new Map<string, number>();
+    for (const c of channels ?? []) {
+      if (c.status === 'disconnected') continue;
+      const id = c.organization_id as string;
+      channelsByOrg.set(id, (channelsByOrg.get(id) ?? 0) + 1);
+    }
+
+    const rows = (orgs ?? []).map((o) => {
+      const id = o.id as string;
+      const ai = aiByOrg.get(id) ?? { tokens: 0, cost: 0 };
+      const channelCount = channelsByOrg.get(id) ?? 0;
+      const unipileCost = channelCount * unipilePerAccount;
+      return {
+        organization_id: id,
+        name: o.name as string,
+        slug: o.slug as string,
+        plan: o.plan as string,
+        ai_tokens: ai.tokens,
+        ai_cost_usd: Number(ai.cost.toFixed(4)),
+        channels: channelCount,
+        unipile_cost_usd: Number(unipileCost.toFixed(2)),
+        total_cost_usd: Number((ai.cost + unipileCost).toFixed(2)),
+      };
+    });
+
+    const totals = rows.reduce(
+      (acc, r) => {
+        acc.ai_tokens += r.ai_tokens;
+        acc.ai_cost_usd += r.ai_cost_usd;
+        acc.channels += r.channels;
+        acc.unipile_cost_usd += r.unipile_cost_usd;
+        acc.total_cost_usd += r.total_cost_usd;
+        return acc;
+      },
+      { ai_tokens: 0, ai_cost_usd: 0, channels: 0, unipile_cost_usd: 0, total_cost_usd: 0 },
+    );
+    totals.ai_cost_usd = Number(totals.ai_cost_usd.toFixed(4));
+    totals.unipile_cost_usd = Number(totals.unipile_cost_usd.toFixed(2));
+    totals.total_cost_usd = Number(totals.total_cost_usd.toFixed(2));
+
+    return {
+      period_start: startOfMonth.toISOString(),
+      unipile_usd_per_account: unipilePerAccount,
+      rows,
+      totals,
+    };
+  }
+
   async createOrganization(
     ctx: AuthContext,
     dto: { name: string; slug: string; plan?: string; seats?: number },

@@ -47,6 +47,15 @@ export class SetterService {
     const persist = opts.persist ?? true;
     const cfg = await this.setterConfig.getOrCreate(orgId);
 
+    // Contexto que dejó el lead al registrarse (respuestas del formulario, incl.
+    // la de cualificación), para que el bot adapte el trato desde el inicio.
+    const { data: conv } = await this.supabase.admin
+      .from('conversations')
+      .select('lead_context')
+      .eq('id', conversationId)
+      .maybeSingle();
+    const leadContext = (conv?.lead_context as string | null) ?? null;
+
     // Si el modo de agenda es "huecos", calculamos disponibilidad real para que
     // el bot ofrezca horas que de verdad están libres en el calendario.
     let availabilityText: string | null = null;
@@ -65,7 +74,10 @@ export class SetterService {
       .order('created_at', { ascending: true });
 
     const messages: ChatMessage[] = [
-      { role: 'system', content: buildSystemPrompt(cfg, mode, opts.contactName, availabilityText) },
+      {
+        role: 'system',
+        content: buildSystemPrompt(cfg, mode, opts.contactName, availabilityText, leadContext),
+      },
       ...(history ?? [])
         .filter((m: StoredMessage) => m.role !== 'system')
         .map((m: StoredMessage): ChatMessage => ({
@@ -76,6 +88,9 @@ export class SetterService {
 
     const raw = await this.openrouter.chat(messages, {
       model: cfg.model ?? this.config.get<string>('OPENROUTER_DEFAULT_MODEL') ?? undefined,
+      orgId,
+      conversationId,
+      purpose: 'respond',
     });
 
     const parts = cfg.multi_bubble

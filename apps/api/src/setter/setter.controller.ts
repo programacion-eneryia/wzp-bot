@@ -51,7 +51,7 @@ export class SetterController {
   @Post('generate')
   async generate(@CurrentUser() user: AuthContext, @Body() dto: GenerateSetterDto) {
     this.assertAdmin(user);
-    const fields = await this.assistant.generateFromBrief(dto.brief);
+    const fields = await this.assistant.generateFromBrief(dto.brief, user.organizationId);
     if (dto.apply) {
       const config = await this.setterConfig.update(user.organizationId, {
         ...fields,
@@ -97,7 +97,7 @@ export class SetterController {
       );
     }
 
-    const fields = await this.assistant.generateFromBrief(combined);
+    const fields = await this.assistant.generateFromBrief(combined, user.organizationId);
     if (apply === 'true') {
       const config = await this.setterConfig.update(user.organizationId, {
         ...fields,
