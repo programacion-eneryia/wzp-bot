@@ -6,6 +6,7 @@ import { NestFactory } from '@nestjs/core';
 import { json, urlencoded } from 'express';
 import helmet from 'helmet';
 import { AppModule } from './app.module';
+import { AllExceptionsFilter } from './platform/all-exceptions.filter';
 
 /**
  * Crea y CONFIGURA la app Nest (middleware, prefijo, CORS, validación) sin
@@ -72,6 +73,10 @@ export async function createNestApp() {
       transform: true,
     }),
   );
+
+  // Filtro global: mantiene la respuesta de error estándar y además guarda los
+  // errores 5xx en `error_logs` para verlos en el panel de administración.
+  app.useGlobalFilters(app.get(AllExceptionsFilter));
 
   return app;
 }

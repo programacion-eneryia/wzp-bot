@@ -45,6 +45,43 @@ type SetterConfig = {
   is_active: boolean;
 };
 
+// Modelos permitidos (deben coincidir con ALLOWED_MODELS del backend).
+const MODEL_OPTIONS: { value: string; label: string }[] = [
+  { value: "", label: "Por defecto — Claude Sonnet 4.6 (recomendado)" },
+  { value: "anthropic/claude-sonnet-4.6", label: "Claude Sonnet 4.6" },
+  { value: "anthropic/claude-3.5-sonnet", label: "Claude 3.5 Sonnet" },
+  { value: "anthropic/claude-3.5-haiku", label: "Claude 3.5 Haiku (rápido/barato)" },
+  { value: "openai/gpt-4o", label: "GPT-4o" },
+  { value: "openai/gpt-4o-mini", label: "GPT-4o mini (rápido/barato)" },
+  { value: "google/gemini-2.0-flash-001", label: "Gemini 2.0 Flash" },
+];
+
+// Zonas horarias frecuentes (España + Latinoamérica). Si el navegador soporta
+// la lista completa IANA, la usamos; si no, caemos a esta selección.
+const COMMON_TIMEZONES = [
+  "Europe/Madrid",
+  "Atlantic/Canary",
+  "America/Mexico_City",
+  "America/Bogota",
+  "America/Lima",
+  "America/Costa_Rica",
+  "America/Santiago",
+  "America/Argentina/Buenos_Aires",
+  "America/New_York",
+  "UTC",
+];
+
+function timezoneOptions(): string[] {
+  try {
+    const all = (Intl as unknown as { supportedValuesOf?: (k: string) => string[] })
+      .supportedValuesOf?.("timeZone");
+    if (Array.isArray(all) && all.length > 0) return all;
+  } catch {
+    // navegador sin soporte → lista común
+  }
+  return COMMON_TIMEZONES;
+}
+
 type Tab = "business" | "conversation" | "support" | "learn" | "ai" | "silenced";
 
 const TABS: { id: Tab; label: string }[] = [
@@ -539,27 +576,41 @@ export default function SetterForm() {
               </label>
             </div>
             <label className={styles.field}>
-              <span className={styles.label}>Zona horaria</span>
-              <input
+              <span className={styles.label}>
+                Zona horaria <span className={styles.hint}>— determina el horario activo</span>
+              </span>
+              <select
                 className={styles.input}
                 value={cfg.timezone}
                 onChange={(e) => set("timezone", e.target.value)}
-              />
+              >
+                {!timezoneOptions().includes(cfg.timezone) && cfg.timezone && (
+                  <option value={cfg.timezone}>{cfg.timezone}</option>
+                )}
+                {timezoneOptions().map((tz) => (
+                  <option key={tz} value={tz}>
+                    {tz}
+                  </option>
+                ))}
+              </select>
             </label>
           </section>
 
           <section className={styles.card}>
             <h2 className={styles.cardTitle}>Modelo</h2>
             <label className={styles.field}>
-              <span className={styles.label}>
-                Modelo LLM <span className={styles.hint}>— vacío = Claude Sonnet 4.6</span>
-              </span>
-              <input
+              <span className={styles.label}>Modelo LLM</span>
+              <select
                 className={styles.input}
                 value={cfg.model ?? ""}
-                onChange={(e) => set("model", e.target.value)}
-                placeholder="anthropic/claude-sonnet-4.6"
-              />
+                onChange={(e) => set("model", e.target.value || null)}
+              >
+                {MODEL_OPTIONS.map((m) => (
+                  <option key={m.value} value={m.value}>
+                    {m.label}
+                  </option>
+                ))}
+              </select>
             </label>
           </section>
 

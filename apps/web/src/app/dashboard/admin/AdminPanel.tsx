@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
+import { useSearchParams } from "next/navigation";
 import { apiFetch } from "@/lib/api";
 import { startImpersonation } from "@/lib/impersonation";
 import styles from "./admin.module.css";
@@ -59,17 +60,70 @@ type Costs = {
   };
 };
 
-type Tab = "orgs" | "users" | "costs" | "audit";
+type Settings = { base_setter_prompt: string | null; updated_at: string | null };
+
+type ErrorLog = {
+  id: string;
+  organization_id: string | null;
+  level: string;
+  source: string | null;
+  message: string;
+  detail: Record<string, unknown> | null;
+  request_method: string | null;
+  request_path: string | null;
+  status_code: number | null;
+  created_at: string;
+};
+
+type BillingRow = {
+  organization_id: string;
+  name: string;
+  slug: string;
+  plan: string;
+  status: string;
+  subscription_status: string | null;
+  monthly_price_usd: number | null;
+  next_charge_at: string | null;
+  total_paid_usd: number;
+};
+type Billing = {
+  rows: BillingRow[];
+  totals: { total_paid_usd: number; mrr_usd: number };
+};
+
+type Tab = "orgs" | "users" | "costs" | "billing" | "training" | "errors" | "audit";
+
+const TAB_LABEL: Record<Tab, string> = {
+  orgs: "Subcuentas",
+  users: "Usuarios",
+  billing: "Pagos",
+  costs: "Costes",
+  training: "Entrenamiento",
+  errors: "Logs",
+  audit: "Auditoría",
+};
+const TAB_ORDER: Tab[] = ["orgs", "users", "billing", "costs", "training", "errors", "audit"];
 
 export default function AdminPanel() {
-  const [tab, setTab] = useState<Tab>("orgs");
+  const searchParams = useSearchParams();
+  const initialTab = (searchParams.get("tab") as Tab) || "orgs";
+  const [tab, setTab] = useState<Tab>(TAB_ORDER.includes(initialTab) ? initialTab : "orgs");
   const [orgs, setOrgs] = useState<Org[]>([]);
   const [users, setUsers] = useState<User[]>([]);
   const [audit, setAudit] = useState<AuditLog[]>([]);
   const [costs, setCosts] = useState<Costs | null>(null);
+  const [settings, setSettings] = useState<Settings | null>(null);
+  const [basePrompt, setBasePrompt] = useState("");
+  const [errors, setErrors] = useState<ErrorLog[]>([]);
+  const [billing, setBilling] = useState<Billing | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [search, setSearch] = useState("");
+
+  useEffect(() => {
+    const t = (searchParams.get("tab") as Tab) || "orgs";
+    if (TAB_ORDER.includes(t)) setTab(t);
+  }, [searchParams]);
 
   const loadOrgs = useCallback(async () => {
     setOrgs(await apiFetch<Org[]>("/api/admin/organizations"));
@@ -84,6 +138,17 @@ export default function AdminPanel() {
   const loadCosts = useCallback(async () => {
     setCosts(await apiFetch<Costs>("/api/admin/costs"));
   }, []);
+  const loadSettings = useCallback(async () => {
+    const s = await apiFetch<Settings>("/api/admin/settings");
+    setSettings(s);
+    setBasePrompt(s.base_setter_prompt ?? "");
+  }, []);
+  const loadErrors = useCallback(async () => {
+    setErrors(await apiFetch<ErrorLog[]>("/api/admin/errors"));
+  }, []);
+  const loadBilling = useCallback(async () => {
+    setBilling(await apiFetch<Billing>("/api/admin/billing"));
+  }, []);
 
   useEffect(() => {
     loadOrgs().catch((e) => setError(e.message));
@@ -92,7 +157,10 @@ export default function AdminPanel() {
     if (tab === "users") loadUsers().catch((e) => setError(e.message));
     if (tab === "audit") loadAudit().catch((e) => setError(e.message));
     if (tab === "costs") loadCosts().catch((e) => setError(e.message));
-  }, [tab, loadUsers, loadAudit, loadCosts]);
+    if (tab === "training") loadSettings().catch((e) => setError(e.message));
+    if (tab === "errors") loadErrors().catch((e) => setError(e.message));
+    if (tab === "billing") loadBilling().catch((e) => setError(e.message));
+  }, [tab, loadUsers, loadAudit, loadCosts, loadSettings, loadErrors, loadBilling]);
 
   async function run(fn: () => Promise<unknown>, reload: () => Promise<void>) {
     setBusy(true);
@@ -263,22 +331,70 @@ export default function AdminPanel() {
     }
   }
 
+  // ---- Entrenamiento base ----
+  function saveBasePrompt() {
+    void run(
+      () =>
+        apiFetch("/api/admin/settings", {
+          method: "PATCH",
+          body: JSON.stringify({ base_setter_prompt: basePrompt }),
+        }),
+      loadSettings,
+    );
+  }
+
+  // ---- Logs de errores ----
+  function clearErrors() {
+    if (!confirm("¿Borrar todo el histórico de errores?")) return;
+    void run(() => apiFetch("/api/admin/errors", { method: "DELETE" }), loadErrors);
+  }
+
+  // ---- Facturación ----
+  function editBilling(r: BillingRow) {
+    const priceStr = prompt(`Precio mensual (USD) de ${r.name}:`, r.monthly_price_usd?.toString() ?? "");
+    if (priceStr == null) return;
+    const status = prompt(
+      "Estado de suscripción (trial / active / past_due / canceled):",
+      r.subscription_status ?? "trial",
+    );
+    if (status == null) return;
+    void run(
+      () =>
+        apiFetch(`/api/admin/organizations/${r.organization_id}/billing`, {
+          method: "PATCH",
+          body: JSON.stringify({
+            monthly_price_usd: priceStr ? Number(priceStr) : undefined,
+            subscription_status: status,
+          }),
+        }),
+      loadBilling,
+    );
+  }
+
+  function recordPayment(r: BillingRow) {
+    const amountStr = prompt(`Importe del pago (USD) para ${r.name}:`, r.monthly_price_usd?.toString() ?? "");
+    if (!amountStr) return;
+    const note = prompt("Nota (opcional):", "") ?? "";
+    void run(
+      () =>
+        apiFetch(`/api/admin/organizations/${r.organization_id}/payments`, {
+          method: "POST",
+          body: JSON.stringify({ amount_usd: Number(amountStr), note }),
+        }),
+      loadBilling,
+    );
+  }
+
   return (
     <div className={styles.wrap}>
       <div className={styles.tabs}>
-        {(["orgs", "users", "costs", "audit"] as Tab[]).map((t) => (
+        {TAB_ORDER.map((t) => (
           <button
             key={t}
             className={`${styles.tab} ${tab === t ? styles.tabActive : ""}`}
             onClick={() => setTab(t)}
           >
-            {t === "orgs"
-              ? "Organizaciones"
-              : t === "users"
-                ? "Usuarios"
-                : t === "costs"
-                  ? "Costes"
-                  : "Auditoría"}
+            {TAB_LABEL[t]}
           </button>
         ))}
       </div>
@@ -481,6 +597,131 @@ export default function AdminPanel() {
           ))}
           {audit.length === 0 && <p className={styles.hint}>Sin registros.</p>}
         </ul>
+      )}
+
+      {tab === "training" && (
+        <section className={styles.card}>
+          <h2 className={styles.cardTitle}>Entrenamiento base del setter</h2>
+          <span className={styles.hint}>
+            Instrucciones y estilo comunes que HEREDAN todas las subcuentas. Se antepone al prompt
+            de cada cliente (ellos pueden matizarlo con su propia configuración). Ideal para reglas
+            generales de la agencia: tono, cómo escribir humano, límites, etc.
+            {settings?.updated_at && (
+              <> · Última edición: {new Date(settings.updated_at).toLocaleString("es-ES")}</>
+            )}
+          </span>
+          <textarea
+            className={styles.textarea}
+            rows={16}
+            placeholder="Escribe aquí las directrices generales del setter para todas las subcuentas…"
+            value={basePrompt}
+            onChange={(e) => setBasePrompt(e.target.value)}
+          />
+          <div className={styles.formRow}>
+            <button className={styles.saveBtn} onClick={saveBasePrompt} disabled={busy}>
+              Guardar entrenamiento
+            </button>
+          </div>
+        </section>
+      )}
+
+      {tab === "billing" && (
+        <>
+          <section className={styles.card}>
+            <h2 className={styles.cardTitle}>Facturación de subcuentas</h2>
+            <span className={styles.hint}>
+              Cobro manual por ahora (registra los pagos que recibas). MRR (suscripciones activas):{" "}
+              <strong>${billing?.totals.mrr_usd.toFixed(2) ?? "0.00"}</strong> · Total cobrado:{" "}
+              <strong>${billing?.totals.total_paid_usd.toFixed(2) ?? "0.00"}</strong>
+            </span>
+          </section>
+
+          {billing && (
+            <div className={styles.tableWrap}>
+              <table className={styles.table}>
+                <thead>
+                  <tr>
+                    <th>Subcuenta</th>
+                    <th>Precio/mes</th>
+                    <th>Suscripción</th>
+                    <th>Próximo cobro</th>
+                    <th>Total pagado</th>
+                    <th></th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {billing.rows.map((r) => (
+                    <tr key={r.organization_id}>
+                      <td className={styles.itemName}>{r.name}</td>
+                      <td>{r.monthly_price_usd == null ? "—" : `$${r.monthly_price_usd.toFixed(2)}`}</td>
+                      <td>{r.subscription_status ?? "—"}</td>
+                      <td>
+                        {r.next_charge_at
+                          ? new Date(r.next_charge_at).toLocaleDateString("es-ES")
+                          : "—"}
+                      </td>
+                      <td>${r.total_paid_usd.toFixed(2)}</td>
+                      <td>
+                        <div className={styles.actions}>
+                          <button
+                            className={styles.ghostBtn}
+                            onClick={() => editBilling(r)}
+                            disabled={busy}
+                          >
+                            Editar
+                          </button>
+                          <button
+                            className={styles.saveBtn}
+                            onClick={() => recordPayment(r)}
+                            disabled={busy}
+                          >
+                            Registrar pago
+                          </button>
+                        </div>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+          {billing && billing.rows.length === 0 && <p className={styles.hint}>Sin subcuentas.</p>}
+        </>
+      )}
+
+      {tab === "errors" && (
+        <>
+          <section className={styles.card}>
+            <div className={styles.formRow}>
+              <h2 className={styles.cardTitle}>Logs de errores del sistema</h2>
+              <button className={styles.dangerBtn} onClick={clearErrors} disabled={busy}>
+                Vaciar
+              </button>
+            </div>
+            <span className={styles.hint}>
+              Errores de servidor (5xx) capturados automáticamente. Útil para diagnosticar fallos.
+            </span>
+          </section>
+
+          <ul className={styles.list}>
+            {errors.map((e) => (
+              <li key={e.id} className={styles.item}>
+                <div className={styles.itemInfo}>
+                  <span className={styles.itemName}>
+                    <span className={styles.badgeWarn}>{e.status_code ?? e.level}</span>{" "}
+                    {e.request_method} {e.request_path}
+                  </span>
+                  <span className={styles.hint}>{e.message}</span>
+                  <span className={styles.hint}>
+                    {new Date(e.created_at).toLocaleString("es-ES")}
+                    {e.source ? ` · ${e.source}` : ""}
+                  </span>
+                </div>
+              </li>
+            ))}
+            {errors.length === 0 && <p className={styles.hint}>Sin errores registrados.</p>}
+          </ul>
+        </>
       )}
     </div>
   );

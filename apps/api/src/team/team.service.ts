@@ -24,14 +24,28 @@ export class TeamService {
   ) {}
 
   async listMembers(orgId: string) {
-    const { data, error } = await this.supabase.admin
+    // No usamos el "embed" de PostgREST (`profiles(...)`) porque no hay una FK
+    // directa entre `memberships` y `profiles` (ambas apuntan a auth.users), y el
+    // join implícito falla con PGRST200. Hacemos dos consultas y las fusionamos.
+    const { data: members, error } = await this.supabase.admin
       .from('memberships')
-      .select('user_id, role, created_at, profiles(email, full_name)')
+      .select('user_id, role, created_at')
       .eq('organization_id', orgId)
       .order('created_at', { ascending: true });
     if (error) throw error;
-    return (data ?? []).map((m) => {
-      const p = m.profiles as unknown as { email?: string; full_name?: string } | null;
+    if (!members || members.length === 0) return [];
+
+    const ids = members.map((m) => m.user_id as string);
+    const { data: profiles } = await this.supabase.admin
+      .from('profiles')
+      .select('id, email, full_name')
+      .in('id', ids);
+    const byId = new Map(
+      (profiles ?? []).map((p) => [p.id as string, p as { email?: string; full_name?: string }]),
+    );
+
+    return members.map((m) => {
+      const p = byId.get(m.user_id as string);
       return {
         user_id: m.user_id as string,
         role: m.role as string,

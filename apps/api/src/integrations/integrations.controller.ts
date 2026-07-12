@@ -17,6 +17,7 @@ class UpdateIntegrationDto {
   @IsOptional() @IsString() @MaxLength(300) manychat_api_key?: string;
   @IsOptional() @IsUUID() default_channel_id?: string;
   @IsOptional() @IsBoolean() proactive_enabled?: boolean;
+  @IsOptional() @IsString() @MaxLength(500) ghl_webhook_url?: string;
 }
 
 @Controller('integrations')

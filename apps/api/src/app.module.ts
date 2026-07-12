@@ -8,6 +8,7 @@ import { AuthModule } from './auth/auth.module';
 import { CalendarModule } from './calendar/calendar.module';
 import { ChannelsModule } from './channels/channels.module';
 import { CronModule } from './cron/cron.module';
+import { GhlModule } from './ghl/ghl.module';
 import { HealthController } from './health/health.controller';
 import { TeamModule } from './team/team.module';
 import { InboxModule } from './inbox/inbox.module';
@@ -15,6 +16,7 @@ import { IntegrationsModule } from './integrations/integrations.module';
 import { LeadsModule } from './leads/leads.module';
 import { MessagingModule } from './messaging/messaging.module';
 import { OpenRouterModule } from './openrouter/openrouter.module';
+import { PlatformModule } from './platform/platform.module';
 import { PlaygroundModule } from './playground/playground.module';
 import { SetterModule } from './setter/setter.module';
 import { SupabaseModule } from './supabase/supabase.module';
@@ -34,6 +36,7 @@ import { WebhooksModule } from './webhooks/webhooks.module';
     // defecto (los endpoints públicos sensibles aplican límites más estrictos).
     ThrottlerModule.forRoot([{ ttl: 60_000, limit: 120 }]),
     CommonModule,
+    PlatformModule,
     AuthModule,
     AdminModule,
     TeamModule,
@@ -50,6 +53,7 @@ import { WebhooksModule } from './webhooks/webhooks.module';
     InboxModule,
     LeadsModule,
     IntegrationsModule,
+    GhlModule,
     WebhooksModule,
   ],
   controllers: [HealthController],

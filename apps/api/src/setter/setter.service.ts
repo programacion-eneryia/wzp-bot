@@ -3,6 +3,7 @@ import { ConfigService } from '@nestjs/config';
 import { OpenRouterService, type ChatMessage } from '../openrouter/openrouter.service';
 import { SupabaseService } from '../supabase/supabase.service';
 import { CalendarService } from '../calendar/calendar.service';
+import { PlatformSettingsService } from '../platform/platform-settings.service';
 import { SetterConfigService } from './setter-config.service';
 import {
   buildSystemPrompt,
@@ -30,6 +31,7 @@ export class SetterService {
     private readonly openrouter: OpenRouterService,
     private readonly setterConfig: SetterConfigService,
     private readonly calendar: CalendarService,
+    private readonly platformSettings: PlatformSettingsService,
     private readonly config: ConfigService,
   ) {}
 
@@ -73,10 +75,20 @@ export class SetterService {
       .eq('conversation_id', conversationId)
       .order('created_at', { ascending: true });
 
+    // Entrenamiento base común (definido por el super-admin) que hereda esta org.
+    const globalBasePrompt = await this.platformSettings.getBasePrompt();
+
     const messages: ChatMessage[] = [
       {
         role: 'system',
-        content: buildSystemPrompt(cfg, mode, opts.contactName, availabilityText, leadContext),
+        content: buildSystemPrompt(
+          cfg,
+          mode,
+          opts.contactName,
+          availabilityText,
+          leadContext,
+          globalBasePrompt,
+        ),
       },
       ...(history ?? [])
         .filter((m: StoredMessage) => m.role !== 'system')

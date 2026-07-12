@@ -14,6 +14,9 @@ import { CurrentUser } from '../auth/current-user.decorator';
 import type { AuthContext } from '../auth/auth.types';
 import { AdminService } from './admin.service';
 import { AuditService } from './audit.service';
+import { PaymentsService } from './payments.service';
+import { PlatformSettingsService } from '../platform/platform-settings.service';
+import { ErrorLogService } from '../platform/error-log.service';
 import {
   BanDto,
   CreateOrgDto,
@@ -21,10 +24,13 @@ import {
   MembershipDto,
   MoveUserDto,
   PlatformAdminDto,
+  RecordPaymentDto,
   ResetPasswordDto,
   RoleDto,
   SuspendOrgDto,
+  UpdateBillingDto,
   UpdateOrgDto,
+  UpdatePlatformSettingsDto,
 } from './dto/admin.dto';
 
 @Controller('admin')
@@ -33,6 +39,9 @@ export class AdminController {
   constructor(
     private readonly admin: AdminService,
     private readonly audit: AuditService,
+    private readonly payments: PaymentsService,
+    private readonly settings: PlatformSettingsService,
+    private readonly errors: ErrorLogService,
   ) {}
 
   // --- Organizaciones ---
@@ -142,5 +151,61 @@ export class AdminController {
   @Get('audit')
   audit_(@Query('action') action?: string, @Query('organizationId') organizationId?: string) {
     return this.audit.list({ action, organizationId });
+  }
+
+  // --- Entrenamiento base del setter (ajustes globales) ---
+  @Get('settings')
+  getSettings() {
+    return this.settings.get();
+  }
+
+  @Patch('settings')
+  updateSettings(@CurrentUser() user: AuthContext, @Body() dto: UpdatePlatformSettingsDto) {
+    return this.settings.update(user.userId, dto);
+  }
+
+  // --- Logs de errores del sistema ---
+  @Get('errors')
+  listErrors(@Query('organizationId') organizationId?: string) {
+    return this.errors.list({ organizationId });
+  }
+
+  @Delete('errors')
+  clearErrors() {
+    return this.errors.clear();
+  }
+
+  // --- Facturación / pagos ---
+  @Get('billing')
+  billing() {
+    return this.payments.billing();
+  }
+
+  @Get('payments')
+  listPayments(@Query('organizationId') organizationId?: string) {
+    return this.payments.listPayments(organizationId);
+  }
+
+  @Patch('organizations/:id/billing')
+  updateBilling(
+    @CurrentUser() user: AuthContext,
+    @Param('id') id: string,
+    @Body() dto: UpdateBillingDto,
+  ) {
+    return this.payments.updateBilling(user, id, dto);
+  }
+
+  @Post('organizations/:id/payments')
+  recordPayment(
+    @CurrentUser() user: AuthContext,
+    @Param('id') id: string,
+    @Body() dto: RecordPaymentDto,
+  ) {
+    return this.payments.recordPayment(user, id, dto);
+  }
+
+  @Delete('payments/:id')
+  deletePayment(@CurrentUser() user: AuthContext, @Param('id') id: string) {
+    return this.payments.deletePayment(user, id);
   }
 }

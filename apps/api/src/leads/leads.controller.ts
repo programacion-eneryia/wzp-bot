@@ -30,6 +30,7 @@ export class LeadsController {
     // apuntar aquí por error). Si el payload parece de GHL, marcamos la fuente.
     const f = extractLeadFields(body);
     const explicitSource = str(body.source);
+    const ghlContactId = extractGhlContactId(body);
     return this.intake.intake({
       token,
       name: f.name,
@@ -41,7 +42,8 @@ export class LeadsController {
         str(body.source_detail) ?? str(body.form_name) ?? str(body.page_name),
       campaign: str(body.campaign) ?? str(body.utm_campaign) ?? str(body.ad_id),
       message: f.message,
-      external_id: str(body.external_id) ?? str(body.subscriber_id),
+      external_id: str(body.external_id) ?? str(body.subscriber_id) ?? ghlContactId,
+      ghl_contact_id: ghlContactId,
       proactive: typeof body.proactive === 'boolean' ? body.proactive : undefined,
       raw: body,
     });
@@ -127,6 +129,7 @@ function str(v: unknown): string | undefined {
 function mapGhl(body: Record<string, unknown>, token: string): IntakeInput {
   const f = extractLeadFields(body);
   const customData = (body.customData ?? {}) as Record<string, unknown>;
+  const ghlContactId = extractGhlContactId(body);
   return {
     token,
     name: f.name,
@@ -144,7 +147,25 @@ function mapGhl(body: Record<string, unknown>, token: string): IntakeInput {
       str(customData.campaign) ??
       str(body.utm_campaign) ??
       str(body.ad_id),
+    external_id: ghlContactId,
+    ghl_contact_id: ghlContactId,
     proactive: true,
     raw: body,
   };
+}
+
+/**
+ * Extrae el id del contacto en GoHighLevel. GHL lo manda como `contact_id` en la
+ * raíz, o dentro de `contact.id` / `customData.contact_id` según la config.
+ */
+function extractGhlContactId(body: Record<string, unknown>): string | undefined {
+  const contact = (body.contact ?? {}) as Record<string, unknown>;
+  const customData = (body.customData ?? {}) as Record<string, unknown>;
+  return (
+    str(body.contact_id) ??
+    str(body.contactId) ??
+    str(contact.id) ??
+    str(contact.contact_id) ??
+    str(customData.contact_id)
+  );
 }

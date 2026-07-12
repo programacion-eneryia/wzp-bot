@@ -4,7 +4,7 @@ import { SupabaseService } from '../supabase/supabase.service';
 import { CryptoService } from '../common/crypto.service';
 
 const COLS =
-  'organization_id, intake_token, manychat_api_key, default_channel_id, proactive_enabled';
+  'organization_id, intake_token, manychat_api_key, default_channel_id, proactive_enabled, ghl_webhook_url';
 
 export type Integration = {
   organization_id: string;
@@ -12,6 +12,7 @@ export type Integration = {
   manychat_api_key: string | null;
   default_channel_id: string | null;
   proactive_enabled: boolean;
+  ghl_webhook_url: string | null;
 };
 
 @Injectable()
@@ -46,7 +47,12 @@ export class IntegrationsService {
 
   async update(
     orgId: string,
-    patch: { manychat_api_key?: string; default_channel_id?: string | null; proactive_enabled?: boolean },
+    patch: {
+      manychat_api_key?: string;
+      default_channel_id?: string | null;
+      proactive_enabled?: boolean;
+      ghl_webhook_url?: string;
+    },
   ): Promise<Integration> {
     await this.getOrCreate(orgId);
     const update: Record<string, unknown> = {};
@@ -57,6 +63,11 @@ export class IntegrationsService {
     }
     if (patch.default_channel_id !== undefined) update.default_channel_id = patch.default_channel_id;
     if (typeof patch.proactive_enabled === 'boolean') update.proactive_enabled = patch.proactive_enabled;
+    // URL del Inbound Webhook de GHL (destino de salida). Cadena vacía = borrar.
+    if (typeof patch.ghl_webhook_url === 'string') {
+      const v = patch.ghl_webhook_url.trim();
+      update.ghl_webhook_url = v || null;
+    }
 
     const { data, error } = await this.supabase.admin
       .from('integrations')
@@ -87,6 +98,7 @@ export class IntegrationsService {
     return {
       lead_intake: `${base}/api/leads/intake?token=${token}`,
       ghl_lead: `${base}/api/leads/ghl?token=${token}`,
+      ghl_appointment: `${base}/api/webhooks/ghl/appointment?token=${token}`,
       manychat_dynamic: `${base}/api/integrations/manychat/dynamic?token=${token}`,
     };
   }

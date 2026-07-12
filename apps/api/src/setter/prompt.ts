@@ -18,10 +18,19 @@ export function buildSystemPrompt(
   contactName?: string | null,
   availabilityText?: string | null,
   leadContext?: string | null,
+  globalBasePrompt?: string | null,
 ): string {
   const company = cfg.company_name ? ` de ${cfg.company_name}` : '';
 
   const sections: string[] = [];
+
+  // Entrenamiento base de plataforma: reglas/estilo comunes que el super-admin
+  // define y que TODAS las subcuentas heredan. Va primero para enmarcar todo lo
+  // demás (la config de la subcuenta puede matizarlo después).
+  const base = (globalBasePrompt ?? '').trim();
+  if (base) {
+    sections.push(`# DIRECTRICES GENERALES (plataforma)\n${base}`);
+  }
 
   if (mode === 'support') {
     sections.push(

@@ -4,6 +4,7 @@ import {
   IsEmail,
   IsIn,
   IsInt,
+  IsNumber,
   IsOptional,
   IsString,
   IsUUID,
@@ -65,4 +66,26 @@ export class BanDto {
 
 export class PlatformAdminDto {
   @IsBoolean() value!: boolean;
+}
+
+export class UpdatePlatformSettingsDto {
+  @IsOptional() @IsString() @MaxLength(20000) base_setter_prompt?: string;
+}
+
+export class UpdateBillingDto {
+  @IsOptional() @Type(() => Number) @IsNumber() @Min(0) @Max(1000000)
+  monthly_price_usd?: number;
+  @IsOptional() @IsIn(['trial', 'active', 'past_due', 'canceled'])
+  subscription_status?: 'trial' | 'active' | 'past_due' | 'canceled';
+  @IsOptional() @IsString() @MaxLength(40) next_charge_at?: string;
+}
+
+export class RecordPaymentDto {
+  @Type(() => Number) @IsNumber() @Min(0) @Max(1000000) amount_usd!: number;
+  @IsOptional() @IsString() @MaxLength(8) currency?: string;
+  @IsOptional() @IsIn(['paid', 'pending', 'failed', 'refunded'])
+  status?: 'paid' | 'pending' | 'failed' | 'refunded';
+  @IsOptional() @IsString() @MaxLength(40) period_start?: string;
+  @IsOptional() @IsString() @MaxLength(40) period_end?: string;
+  @IsOptional() @IsString() @MaxLength(500) note?: string;
 }

@@ -2,6 +2,7 @@ import { ForbiddenException, Injectable, Logger } from '@nestjs/common';
 import { SupabaseService } from '../supabase/supabase.service';
 import { SetterConfigService } from '../setter/setter-config.service';
 import { MessagingService } from '../messaging/messaging.service';
+import { GhlService } from '../ghl/ghl.service';
 import { LeadsService } from './leads.service';
 
 export type IntakeInput = {
@@ -20,6 +21,8 @@ export type IntakeInput = {
   message?: string;
   /** Id del contacto en el sistema externo (ManyChat subscriber, etc.). */
   external_id?: string;
+  /** Id del contacto en GoHighLevel (para devolverle webhooks de salida). */
+  ghl_contact_id?: string;
   /** Si false, no se envía el primer mensaje proactivo (solo se registra). */
   proactive?: boolean;
   /** Payload original completo (para guardarlo íntegro en el CRM). */
@@ -42,6 +45,7 @@ export class LeadIntakeService {
     private readonly setterConfig: SetterConfigService,
     private readonly messaging: MessagingService,
     private readonly leads: LeadsService,
+    private readonly ghl: GhlService,
   ) {}
 
   /** Resuelve la organización a partir del token de intake. */
@@ -137,6 +141,19 @@ export class LeadIntakeService {
         this.logger.warn(`No se pudo enlazar el lead con su conversación: ${String(err)}`);
       }
     }
+
+    // Paso 2: devolvemos a GHL el setter_id (UUID de la conversación) para que lo
+    // guarde en un campo del contacto y ambos sistemas queden enlazados. Es
+    // best-effort y no bloquea el intake (no-op si la org no tiene GHL de salida).
+    void this.ghl.pushLeadRegistered({
+      orgId,
+      conversationId: conv.id,
+      contactId: input.ghl_contact_id ?? input.external_id ?? null,
+      name: input.name ?? null,
+      phone: phoneDigits ? `+${phoneDigits}` : input.phone ?? null,
+      email: input.email ?? null,
+      source: input.source ?? null,
+    });
 
     // Guardamos en la conversación el contexto que dejó el lead (respuestas del
     // formulario, incluida la de cualificación) para que el bot lo tenga en cuenta.
@@ -257,6 +274,7 @@ export class LeadIntakeService {
             source: input.source ?? null,
             source_detail: input.source_detail ?? null,
             campaign: input.campaign ?? null,
+            ...(input.ghl_contact_id ? { ghl_contact_id: input.ghl_contact_id } : {}),
             consent_optin: true,
             mode: 'setter',
             ai_enabled: true,
@@ -275,6 +293,7 @@ export class LeadIntakeService {
         contact_name: input.name ?? 'Lead',
         contact_handle: handle,
         external_subscriber_id: input.external_id ?? null,
+        ghl_contact_id: input.ghl_contact_id ?? null,
         source: input.source ?? null,
         source_detail: input.source_detail ?? null,
         campaign: input.campaign ?? null,

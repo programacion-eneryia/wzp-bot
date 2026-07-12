@@ -59,11 +59,16 @@ export class PlaygroundService {
     return { ok: true };
   }
 
-  /** Envía un mensaje del "lead" y devuelve la respuesta del setter en burbujas. */
+  /**
+   * Guarda un mensaje del "lead". Si `reply` es true (por defecto) genera además
+   * la respuesta del setter. Si es false, solo lo guarda: el frontend agrupará
+   * varios mensajes y pedirá la respuesta con `generateReply` (imita WhatsApp).
+   */
   async sendMessage(
     orgId: string,
     id: string,
     content: string,
+    reply = true,
   ): Promise<{ reply: Bubble[] }> {
     await this.assertOwned(orgId, id);
 
@@ -75,8 +80,30 @@ export class PlaygroundService {
     });
     if (error) throw error;
 
-    const reply = await this.setter.respond(orgId, id);
-    return { reply };
+    if (!reply) return { reply: [] };
+    const bubbles = await this.setter.respond(orgId, id);
+    return { reply: bubbles };
+  }
+
+  /**
+   * Genera la respuesta del setter para el estado ACTUAL de la conversación (con
+   * todos los mensajes ya acumulados). No inserta ningún mensaje del lead. Solo
+   * responde si el último mensaje es del contacto (igual que en producción).
+   */
+  async generateReply(orgId: string, id: string): Promise<{ reply: Bubble[] }> {
+    await this.assertOwned(orgId, id);
+
+    const { data: last } = await this.supabase.admin
+      .from('messages')
+      .select('role')
+      .eq('conversation_id', id)
+      .order('created_at', { ascending: false })
+      .limit(1)
+      .maybeSingle();
+    if (!last || last.role !== 'contact') return { reply: [] };
+
+    const bubbles = await this.setter.respond(orgId, id);
+    return { reply: bubbles };
   }
 
   private async assertOwned(orgId: string, id: string) {

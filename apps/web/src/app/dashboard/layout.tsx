@@ -56,7 +56,27 @@ export default async function DashboardLayout({
   const org: OrgInfo = active ? { name: active.name, slug: active.slug, plan: active.plan } : null;
 
   // Navegación dinámica según permisos.
-  const NAV: { label: string; items: NavItem[] }[] = [
+  //
+  // El platform admin (super-admin del SaaS) tiene un ÁREA PROPIA centrada en la
+  // gestión de subcuentas: NO ve el menú de setter/CRM de una subcuenta. Para
+  // trabajar dentro de una subcuenta concreta usa "Impersonar" desde Usuarios
+  // (al impersonar, la sesión pasa a ser la del cliente y aparece su menú normal).
+  const adminNav: { label: string; items: NavItem[] }[] = [
+    {
+      label: "Plataforma",
+      items: [
+        { label: "Subcuentas", href: "/dashboard/admin" },
+        { label: "Usuarios", href: "/dashboard/admin?tab=users" },
+        { label: "Pagos", href: "/dashboard/admin?tab=billing" },
+        { label: "Costes", href: "/dashboard/admin?tab=costs" },
+        { label: "Entrenamiento", href: "/dashboard/admin?tab=training" },
+        { label: "Logs de errores", href: "/dashboard/admin?tab=errors" },
+        { label: "Auditoría", href: "/dashboard/admin?tab=audit" },
+      ],
+    },
+  ];
+
+  const subaccountNav: { label: string; items: NavItem[] }[] = [
     {
       label: "Mi negocio",
       items: [
@@ -71,7 +91,7 @@ export default async function DashboardLayout({
       label: "Gestión",
       items: [
         { label: "Etiquetas" },
-        ...(role === "admin" || isPlatformAdmin
+        ...(role === "admin"
           ? [{ label: "Equipo", href: "/dashboard/team" }]
           : [{ label: "Equipo" }]),
       ],
@@ -88,15 +108,10 @@ export default async function DashboardLayout({
         { label: "Ajustes" },
       ],
     },
-    ...(isPlatformAdmin
-      ? [
-          {
-            label: "Plataforma",
-            items: [{ label: "Administración", href: "/dashboard/admin" }],
-          },
-        ]
-      : []),
   ];
+
+  const NAV = isPlatformAdmin ? adminNav : subaccountNav;
+  const homeHref = isPlatformAdmin ? "/dashboard/admin" : "/dashboard";
 
   return (
     <div className={styles.shell}>
@@ -107,7 +122,7 @@ export default async function DashboardLayout({
         </div>
 
         <nav>
-          <Link href="/dashboard" className={styles.navItem}>
+          <Link href={homeHref} className={styles.navItem}>
             Inicio
           </Link>
           {NAV.map((group) => (

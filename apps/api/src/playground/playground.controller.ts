@@ -48,6 +48,17 @@ export class PlaygroundController {
     @Param('id') id: string,
     @Body() dto: SendMessageDto,
   ) {
-    return this.playground.sendMessage(user.organizationId, id, dto.content);
+    return this.playground.sendMessage(
+      user.organizationId,
+      id,
+      dto.content,
+      dto.reply ?? true,
+    );
+  }
+
+  /** Genera la respuesta agrupada tras el debounce (imita WhatsApp). */
+  @Post('conversations/:id/generate')
+  generate(@CurrentUser() user: AuthContext, @Param('id') id: string) {
+    return this.playground.generateReply(user.organizationId, id);
   }
 }

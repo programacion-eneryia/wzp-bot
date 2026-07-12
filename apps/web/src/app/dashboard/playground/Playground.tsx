@@ -30,6 +30,10 @@ const PROVIDER_LABEL: Record<Provider, string> = {
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
+// Ventana de agrupado: como en WhatsApp, tras el último mensaje del lead esperamos
+// este tiempo antes de generar UNA sola respuesta con todo el contexto.
+const DEBOUNCE_MS = 2500;
+
 export default function Playground() {
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [selected, setSelected] = useState<string | null>(null);
@@ -37,11 +41,14 @@ export default function Playground() {
   const [input, setInput] = useState("");
   const [provider, setProvider] = useState<Provider>("whatsapp");
   const [contactName, setContactName] = useState("");
-  const [sending, setSending] = useState(false);
   const [typing, setTyping] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const endRef = useRef<HTMLDivElement>(null);
+  // Timer del debounce y "token" de generación: cada mensaje nuevo lo incrementa,
+  // invalidando cualquier respuesta en curso (para no mezclar tandas).
+  const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const genRef = useRef(0);
 
   const loadConversations = useCallback(async () => {
     try {
@@ -60,7 +67,18 @@ export default function Playground() {
     endRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages, typing]);
 
+  function cancelPending() {
+    if (debounceRef.current) clearTimeout(debounceRef.current);
+    debounceRef.current = null;
+    genRef.current++; // invalida cualquier generación en curso
+    setTyping(false);
+  }
+
+  // Limpia timers al desmontar.
+  useEffect(() => () => cancelPending(), []);
+
   async function selectConversation(id: string) {
+    cancelPending();
     setSelected(id);
     setMessages([]);
     setError(null);
@@ -103,35 +121,57 @@ export default function Playground() {
     }
   }
 
-  async function send() {
+  // Enviar un mensaje del lead: se muestra al instante, se GUARDA (sin respuesta)
+  // y se (re)programa la generación. Puedes enviar varios seguidos: se agrupan.
+  function send() {
     const text = input.trim();
-    if (!text || !selected || sending) return;
+    if (!text || !selected) return;
     setInput("");
     setError(null);
     setMessages((prev) => [
       ...prev,
-      { id: `tmp-${Date.now()}`, role: "contact", content: text },
+      { id: `tmp-${Date.now()}-${Math.random()}`, role: "contact", content: text },
     ]);
-    setSending(true);
+
+    // Un mensaje nuevo invalida la generación en curso y reinicia el debounce.
+    cancelPending();
+    const convId = selected;
+    void apiFetch(`/api/playground/conversations/${convId}/messages`, {
+      method: "POST",
+      body: JSON.stringify({ content: text, reply: false }),
+    }).catch((e) => setError(e instanceof Error ? e.message : "Error al enviar"));
+
+    debounceRef.current = setTimeout(() => void runGenerate(convId), DEBOUNCE_MS);
+  }
+
+  async function runGenerate(convId: string) {
+    const myGen = ++genRef.current;
+    setTyping(true);
+    setError(null);
     try {
       const { reply } = await apiFetch<{ reply: Bubble[] }>(
-        `/api/playground/conversations/${selected}/messages`,
-        { method: "POST", body: JSON.stringify({ content: text }) },
+        `/api/playground/conversations/${convId}/generate`,
+        { method: "POST" },
       );
+      if (myGen !== genRef.current) return; // llegó un mensaje nuevo: se descarta
+      setTyping(false);
       for (const b of reply) {
+        if (myGen !== genRef.current) return;
         setTyping(true);
         await sleep(Math.min(b.delayMs, 2200));
         setTyping(false);
+        if (myGen !== genRef.current) return;
         setMessages((prev) => [
           ...prev,
           { id: `a-${Date.now()}-${Math.random()}`, role: "assistant", content: b.content },
         ]);
       }
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Error al responder");
+      if (myGen === genRef.current) {
+        setError(e instanceof Error ? e.message : "Error al responder");
+      }
     } finally {
-      setSending(false);
-      setTyping(false);
+      if (myGen === genRef.current) setTyping(false);
     }
   }
 
@@ -230,7 +270,7 @@ export default function Playground() {
             <div className={styles.inputBar}>
               <input
                 className={styles.msgInput}
-                placeholder="Escribe como si fueras el lead…"
+                placeholder="Escribe como si fueras el lead… (puedes enviar varios seguidos)"
                 value={input}
                 onChange={(e) => setInput(e.target.value)}
                 onKeyDown={(e) => {
@@ -239,10 +279,9 @@ export default function Playground() {
                     send();
                   }
                 }}
-                disabled={sending}
               />
-              <button className={styles.sendBtn} onClick={send} disabled={sending}>
-                {sending ? "…" : "Enviar"}
+              <button className={styles.sendBtn} onClick={send}>
+                Enviar
               </button>
             </div>
           </>

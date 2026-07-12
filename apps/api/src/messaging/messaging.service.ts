@@ -549,7 +549,10 @@ export class MessagingService {
       }
     }
 
-    if (cfg.active_hours_enabled && !inActiveHours(cfg.active_hours_start, cfg.active_hours_end)) {
+    if (
+      cfg.active_hours_enabled &&
+      !inActiveHours(cfg.active_hours_start, cfg.active_hours_end, cfg.timezone)
+    ) {
       this.logger.log('Fuera de horario; no se responde');
       return;
     }
@@ -689,7 +692,13 @@ export class MessagingService {
       ? new Date(lastPending.send_after as string).getTime() + spacingMs
       : now;
     if (slot < now) slot = now;
-    slot = nextActiveSlot(slot, cfg.active_hours_enabled, cfg.active_hours_start, cfg.active_hours_end);
+    slot = nextActiveSlot(
+      slot,
+      cfg.active_hours_enabled,
+      cfg.active_hours_start,
+      cfg.active_hours_end,
+      cfg.timezone,
+    );
 
     await this.supabase.admin.from('outbox').insert({
       organization_id: params.orgId,
@@ -894,36 +903,52 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, Math.max(0, ms)));
 }
 
-function inActiveHours(start: number, end: number): boolean {
-  const hour = new Date().getUTCHours();
+/** Hora del día (0-23) de un instante en la zona horaria indicada (IANA). */
+function hourInTz(dateMs: number, tz: string): number {
+  try {
+    const s = new Intl.DateTimeFormat('en-US', {
+      hour: '2-digit',
+      hour12: false,
+      timeZone: tz || 'UTC',
+    }).format(new Date(dateMs));
+    const h = parseInt(s, 10);
+    return Number.isFinite(h) ? h % 24 : new Date(dateMs).getUTCHours();
+  } catch {
+    // Zona horaria inválida → caemos a UTC en lugar de romper.
+    return new Date(dateMs).getUTCHours();
+  }
+}
+
+function withinWindow(hour: number, start: number, end: number): boolean {
   return start <= end ? hour >= start && hour < end : hour >= start || hour < end;
 }
 
+/** ¿Estamos dentro del horario activo, evaluado en la zona horaria de la org? */
+function inActiveHours(start: number, end: number, tz: string): boolean {
+  return withinWindow(hourInTz(Date.now(), tz), start, end);
+}
+
 /**
- * Devuelve el momento (ms) en que se puede enviar respetando el horario activo.
- * Si la franja está desactivada o ya estamos dentro, devuelve `slotMs` tal cual;
- * si no, lo empuja al inicio de la próxima franja activa (en UTC).
+ * Devuelve el momento (ms) en que se puede enviar respetando el horario activo,
+ * evaluado en la zona horaria de la organización. Si la franja está desactivada
+ * o ya estamos dentro, devuelve `slotMs` tal cual; si no, lo empuja hora a hora
+ * hasta la próxima franja activa.
  */
 function nextActiveSlot(
   slotMs: number,
   enabled: boolean,
   start: number,
   end: number,
+  tz: string,
 ): number {
   if (!enabled) return slotMs;
-  const d = new Date(slotMs);
-  const hour = d.getUTCHours();
-  const inside = start <= end ? hour >= start && hour < end : hour >= start || hour < end;
-  if (inside) return slotMs;
+  if (withinWindow(hourInTz(slotMs, tz), start, end)) return slotMs;
 
-  const next = new Date(d);
+  const next = new Date(slotMs);
   next.setUTCMinutes(0, 0, 0);
-  // Avanzamos hora a hora hasta entrar en la franja (máx 48 iteraciones).
   for (let i = 0; i < 48; i++) {
     next.setUTCHours(next.getUTCHours() + 1);
-    const h = next.getUTCHours();
-    const ok = start <= end ? h >= start && h < end : h >= start || h < end;
-    if (ok) return next.getTime();
+    if (withinWindow(hourInTz(next.getTime(), tz), start, end)) return next.getTime();
   }
   return slotMs;
 }

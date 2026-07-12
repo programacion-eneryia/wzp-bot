@@ -7,6 +7,7 @@ import styles from "./integrations.module.css";
 type Urls = {
   lead_intake: string;
   ghl_lead: string;
+  ghl_appointment: string;
   manychat_dynamic: string;
 };
 
@@ -15,6 +16,7 @@ type Integration = {
   manychat_api_key: string | null;
   default_channel_id: string | null;
   proactive_enabled: boolean;
+  ghl_webhook_url: string | null;
   urls: Urls;
 };
 
@@ -33,6 +35,7 @@ export default function Integrations() {
   const [error, setError] = useState<string | null>(null);
   const [copied, setCopied] = useState<string | null>(null);
   const [manychatKey, setManychatKey] = useState("");
+  const [ghlWebhookUrl, setGhlWebhookUrl] = useState("");
 
   useEffect(() => {
     Promise.all([
@@ -42,6 +45,7 @@ export default function Integrations() {
       .then(([integ, chs]) => {
         setData(integ);
         setManychatKey(integ.manychat_api_key ?? "");
+        setGhlWebhookUrl(integ.ghl_webhook_url ?? "");
         setChannels(Array.isArray(chs) ? chs : []);
       })
       .catch((e) => setError(e instanceof Error ? e.message : "Error al cargar"))
@@ -101,11 +105,11 @@ export default function Integrations() {
         </p>
 
         <UrlRow
-          label="GoHighLevel (Meta Lead Ads)"
-          hint="Workflow → trigger “Facebook Lead Form Submitted” → acción “Webhook (Outbound)” (POST)"
-          url={data.urls.ghl_lead}
-          copied={copied === "ghl"}
-          onCopy={() => copy(data.urls.ghl_lead, "ghl")}
+          label="GoHighLevel · Cita agendada"
+          hint="Workflow → trigger “Appointment (Booked/Cancelled)” → acción “Webhook (Outbound)” (POST). Incluye el campo setter_id para enlazarlo. Al recibirlo, se pausan los seguimientos."
+          url={data.urls.ghl_appointment}
+          copied={copied === "ghl_appt"}
+          onCopy={() => copy(data.urls.ghl_appointment, "ghl_appt")}
         />
         <UrlRow
           label="ManyChat (Instagram)"
@@ -115,8 +119,8 @@ export default function Integrations() {
           onCopy={() => copy(data.urls.manychat_dynamic, "mc")}
         />
         <UrlRow
-          label="Genérico (Zapier, Make, tu formulario)"
-          hint="POST con JSON: { name, phone, source, campaign }"
+          label="Entrada de leads (GoHighLevel, Zapier, Make, tu formulario)"
+          hint="Un único webhook para todos. POST con JSON. Detecta automáticamente GoHighLevel (first_name, customData, contact_id) y marca la fuente. En GHL: Workflow → “Webhook (Outbound)” (POST)."
           url={data.urls.lead_intake}
           copied={copied === "generic"}
           onCopy={() => copy(data.urls.lead_intake, "generic")}
@@ -168,6 +172,35 @@ export default function Integrations() {
           La plantilla del primer mensaje se configura en <strong>Mi Setter → Soporte</strong>. Usa
           variables como {"{nombre}"}.
         </p>
+      </section>
+
+      <section className={styles.card}>
+        <h2 className={styles.cardTitle}>GoHighLevel · Respuesta de salida</h2>
+        <p className={styles.muted}>
+          Cuando entra un lead, el setter devuelve a GHL un webhook con el{" "}
+          <code className={styles.code}>setter_id</code> (id único de la conversación) y el{" "}
+          <code className={styles.code}>ghl_contact_id</code>. Crea en GHL un Workflow con trigger{" "}
+          <strong>“Inbound Webhook”</strong>, pega aquí su URL, y añade una acción{" "}
+          <strong>“Update Contact Field”</strong> guardando <code className={styles.code}>setter_id</code>{" "}
+          en un campo personalizado del contacto.
+        </p>
+        <label className={styles.field}>
+          <span className={styles.label}>URL del Inbound Webhook de GHL</span>
+          <input
+            className={styles.input}
+            type="url"
+            value={ghlWebhookUrl}
+            onChange={(e) => setGhlWebhookUrl(e.target.value)}
+            placeholder="https://services.leadconnectorhq.com/hooks/…"
+          />
+        </label>
+        <button
+          className={styles.saveBtn}
+          onClick={() => patch({ ghl_webhook_url: ghlWebhookUrl })}
+          disabled={saving}
+        >
+          {saving ? "Guardando…" : "Guardar URL de salida"}
+        </button>
       </section>
 
       <section className={styles.card}>
