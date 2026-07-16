@@ -23,8 +23,11 @@ export type OutgoingJob = {
   content: string;
   /** Tubería de envío ('unipile' | 'whatsapp_cloud' | 'manychat' | 'ghl'). */
   transport?: string;
-  /** 'reply' = mensaje en chat existente; 'proactive' = primer contacto. */
-  kind?: 'reply' | 'proactive';
+  /**
+   * 'reply' = mensaje en chat existente; 'proactive' = primer contacto;
+   * 'workflow' = mensaje de un workflow (primer contacto o seguimiento).
+   */
+  kind?: 'reply' | 'proactive' | 'workflow';
   /** Para 'reply': chat de Unipile donde enviamos. */
   chatId?: string;
   /** Para 'proactive': cuenta de Unipile y destinatario (teléfono/handle). */
