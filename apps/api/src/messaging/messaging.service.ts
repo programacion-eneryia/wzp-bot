@@ -116,6 +116,10 @@ export class MessagingService {
       // mensaje trae un `referral`. Lo guardamos una sola vez (origen del lead).
       await this.captureReferral(orgId, conv.id, rawPayload);
 
+      // El lead respondió: pausamos los seguimientos del workflow (la IA setter
+      // toma el relevo). Se reanudan solos si vuelve a quedarse en silencio.
+      await this.pauseWorkflowRuns(conv.id);
+
       await this.scheduleResponse(orgId, conv.id, evt.chatId, channel.provider as string);
     } catch (err) {
       this.logger.error(`Error procesando mensaje entrante: ${String(err)}`);
@@ -245,6 +249,7 @@ export class MessagingService {
           .is('referral', null);
       }
 
+      await this.pauseWorkflowRuns(convId);
       await this.scheduleResponse(orgId, convId, params.from, 'whatsapp');
     } catch (err) {
       this.logger.error(`Error en ingesta Cloud API: ${String(err)}`);
@@ -378,42 +383,51 @@ export class MessagingService {
     const senderName = extractSenderName(payload);
     const senderProviderId = extractSenderProviderId(payload);
 
+    // Si el propio webhook indica que el mensaje lo enviamos NOSOTROS, no
+    // respondemos (evita bucles). El webhook de mensajería de Unipile se dispara
+    // para mensajes entrantes, así que por defecto lo tratamos como entrante.
+    if (isFromSelf(payload)) return null;
+
+    // Texto e id que viajan EN el webhook. Es la fuente fiable: no depende de que
+    // la lista de mensajes de Unipile ya refleje el mensaje (esa lectura puede ir
+    // con retraso y hacía que se descartaran mensajes reales del lead).
+    const payloadText = extractText(payload);
+    const payloadId = payload.message_id ? String(payload.message_id) : undefined;
+
+    // Lectura best-effort de Unipile. La usamos SOLO para: (a) recuperar el texto
+    // si el webhook no lo trajo, y (b) descartar ecos de mensajes nuestros (el
+    // último de Unipile es nuestro y coincide el texto).
+    let latestIsSelf = false;
+    let latestText = '';
+    let latestId: string | undefined;
     try {
       const msgs = await this.unipile.listChatMessages(chatId, 3);
-      const sorted = [...msgs].sort(
-        (a, b) => msgTime(b) - msgTime(a),
-      );
-      const latest = sorted[0];
+      const latest = [...msgs].sort((a, b) => msgTime(b) - msgTime(a))[0];
       if (latest) {
-        // Si el último mensaje lo enviamos nosotros, no respondemos (evita bucle).
-        if (latest.is_sender === 1 || latest.is_sender === true) return null;
-        const text = (latest.text ?? '').trim();
-        if (text) {
-          return {
-            accountId,
-            chatId,
-            text,
-            messageId: latest.id ? String(latest.id) : undefined,
-            senderName,
-            senderProviderId,
-          };
-        }
+        latestIsSelf = latest.is_sender === 1 || latest.is_sender === true;
+        latestText = (latest.text ?? '').trim();
+        latestId = latest.id ? String(latest.id) : undefined;
       }
     } catch (err) {
       this.logger.warn(`No se pudo leer el chat en Unipile: ${String(err)}`);
     }
 
-    // Fallback: texto del propio webhook.
-    const text = extractText(payload);
+    const text = payloadText || (!latestIsSelf ? latestText : '');
     if (!text) {
       this.logger.debug(`Webhook sin texto. Claves: ${Object.keys(payload).join(', ')}`);
       return null;
     }
+
+    // Eco de un mensaje NUESTRO: el último de Unipile es nuestro y el texto
+    // coincide. Solo así descartamos (no basta con que el último sea nuestro,
+    // porque la lista puede ir con retraso mientras entra un mensaje real).
+    if (latestIsSelf && latestText && text === latestText) return null;
+
     return {
       accountId,
       chatId,
       text,
-      messageId: payload.message_id ? String(payload.message_id) : undefined,
+      messageId: payloadId ?? latestId,
       senderName,
       senderProviderId,
     };
@@ -650,6 +664,10 @@ export class MessagingService {
       await this.deliverProactive(job);
       return;
     }
+    if (job.kind === 'workflow') {
+      await this.deliverWorkflow(job);
+      return;
+    }
     if (!job.chatId) return;
     await this.transport.sendText({ transport: job.transport, chatId: job.chatId, text: job.content });
     await this.supabase.admin
@@ -751,6 +769,147 @@ export class MessagingService {
     this.logger.log(`Primer mensaje proactivo enviado (conv ${job.conversationId})`);
   }
 
+  /**
+   * Encola un mensaje de WORKFLOW (primer contacto o seguimiento). Determina el
+   * destino desde la conversación (chat existente → sendText; sin chat → primer
+   * contacto vía startChat) y respeta el espaciado + horario activo del outbox.
+   */
+  async enqueueWorkflowSend(params: {
+    orgId: string;
+    conversationId: string;
+    content: string;
+  }): Promise<{ skipped?: string; delayMs?: number }> {
+    const { data: conv } = await this.supabase.admin
+      .from('conversations')
+      .select('unipile_chat_id, contact_external_id, contact_handle, channel_id, transport')
+      .eq('id', params.conversationId)
+      .maybeSingle();
+    if (!conv) return { skipped: 'sin conversación' };
+
+    const chatId = (conv.unipile_chat_id ?? conv.contact_external_id) as string | null;
+    const transport = (conv.transport as string | null) ?? undefined;
+
+    const insert: Record<string, unknown> = {
+      organization_id: params.orgId,
+      conversation_id: params.conversationId,
+      kind: 'workflow',
+      transport: transport ?? null,
+      content: params.content,
+    };
+
+    if (chatId) {
+      insert.chat_id = chatId;
+    } else {
+      // Primer contacto: necesitamos cuenta de Unipile + teléfono del lead.
+      const { data: channel } = await this.supabase.admin
+        .from('channels')
+        .select('unipile_account_id')
+        .eq('id', conv.channel_id as string)
+        .maybeSingle();
+      const attendee = ((conv.contact_handle as string) ?? '').replace(/[^\d]/g, '');
+      if (!channel?.unipile_account_id || !attendee) return { skipped: 'sin destino' };
+      insert.account_id = channel.unipile_account_id;
+      insert.attendee_id = attendee;
+    }
+
+    const slot = await this.nextOutboxSlot(params.orgId);
+    insert.send_after = new Date(slot).toISOString();
+
+    await this.supabase.admin.from('outbox').insert(insert);
+    return { delayMs: Math.max(0, slot - Date.now()) };
+  }
+
+  /** Entrega un mensaje de workflow: a chat existente o como primer contacto. */
+  private async deliverWorkflow(job: OutgoingJob) {
+    const { data: conv } = await this.supabase.admin
+      .from('conversations')
+      .select('unipile_chat_id, contact_external_id, proactive_sent')
+      .eq('id', job.conversationId)
+      .maybeSingle();
+    if (!conv) return;
+
+    let chatId = (job.chatId ?? conv.unipile_chat_id ?? conv.contact_external_id) as string | null;
+
+    if (chatId) {
+      await this.transport.sendText({ transport: job.transport, chatId, text: job.content });
+    } else if (job.accountId && job.attendeeId) {
+      const started = await this.transport.startChat({
+        transport: job.transport,
+        accountId: job.accountId,
+        recipientId: job.attendeeId,
+        text: job.content,
+      });
+      chatId = started.chatId;
+      await this.supabase.admin
+        .from('conversations')
+        .update({
+          proactive_sent: true,
+          unipile_chat_id: chatId,
+          contact_external_id: chatId,
+        })
+        .eq('id', job.conversationId);
+    } else {
+      return;
+    }
+
+    await this.supabase.admin.from('messages').insert({
+      conversation_id: job.conversationId,
+      organization_id: job.orgId,
+      role: 'assistant',
+      content: job.content,
+      metadata: { workflow: true },
+    });
+    await this.supabase.admin
+      .from('conversations')
+      .update({
+        last_outbound_at: new Date().toISOString(),
+        last_message_at: new Date().toISOString(),
+      })
+      .eq('id', job.conversationId);
+  }
+
+  /**
+   * Próximo hueco para el outbox: espaciado (jitter) tras el último pendiente de
+   * la org + horario activo. Compartido por proactivos y workflows.
+   */
+  private async nextOutboxSlot(orgId: string): Promise<number> {
+    const cfg = await this.setterConfig.getOrCreate(orgId);
+    const spacingMs = randomSeconds(40, 100) * 1000;
+    const now = Date.now();
+    const { data: lastPending } = await this.supabase.admin
+      .from('outbox')
+      .select('send_after')
+      .eq('organization_id', orgId)
+      .is('sent_at', null)
+      .order('send_after', { ascending: false })
+      .limit(1)
+      .maybeSingle();
+    let slot = lastPending?.send_after
+      ? new Date(lastPending.send_after as string).getTime() + spacingMs
+      : now;
+    if (slot < now) slot = now;
+    return nextActiveSlot(
+      slot,
+      cfg.active_hours_enabled,
+      cfg.active_hours_start,
+      cfg.active_hours_end,
+      cfg.timezone,
+    );
+  }
+
+  /** Pausa los workflows activos de una conversación (el lead respondió). */
+  private async pauseWorkflowRuns(conversationId: string) {
+    try {
+      await this.supabase.admin
+        .from('workflow_runs')
+        .update({ status: 'paused', locked_at: null, updated_at: new Date().toISOString() })
+        .eq('conversation_id', conversationId)
+        .eq('status', 'active');
+    } catch (err) {
+      this.logger.warn(`No se pudieron pausar los workflows de ${conversationId}: ${String(err)}`);
+    }
+  }
+
   private async findChannel(accountId: string) {
     const { data } = await this.supabase.admin
       .from('channels')
@@ -814,6 +973,24 @@ function normalizeBody(body: Record<string, unknown>): Record<string, unknown> {
     }
   }
   return body;
+}
+
+/**
+ * ¿El webhook corresponde a un mensaje que enviamos NOSOTROS? Miramos varias
+ * señales conocidas del payload de Unipile para no responder a nuestros propios
+ * mensajes (evita bucles) sin depender de la lista de mensajes (que va con retraso).
+ */
+function isFromSelf(payload: Record<string, unknown>): boolean {
+  if (payload.is_sender === true || payload.is_sender === 1) return true;
+  const sender = (payload.sender ?? {}) as Record<string, unknown>;
+  if (sender.is_self === true || sender.is_self === 1) return true;
+  const message = (payload.message ?? {}) as Record<string, unknown>;
+  if (message && typeof message === 'object') {
+    if (message.is_sender === true || message.is_sender === 1) return true;
+  }
+  const event = String(payload.event ?? payload.event_type ?? '').toLowerCase();
+  if (event.includes('message_sent')) return true;
+  return false;
 }
 
 function extractText(payload: Record<string, unknown>): string {
