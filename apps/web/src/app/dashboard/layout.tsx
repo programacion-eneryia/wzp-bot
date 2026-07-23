@@ -99,7 +99,7 @@ export default async function DashboardLayout({
     },
     {
       label: "Análisis",
-      items: [{ label: "Estadísticas" }, { label: "Exportar" }],
+      items: [{ label: "Estadísticas", href: "/dashboard/stats" }],
     },
     {
       label: "Sistema",
@@ -122,7 +122,7 @@ export default async function DashboardLayout({
           <span className={styles.brandDot}>Setter IA</span>
         </div>
 
-        <nav>
+        <nav className={styles.nav}>
           <Link href={homeHref} className={styles.navItem}>
             Inicio
           </Link>

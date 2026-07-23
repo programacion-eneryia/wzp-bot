@@ -300,6 +300,9 @@
 .node[data-kind="ai_handoff"] {
   border-left-color: #14b8a6;
 }
+.node[data-kind="webhook"] {
+  border-left-color: #f97316;
+}
 .nodeTitle {
   font-weight: 600;
   font-size: 13px;

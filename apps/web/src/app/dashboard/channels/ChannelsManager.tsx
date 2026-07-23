@@ -95,7 +95,7 @@ export default function ChannelsManager({
     }
   }, [authHeaders, router]);
 
-  // Al volver del asistente de Unipile (?connected=1), reconciliamos una vez
+  // Al volver del asistente de conexión (?connected=1), reconciliamos una vez
   // automáticamente para que el canal aparezca como conectado sin intervención.
   const didAutoReconcile = useRef(false);
   useEffect(() => {

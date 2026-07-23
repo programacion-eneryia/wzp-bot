@@ -93,7 +93,7 @@ const TABS: { id: Tab; label: string }[] = [
   { id: "silenced", label: "Silenciados" },
 ];
 
-export default function SetterForm() {
+export default function SetterForm({ isAdmin = true }: { isAdmin?: boolean }) {
   const [cfg, setCfg] = useState<SetterConfig | null>(null);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -414,20 +414,6 @@ export default function SetterForm() {
               "cómo atender, qué puede resolver, cuándo escalar a llamada",
             )}
           </section>
-
-          <section className={styles.card}>
-            <h2 className={styles.cardTitle}>Mensaje proactivo (primer contacto)</h2>
-            <p className={styles.muted}>
-              Plantilla para abrir conversación con un lead nuevo. Puedes usar variables como{" "}
-              {"{nombre}"}. En WhatsApp normalmente el lead escribe primero (reglas de Meta).
-            </p>
-            {area(
-              "proactive_template",
-              "Plantilla del primer mensaje",
-              3,
-              "ej: hola {nombre}, vi que te interesó…",
-            )}
-          </section>
         </>
       )}
 
@@ -596,42 +582,46 @@ export default function SetterForm() {
             </label>
           </section>
 
-          <section className={styles.card}>
-            <h2 className={styles.cardTitle}>Modelo</h2>
-            <label className={styles.field}>
-              <span className={styles.label}>Modelo LLM</span>
-              <select
-                className={styles.input}
-                value={cfg.model ?? ""}
-                onChange={(e) => set("model", e.target.value || null)}
-              >
-                {MODEL_OPTIONS.map((m) => (
-                  <option key={m.value} value={m.value}>
-                    {m.label}
-                  </option>
-                ))}
-              </select>
-            </label>
-          </section>
+          {isAdmin && (
+            <section className={styles.card}>
+              <h2 className={styles.cardTitle}>Modelo</h2>
+              <label className={styles.field}>
+                <span className={styles.label}>Modelo LLM</span>
+                <select
+                  className={styles.input}
+                  value={cfg.model ?? ""}
+                  onChange={(e) => set("model", e.target.value || null)}
+                >
+                  {MODEL_OPTIONS.map((m) => (
+                    <option key={m.value} value={m.value}>
+                      {m.label}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            </section>
+          )}
 
-          <section className={styles.card}>
-            <h2 className={styles.cardTitle}>Control de coste</h2>
-            <label className={styles.field}>
-              <span className={styles.label}>
-                Límite de tokens de IA por día{" "}
-                <span className={styles.hint}>— 0 = sin límite. Al superarlo, el bot deja de responder hasta el día siguiente.</span>
-              </span>
-              <input
-                className={styles.input}
-                type="number"
-                min={0}
-                step={10000}
-                value={cfg.daily_token_limit ?? 0}
-                onChange={(e) => set("daily_token_limit", Number(e.target.value))}
-                placeholder="0"
-              />
-            </label>
-          </section>
+          {isAdmin && (
+            <section className={styles.card}>
+              <h2 className={styles.cardTitle}>Control de coste</h2>
+              <label className={styles.field}>
+                <span className={styles.label}>
+                  Límite de tokens de IA por día{" "}
+                  <span className={styles.hint}>— 0 = sin límite. Al superarlo, el bot deja de responder hasta el día siguiente.</span>
+                </span>
+                <input
+                  className={styles.input}
+                  type="number"
+                  min={0}
+                  step={10000}
+                  value={cfg.daily_token_limit ?? 0}
+                  onChange={(e) => set("daily_token_limit", Number(e.target.value))}
+                  placeholder="0"
+                />
+              </label>
+            </section>
+          )}
         </>
       )}
 

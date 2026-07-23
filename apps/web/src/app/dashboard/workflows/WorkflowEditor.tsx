@@ -30,6 +30,8 @@ type NodeData = {
   stage?: string;
   set_stage?: string;
   pause_followups?: boolean;
+  url?: string;
+  body?: string;
 };
 
 const META: Record<NodeKind, { label: string; branch?: boolean; terminal?: boolean }> = {
@@ -40,9 +42,18 @@ const META: Record<NodeKind, { label: string; branch?: boolean; terminal?: boole
   if_stage: { label: "Según estado", branch: true },
   stop: { label: "Detener", terminal: true },
   ai_handoff: { label: "Pasar a IA", terminal: true },
+  webhook: { label: "Enviar webhook" },
 };
 
-const PALETTE: NodeKind[] = ["message", "wait", "if_replied", "if_stage", "stop", "ai_handoff"];
+const PALETTE: NodeKind[] = [
+  "message",
+  "wait",
+  "if_replied",
+  "if_stage",
+  "webhook",
+  "stop",
+  "ai_handoff",
+];
 
 /** Variables disponibles para insertar en los mensajes. */
 const VARIABLES: { value: string; label: string }[] = [
@@ -78,6 +89,8 @@ function summarize(d: NodeData): string {
         .join(" · ") || "fin";
     case "ai_handoff":
       return "la IA responde";
+    case "webhook":
+      return d.url ? (d.url.length > 40 ? d.url.slice(0, 40) + "…" : d.url) : "(sin URL)";
     default:
       return "";
   }
@@ -195,7 +208,9 @@ function Editor({ workflow, onBack }: { workflow: Workflow; onBack: () => void }
         ? { kind, amount: 1, unit: "hours" }
         : kind === "message"
           ? { kind, text: "" }
-          : { kind };
+          : kind === "webhook"
+            ? { kind, url: "", body: "" }
+            : { kind };
 
     // Nodo de anclaje: el seleccionado o, si no hay, el último de la cadena.
     const anchor = nodes.find((n) => n.id === selected) ?? lowestNode(nodes);
@@ -540,6 +555,36 @@ function Editor({ workflow, onBack }: { workflow: Workflow; onBack: () => void }
 
               {selData.kind === "ai_handoff" && (
                 <p className={styles.hint}>Activa la IA setter para que responda a partir de aquí.</p>
+              )}
+
+              {selData.kind === "webhook" && (
+                <>
+                  <label className={styles.field}>
+                    URL del webhook (https)
+                    <input
+                      className={styles.input}
+                      type="url"
+                      value={selData.url ?? ""}
+                      onChange={(e) => patchSelected({ url: e.target.value })}
+                      placeholder="https://tu-servicio.com/webhook"
+                    />
+                  </label>
+                  <label className={styles.field}>
+                    Cuerpo JSON (opcional)
+                    <textarea
+                      className={styles.textarea}
+                      rows={6}
+                      value={selData.body ?? ""}
+                      onChange={(e) => patchSelected({ body: e.target.value })}
+                      placeholder={'{\n  "nombre": "{name}",\n  "telefono": "{phone}"\n}'}
+                    />
+                  </label>
+                  <span className={styles.hint}>
+                    Si dejas el cuerpo vacío se envían los datos del lead (nombre, teléfono, email,
+                    fuente, campaña y campos del formulario). Puedes usar variables como {"{name}"} o{" "}
+                    {"{phone}"}.
+                  </span>
+                </>
               )}
 
               <button className={styles.dangerBtn} onClick={deleteSelected}>

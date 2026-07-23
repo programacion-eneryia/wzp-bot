@@ -14,8 +14,11 @@ import { DEBOUNCE_MS, type OutgoingJob, type RespondJob } from './queues';
 /** Lock obsoleto: si una respuesta/envío quedó "en curso" más de esto, se reclama. */
 const LOCK_STALE_MS = 3 * 60 * 1000;
 /** Cuántas conversaciones/mensajes procesa cada tick del cron como máximo. */
-const RESPOND_BATCH = 8;
-const OUTBOX_BATCH = 15;
+// Lotes por tick de cron. Se procesan EN PARALELO (cada trabajo toma su propio
+// lock atómico), así que el techo por minuto ≈ tamaño del lote. Subirlos aumenta
+// el rendimiento a cambio de más llamadas concurrentes a la IA / al proveedor.
+const RESPOND_BATCH = 25;
+const OUTBOX_BATCH = 30;
 
 type IncomingEvent = {
   accountId: string;
@@ -304,21 +307,25 @@ export class MessagingService {
 
     if (!due || due.length === 0) return 0;
 
-    let handled = 0;
-    for (const conv of due) {
-      const chatId = (conv.unipile_chat_id ?? conv.contact_external_id) as string;
-      try {
-        await this.generateAndSend({
+    // En paralelo: cada conversación se responde por su cuenta y toma su lock
+    // atómico (`responding_lock_at`) dentro de generateAndSend, así que no hay
+    // carreras. Antes era secuencial y los retardos de "escritura" limitaban el
+    // throughput a ~1 conversación cada varios segundos.
+    const results = await Promise.allSettled(
+      due.map((conv) =>
+        this.generateAndSend({
           orgId: conv.organization_id as string,
           conversationId: conv.id as string,
-          chatId,
+          chatId: (conv.unipile_chat_id ?? conv.contact_external_id) as string,
           provider: conv.provider as string,
-        });
-        handled++;
-      } catch (err) {
-        this.logger.error(`Error respondiendo conv ${conv.id}: ${String(err)}`);
-      }
-    }
+        }),
+      ),
+    );
+    let handled = 0;
+    results.forEach((r, i) => {
+      if (r.status === 'fulfilled') handled++;
+      else this.logger.error(`Error respondiendo conv ${due[i].id}: ${String(r.reason)}`);
+    });
     return handled;
   }
 
@@ -337,44 +344,48 @@ export class MessagingService {
 
     if (!rows || rows.length === 0) return 0;
 
-    let sent = 0;
-    for (const row of rows) {
-      // Lock atómico: solo procede quien logra marcar locked_at.
-      const { data: locked } = await this.supabase.admin
-        .from('outbox')
-        .update({ locked_at: nowIso, attempts: 1 })
-        .eq('id', row.id)
-        .is('sent_at', null)
-        .or(`locked_at.is.null,locked_at.lt.${staleIso}`)
-        .select('id')
-        .maybeSingle();
-      if (!locked) continue;
+    // En paralelo: cada fila toma su lock atómico antes de enviarse, así que dos
+    // ticks solapados nunca envían el mismo mensaje dos veces.
+    const results = await Promise.allSettled(
+      rows.map(async (row) => {
+        // Lock atómico: solo procede quien logra marcar locked_at.
+        const { data: locked } = await this.supabase.admin
+          .from('outbox')
+          .update({ locked_at: nowIso, attempts: 1 })
+          .eq('id', row.id)
+          .is('sent_at', null)
+          .or(`locked_at.is.null,locked_at.lt.${staleIso}`)
+          .select('id')
+          .maybeSingle();
+        if (!locked) return false;
 
-      try {
-        await this.deliverOutgoing({
-          kind: (row.kind as 'proactive' | 'reply') ?? 'proactive',
-          orgId: row.organization_id as string,
-          conversationId: row.conversation_id as string,
-          transport: (row.transport as string) ?? undefined,
-          accountId: (row.account_id as string) ?? undefined,
-          attendeeId: (row.attendee_id as string) ?? undefined,
-          chatId: (row.chat_id as string) ?? undefined,
-          content: row.content as string,
-        });
-        await this.supabase.admin
-          .from('outbox')
-          .update({ sent_at: new Date().toISOString(), locked_at: null })
-          .eq('id', row.id);
-        sent++;
-      } catch (err) {
-        await this.supabase.admin
-          .from('outbox')
-          .update({ locked_at: null, last_error: String(err) })
-          .eq('id', row.id);
-        this.logger.error(`Error enviando outbox ${row.id}: ${String(err)}`);
-      }
-    }
-    return sent;
+        try {
+          await this.deliverOutgoing({
+            kind: (row.kind as 'proactive' | 'reply') ?? 'proactive',
+            orgId: row.organization_id as string,
+            conversationId: row.conversation_id as string,
+            transport: (row.transport as string) ?? undefined,
+            accountId: (row.account_id as string) ?? undefined,
+            attendeeId: (row.attendee_id as string) ?? undefined,
+            chatId: (row.chat_id as string) ?? undefined,
+            content: row.content as string,
+          });
+          await this.supabase.admin
+            .from('outbox')
+            .update({ sent_at: new Date().toISOString(), locked_at: null })
+            .eq('id', row.id);
+          return true;
+        } catch (err) {
+          await this.supabase.admin
+            .from('outbox')
+            .update({ locked_at: null, last_error: String(err) })
+            .eq('id', row.id);
+          this.logger.error(`Error enviando outbox ${row.id}: ${String(err)}`);
+          return false;
+        }
+      }),
+    );
+    return results.filter((r) => r.status === 'fulfilled' && r.value === true).length;
   }
 
   /**
@@ -646,12 +657,78 @@ export class MessagingService {
         .eq('id', conversationId);
     }
 
+    // El bot ha hablado con este contacto → lo registramos como lead en el CRM
+    // (si aún no lo estaba). Así todos los chats atendidos quedan en el CRM.
+    void this.ensureLeadForConversation(orgId, conversationId);
     // Tras responder, el bot comprueba si el lead ha agendado/confirmado una
     // llamada y, si es así, etiqueta la conversación como `call_scheduled`.
     void this.appointmentDetector.maybeDetect(orgId, conversationId);
     // Auto-etiquetado IA: analiza la conversación y aplica las etiquetas que
     // correspondan según sus criterios (respeta lo manual).
     void this.tagClassifier.maybeTag(orgId, conversationId);
+  }
+
+  /**
+   * Registra el chat como lead en el CRM cuando el bot le ha hablado y todavía
+   * no existe un lead para esa conversación. Si ya hay un lead con el mismo
+   * teléfono pero sin conversación, lo enlaza en vez de duplicar.
+   */
+  private async ensureLeadForConversation(orgId: string, conversationId: string) {
+    try {
+      const { data: byConv } = await this.supabase.admin
+        .from('leads')
+        .select('id')
+        .eq('organization_id', orgId)
+        .eq('conversation_id', conversationId)
+        .maybeSingle();
+      if (byConv) return;
+
+      const { data: conv } = await this.supabase.admin
+        .from('conversations')
+        .select(
+          'contact_name, contact_handle, provider, source, source_detail, campaign, external_subscriber_id',
+        )
+        .eq('id', conversationId)
+        .eq('organization_id', orgId)
+        .maybeSingle();
+      if (!conv) return;
+
+      const phone = (conv.contact_handle as string | null) ?? null;
+      if (phone) {
+        const { data: byPhone } = await this.supabase.admin
+          .from('leads')
+          .select('id, conversation_id')
+          .eq('organization_id', orgId)
+          .eq('phone', phone)
+          .is('conversation_id', null)
+          .maybeSingle();
+        if (byPhone) {
+          await this.supabase.admin
+            .from('leads')
+            .update({ conversation_id: conversationId })
+            .eq('id', byPhone.id);
+          return;
+        }
+      }
+
+      await this.supabase.admin.from('leads').insert({
+        organization_id: orgId,
+        conversation_id: conversationId,
+        name: (conv.contact_name as string | null) ?? null,
+        phone,
+        provider: (conv.provider as string | null) ?? null,
+        source: (conv.source as string | null) ?? 'inbound',
+        source_detail: (conv.source_detail as string | null) ?? null,
+        campaign: (conv.campaign as string | null) ?? null,
+        external_id: (conv.external_subscriber_id as string | null) ?? null,
+        status: 'new',
+        consent_optin: true,
+      });
+    } catch (err) {
+      this.logger.warn(
+        `No se pudo registrar el lead del chat ${conversationId}: ${String(err)}`,
+      );
+    }
   }
 
   /** ¿Ha entrado un mensaje del contacto más nuevo que la marca de agua? */

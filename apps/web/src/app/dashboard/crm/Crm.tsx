@@ -1,9 +1,12 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
-import { apiFetch } from "@/lib/api";
+import { apiFetch, apiUpload } from "@/lib/api";
 import styles from "./crm.module.css";
+
+type TagRef = { tag_id: string; name: string; color: string };
+type TagDef = { id: string; name: string; color: string };
 
 type LeadRow = {
   id: string;
@@ -17,6 +20,7 @@ type LeadRow = {
   campaign: string | null;
   status: string;
   created_at: string;
+  tags?: TagRef[];
 };
 
 type LeadDetail = LeadRow & {
@@ -69,6 +73,8 @@ const SOURCE_LABEL: Record<string, string> = {
   ctwa: "Click-to-WhatsApp",
   webhook: "Webhook",
   manual: "Manual",
+  csv: "CSV",
+  inbound: "Mensaje entrante",
   organic: "Orgánico",
 };
 
@@ -96,8 +102,13 @@ export default function Crm() {
   const [error, setError] = useState<string | null>(null);
   const [status, setStatus] = useState("");
   const [source, setSource] = useState("");
+  const [tagId, setTagId] = useState("");
   const [search, setSearch] = useState("");
   const [selected, setSelected] = useState<string | null>(null);
+  const [tagDefs, setTagDefs] = useState<TagDef[]>([]);
+  const [showAdd, setShowAdd] = useState(false);
+  const [importInfo, setImportInfo] = useState<string | null>(null);
+  const fileRef = useRef<HTMLInputElement>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -106,6 +117,7 @@ export default function Crm() {
       const params = new URLSearchParams();
       if (status) params.set("status", status);
       if (source) params.set("source", source);
+      if (tagId) params.set("tag_id", tagId);
       if (search.trim()) params.set("search", search.trim());
       const qs = params.toString();
       const [rows, st] = await Promise.all([
@@ -119,12 +131,39 @@ export default function Crm() {
     } finally {
       setLoading(false);
     }
-  }, [status, source, search]);
+  }, [status, source, tagId, search]);
 
   useEffect(() => {
     const t = setTimeout(load, search ? 300 : 0);
     return () => clearTimeout(t);
   }, [load, search]);
+
+  useEffect(() => {
+    apiFetch<TagDef[]>("/api/tags")
+      .then((d) => setTagDefs(Array.isArray(d) ? d : []))
+      .catch(() => setTagDefs([]));
+  }, []);
+
+  async function onCsvSelected(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    e.target.value = "";
+    if (!file) return;
+    setImportInfo("Importando…");
+    setError(null);
+    try {
+      const form = new FormData();
+      form.append("file", file);
+      const res = await apiUpload<{ imported: number; skipped: number; total: number }>(
+        "/api/crm/leads/import",
+        form,
+      );
+      setImportInfo(`Importados ${res.imported} de ${res.total} (omitidos ${res.skipped}).`);
+      await load();
+    } catch (err) {
+      setImportInfo(null);
+      setError(err instanceof Error ? err.message : "No se pudo importar el CSV");
+    }
+  }
 
   const sources = stats ? Object.keys(stats.bySource) : [];
 
@@ -181,10 +220,34 @@ export default function Crm() {
             </option>
           ))}
         </select>
+        <select className={styles.select} value={tagId} onChange={(e) => setTagId(e.target.value)}>
+          <option value="">Todas las etiquetas</option>
+          {tagDefs.map((t) => (
+            <option key={t.id} value={t.id}>
+              {t.name}
+            </option>
+          ))}
+        </select>
         <button className={styles.ghostBtn} onClick={load}>
           Actualizar
         </button>
+        <div className={styles.toolbarSpacer} />
+        <button className={styles.ghostBtn} onClick={() => fileRef.current?.click()}>
+          Importar CSV
+        </button>
+        <button className={styles.primaryBtn} onClick={() => setShowAdd(true)}>
+          + Añadir lead
+        </button>
+        <input
+          ref={fileRef}
+          type="file"
+          accept=".csv,text/csv"
+          hidden
+          onChange={onCsvSelected}
+        />
       </div>
+
+      {importInfo && <div className={styles.info}>{importInfo}</div>}
 
       {loading ? (
         <p className={styles.muted}>Cargando…</p>
@@ -204,7 +267,7 @@ export default function Crm() {
                 <th>Nombre</th>
                 <th>Contacto</th>
                 <th>Fuente</th>
-                <th>Campaña</th>
+                <th>Etiquetas</th>
                 <th>Estado</th>
                 <th>Fecha de creación</th>
               </tr>
@@ -217,7 +280,23 @@ export default function Crm() {
                   <td>
                     <span className={styles.sourceTag}>{sourceLabel(l.source)}</span>
                   </td>
-                  <td className={styles.muted}>{l.campaign || l.source_detail || "—"}</td>
+                  <td>
+                    {l.tags && l.tags.length > 0 ? (
+                      <span className={styles.tagChips}>
+                        {l.tags.map((t) => (
+                          <span
+                            key={t.tag_id}
+                            className={styles.tagChip}
+                            style={{ borderColor: t.color, color: t.color }}
+                          >
+                            {t.name}
+                          </span>
+                        ))}
+                      </span>
+                    ) : (
+                      <span className={styles.muted}>—</span>
+                    )}
+                  </td>
                   <td>
                     <span className={`${styles.statusTag} ${styles[`st_${l.status}`] ?? ""}`}>
                       {STATUS_LABEL[l.status] ?? l.status}
@@ -238,8 +317,113 @@ export default function Crm() {
           onSaved={() => {
             void load();
           }}
+          onDeleted={() => {
+            setSelected(null);
+            void load();
+          }}
         />
       )}
+
+      {showAdd && (
+        <AddLeadModal
+          onClose={() => setShowAdd(false)}
+          onCreated={() => {
+            setShowAdd(false);
+            void load();
+          }}
+        />
+      )}
+    </div>
+  );
+}
+
+function AddLeadModal({
+  onClose,
+  onCreated,
+}: {
+  onClose: () => void;
+  onCreated: () => void;
+}) {
+  const [form, setForm] = useState({
+    name: "",
+    phone: "",
+    email: "",
+    source: "manual",
+    campaign: "",
+  });
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  function set(k: keyof typeof form, v: string) {
+    setForm((f) => ({ ...f, [k]: v }));
+  }
+
+  async function submit() {
+    if (!form.name && !form.phone && !form.email) {
+      setError("Indica al menos nombre, teléfono o email.");
+      return;
+    }
+    setSaving(true);
+    setError(null);
+    try {
+      await apiFetch("/api/crm/leads", {
+        method: "POST",
+        body: JSON.stringify({
+          name: form.name || undefined,
+          phone: form.phone || undefined,
+          email: form.email || undefined,
+          source: form.source || "manual",
+          campaign: form.campaign || undefined,
+        }),
+      });
+      onCreated();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "No se pudo crear el lead");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <div className={styles.overlay} onClick={onClose}>
+      <div className={styles.modal} onClick={(e) => e.stopPropagation()}>
+        <div className={styles.drawerHead}>
+          <h2 className={styles.drawerTitle}>Añadir lead</h2>
+          <button className={styles.closeBtn} onClick={onClose}>
+            ✕
+          </button>
+        </div>
+        {error && <div className={styles.error}>{error}</div>}
+        <div className={styles.modalBody}>
+          <label className={styles.modalLabel}>Nombre</label>
+          <input className={styles.input} value={form.name} onChange={(e) => set("name", e.target.value)} />
+          <label className={styles.modalLabel}>Teléfono</label>
+          <input
+            className={styles.input}
+            value={form.phone}
+            onChange={(e) => set("phone", e.target.value)}
+            placeholder="+34600000000"
+          />
+          <label className={styles.modalLabel}>Email</label>
+          <input className={styles.input} value={form.email} onChange={(e) => set("email", e.target.value)} />
+          <label className={styles.modalLabel}>Fuente</label>
+          <input className={styles.input} value={form.source} onChange={(e) => set("source", e.target.value)} />
+          <label className={styles.modalLabel}>Campaña</label>
+          <input className={styles.input} value={form.campaign} onChange={(e) => set("campaign", e.target.value)} />
+        </div>
+        <div className={styles.modalActions}>
+          <button className={styles.ghostBtn} onClick={onClose} disabled={saving}>
+            Cancelar
+          </button>
+          <button className={styles.primaryBtn} onClick={submit} disabled={saving}>
+            {saving ? "Guardando…" : "Crear lead"}
+          </button>
+        </div>
+        <p className={styles.modalHint}>
+          Para carga masiva usa “Importar CSV”. Cabeceras admitidas: nombre, teléfono, email,
+          fuente, campaña (y cualquier columna extra se guarda como dato del lead).
+        </p>
+      </div>
     </div>
   );
 }
@@ -267,10 +451,12 @@ function LeadDrawer({
   id,
   onClose,
   onSaved,
+  onDeleted,
 }: {
   id: string;
   onClose: () => void;
   onSaved: () => void;
+  onDeleted: () => void;
 }) {
   const [data, setData] = useState<{ lead: LeadDetail; conversation: ConversationSummary } | null>(
     null,
@@ -299,6 +485,19 @@ function LeadDrawer({
       onSaved();
     } catch (e) {
       setError(e instanceof Error ? e.message : "Error al guardar");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function remove() {
+    if (!confirm("¿Eliminar este lead del CRM? No se puede deshacer.")) return;
+    setSaving(true);
+    try {
+      await apiFetch(`/api/crm/leads/${id}`, { method: "DELETE" });
+      onDeleted();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "No se pudo eliminar");
     } finally {
       setSaving(false);
     }
@@ -411,6 +610,12 @@ function LeadDrawer({
                 </div>
               </section>
             )}
+
+            <section className={styles.block}>
+              <button className={styles.dangerBtn} onClick={remove} disabled={saving}>
+                Eliminar lead
+              </button>
+            </section>
           </div>
         )}
       </aside>

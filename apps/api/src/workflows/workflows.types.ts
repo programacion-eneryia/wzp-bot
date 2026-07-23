@@ -12,7 +12,8 @@ export type NodeType =
   | 'if_replied'
   | 'if_stage'
   | 'stop'
-  | 'ai_handoff';
+  | 'ai_handoff'
+  | 'webhook';
 
 export type WaitUnit = 'minutes' | 'hours' | 'days';
 
@@ -28,6 +29,9 @@ export type WorkflowNodeData = {
   /** stop: cambiar de estado y/o pausar seguimientos al terminar. */
   set_stage?: string;
   pause_followups?: boolean;
+  /** webhook: URL de salida (https) y cuerpo opcional (JSON con variables). */
+  url?: string;
+  body?: string;
   label?: string;
 };
 

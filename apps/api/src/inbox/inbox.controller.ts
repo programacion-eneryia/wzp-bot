@@ -80,8 +80,14 @@ export class InboxController {
   }
 
   @Get('conversations/:id')
-  get(@CurrentUser() user: AuthContext, @Param('id') id: string) {
-    return this.inbox.get(user.organizationId, id);
+  get(
+    @CurrentUser() user: AuthContext,
+    @Param('id') id: string,
+    @Query('refresh') refresh?: string,
+  ) {
+    // refresh=0 → solo BD (rápido, para el poll). Por defecto refresca de Unipile.
+    const doRefresh = refresh !== '0' && refresh !== 'false';
+    return this.inbox.get(user.organizationId, id, doRefresh);
   }
 
   @Patch('conversations/:id')

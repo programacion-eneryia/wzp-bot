@@ -19,6 +19,7 @@ import { OpenRouterModule } from './openrouter/openrouter.module';
 import { PlatformModule } from './platform/platform.module';
 import { PlaygroundModule } from './playground/playground.module';
 import { SetterModule } from './setter/setter.module';
+import { StatsModule } from './stats/stats.module';
 import { SupabaseModule } from './supabase/supabase.module';
 import { TagsModule } from './tags/tags.module';
 import { UnipileModule } from './unipile/unipile.module';
@@ -49,6 +50,7 @@ import { WorkflowsModule } from './workflows/workflows.module';
     ChannelsModule,
     CalendarModule,
     SetterModule,
+    StatsModule,
     TagsModule,
     PlaygroundModule,
     MessagingModule,

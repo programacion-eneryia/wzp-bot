@@ -50,7 +50,10 @@ export class InboxService {
       .eq('organization_id', orgId)
       .eq('is_test', false)
       .order('last_message_at', { ascending: false, nullsFirst: false })
-      .order('created_at', { ascending: false });
+      .order('created_at', { ascending: false })
+      // Mostramos los más recientes. Reduce el payload y acelera la navegación;
+      // los antiguos siguen accesibles por búsqueda/filtros.
+      .limit(60);
 
     // Por defecto ocultamos las conversaciones archivadas (canales desconectados).
     query = archived ? query.not('archived_at', 'is', null) : query.is('archived_at', null);
@@ -98,11 +101,14 @@ export class InboxService {
     return convs.map((c) => ({ ...c, tags: byConv.get(c.id as string) ?? [] }));
   }
 
-  async get(orgId: string, id: string) {
+  async get(orgId: string, id: string, refresh = true) {
     const conv = await this.assertOwned(orgId, id);
 
-    // Trae el historial reciente desde Unipile (rellena lo que no vino por webhook).
-    if (conv.unipile_chat_id) {
+    // Trae el historial reciente desde Unipile (rellena lo que no vino por
+    // webhook). Es la llamada MÁS lenta, así que solo la hacemos al ABRIR el chat
+    // (`refresh`), no en cada refresco automático: los mensajes nuevos entrantes
+    // ya llegan por webhook a la BD, y el poll los lee sin tocar Unipile.
+    if (refresh && conv.unipile_chat_id) {
       try {
         await this.importMessages(orgId, id, conv.unipile_chat_id as string, MAX_MESSAGES);
       } catch (err) {
@@ -131,11 +137,15 @@ export class InboxService {
       }
     }
 
-    const { data: messages } = await this.supabase.admin
+    // Solo los últimos 200 mensajes (los más recientes). Acelera la carga de
+    // chats largos; el orden final es ascendente para pintarlos de arriba a abajo.
+    const { data: recent } = await this.supabase.admin
       .from('messages')
       .select('id, role, content, created_at')
       .eq('conversation_id', id)
-      .order('created_at', { ascending: true });
+      .order('created_at', { ascending: false })
+      .limit(200);
+    const messages = (recent ?? []).reverse();
 
     if ((conv.unread_count ?? 0) > 0) {
       await this.supabase.admin
@@ -146,7 +156,7 @@ export class InboxService {
 
     const tags = await this.tags.tagsForConversation(orgId, id);
 
-    return { conversation: { ...conv, unread_count: 0, tags }, messages: messages ?? [] };
+    return { conversation: { ...conv, unread_count: 0, tags }, messages };
   }
 
   async update(

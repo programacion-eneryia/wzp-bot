@@ -3,6 +3,7 @@ import { SupabaseService } from '../supabase/supabase.service';
 import { MessagingService } from '../messaging/messaging.service';
 import { WorkflowsService, type WorkflowRow } from './workflows.service';
 import { renderMessage, resolveVariables } from './variables';
+import { safeWebhookUrlOrNull } from '../common/url-safety';
 import type {
   WorkflowDefinition,
   WorkflowNode,
@@ -264,6 +265,11 @@ export class WorkflowEngineService {
           await this.finish(run.id, 'completed');
           return;
         }
+        case 'webhook': {
+          await this.sendWebhook(run, node, conv);
+          node = this.nextNode(def, node.id);
+          break;
+        }
         default: {
           node = this.nextNode(def, node.id);
         }
@@ -272,6 +278,97 @@ export class WorkflowEngineService {
 
     // Sin más nodos (o tope de pasos): terminamos.
     await this.finish(run.id, 'completed');
+  }
+
+  /**
+   * Nodo "Enviar webhook": hace POST a una URL externa con la información del
+   * lead/conversación del flujo. Best-effort (nunca rompe el run) y con auditoría
+   * en `outbound_events`. Admite un cuerpo JSON personalizado con variables.
+   */
+  private async sendWebhook(
+    run: RunRow,
+    node: WorkflowNode,
+    conv: { row: Record<string, unknown>; lead: Record<string, unknown> | null },
+  ): Promise<void> {
+    const url = safeWebhookUrlOrNull((node.data?.url ?? '').trim());
+    if (!url) {
+      this.logger.warn(
+        `Nodo webhook sin URL válida (workflow run ${run.id}); se omite y continúa.`,
+      );
+      return;
+    }
+
+    const vars = resolveVariables({ conversation: conv.row, lead: conv.lead });
+    let payload: Record<string, unknown>;
+    const bodyTpl = (node.data?.body ?? '').trim();
+    if (bodyTpl) {
+      const rendered = renderMessage(bodyTpl, vars);
+      try {
+        const parsed: unknown = JSON.parse(rendered);
+        payload =
+          parsed && typeof parsed === 'object'
+            ? (parsed as Record<string, unknown>)
+            : { body: parsed };
+      } catch {
+        payload = { body: rendered };
+      }
+    } else {
+      // Payload por defecto: datos del lead + contacto de esta conversación.
+      payload = {
+        event: 'workflow_webhook',
+        conversation_id: run.conversation_id,
+        lead: {
+          name: conv.lead?.name ?? conv.row.contact_name ?? null,
+          phone: conv.lead?.phone ?? conv.row.contact_handle ?? null,
+          email: conv.lead?.email ?? null,
+          source: conv.lead?.source ?? conv.row.source ?? null,
+          campaign: conv.lead?.campaign ?? conv.row.campaign ?? null,
+          fields: conv.lead?.fields ?? {},
+        },
+        stage: conv.row.stage ?? null,
+        sent_at: new Date().toISOString(),
+      };
+    }
+
+    let status = 'sent';
+    const response: Record<string, unknown> = {};
+    try {
+      const res = await fetch(url, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(payload),
+        redirect: 'error',
+        signal: AbortSignal.timeout(10_000),
+      });
+      response.http_status = res.status;
+      if (!res.ok) {
+        status = 'failed';
+        response.body = (await res.text().catch(() => '')).slice(0, 500);
+      }
+    } catch (err) {
+      status = 'failed';
+      response.error = String(err);
+    }
+
+    try {
+      await this.supabase.admin.from('outbound_events').insert({
+        organization_id: run.organization_id,
+        conversation_id: run.conversation_id,
+        kind: 'workflow_webhook',
+        target_url: url,
+        status,
+        request: payload,
+        response,
+      });
+    } catch {
+      /* la auditoría es best-effort */
+    }
+
+    if (status === 'failed') {
+      this.logger.warn(
+        `Webhook de workflow falló (run ${run.id}): ${JSON.stringify(response)}`,
+      );
+    }
   }
 
   private async applyStop(conversationId: string, node: WorkflowNode): Promise<void> {

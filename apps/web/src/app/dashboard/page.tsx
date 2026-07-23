@@ -32,7 +32,7 @@ export default async function DashboardHome() {
         <article className={styles.card}>
           <span className={styles.cardNum}>Siguiente</span>
           <p className={styles.cardValue}>Conectar WhatsApp</p>
-          <p className={styles.cardText}>Inbox unificado vía Unipile (Fase 2).</p>
+          <p className={styles.cardText}>Bandeja unificada de WhatsApp, Instagram y Messenger.</p>
         </article>
       </div>
     </div>

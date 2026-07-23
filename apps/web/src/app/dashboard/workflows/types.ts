@@ -5,7 +5,8 @@ export type NodeKind =
   | "if_replied"
   | "if_stage"
   | "stop"
-  | "ai_handoff";
+  | "ai_handoff"
+  | "webhook";
 
 export type WfNodeData = {
   kind: NodeKind;
@@ -15,6 +16,8 @@ export type WfNodeData = {
   stage?: string;
   set_stage?: string;
   pause_followups?: boolean;
+  url?: string;
+  body?: string;
   label?: string;
 };
 

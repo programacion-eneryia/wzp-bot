@@ -27,7 +27,7 @@ type Channel = {
   display_name?: string | null;
 };
 
-export default function Integrations() {
+export default function Integrations({ isAdmin = true }: { isAdmin?: boolean }) {
   const [data, setData] = useState<Integration | null>(null);
   const [channels, setChannels] = useState<Channel[]>([]);
   const [loading, setLoading] = useState(true);
@@ -100,6 +100,12 @@ export default function Integrations() {
 
       <section className={styles.card}>
         <h2 className={styles.cardTitle}>Webhooks de entrada</h2>
+        {!isAdmin ? (
+          <p className={styles.muted}>
+            Solo un administrador puede ver los tokens y las URLs de integración.
+          </p>
+        ) : (
+        <>
         <p className={styles.muted}>
           Pega estas URLs en cada plataforma. Llevan tu token secreto; trátalas como una contraseña.
         </p>
@@ -134,6 +140,8 @@ export default function Integrations() {
             Generar token nuevo
           </button>
         </div>
+        </>
+        )}
       </section>
 
       <section className={styles.card}>
@@ -147,7 +155,7 @@ export default function Integrations() {
           />
           <span>
             <strong>Contactar leads automáticamente</strong> — cuando entra un lead con teléfono,
-            el bot envía el primer mensaje (con la plantilla de Mi Setter → Soporte) de forma
+            el bot envía el primer mensaje (definido por tu workflow de “Lead entra”) de forma
             espaciada y respetando el horario activo.
           </span>
         </label>
@@ -169,8 +177,8 @@ export default function Integrations() {
           </select>
         </label>
         <p className={styles.muted}>
-          La plantilla del primer mensaje se configura en <strong>Mi Setter → Soporte</strong>. Usa
-          variables como {"{nombre}"}.
+          El primer mensaje y los seguimientos se definen en <strong>Workflows</strong> (“Lead
+          entra”). Usa variables como {"{nombre}"}.
         </p>
       </section>
 
@@ -203,28 +211,30 @@ export default function Integrations() {
         </button>
       </section>
 
-      <section className={styles.card}>
-        <h2 className={styles.cardTitle}>ManyChat</h2>
-        <label className={styles.field}>
-          <span className={styles.label}>
-            API key de ManyChat <span className={styles.hint}>— opcional, para enviar por IG fuera del flujo</span>
-          </span>
-          <input
-            className={styles.input}
-            type="password"
-            value={manychatKey}
-            onChange={(e) => setManychatKey(e.target.value)}
-            placeholder="••••••••"
-          />
-        </label>
-        <button
-          className={styles.saveBtn}
-          onClick={() => patch({ manychat_api_key: manychatKey })}
-          disabled={saving}
-        >
-          {saving ? "Guardando…" : "Guardar API key"}
-        </button>
-      </section>
+      {isAdmin && (
+        <section className={styles.card}>
+          <h2 className={styles.cardTitle}>ManyChat</h2>
+          <label className={styles.field}>
+            <span className={styles.label}>
+              API key de ManyChat <span className={styles.hint}>— opcional, para enviar por IG fuera del flujo</span>
+            </span>
+            <input
+              className={styles.input}
+              type="password"
+              value={manychatKey}
+              onChange={(e) => setManychatKey(e.target.value)}
+              placeholder="••••••••"
+            />
+          </label>
+          <button
+            className={styles.saveBtn}
+            onClick={() => patch({ manychat_api_key: manychatKey })}
+            disabled={saving}
+          >
+            {saving ? "Guardando…" : "Guardar API key"}
+          </button>
+        </section>
+      )}
     </div>
   );
 }

@@ -132,8 +132,22 @@ export class LeadsService {
 
   async list(
     orgId: string,
-    filters: { status?: string; source?: string; search?: string } = {},
+    filters: { status?: string; source?: string; search?: string; tagId?: string } = {},
   ) {
+    // Filtro por etiqueta: las etiquetas viven en la conversación, así que primero
+    // resolvemos qué conversaciones tienen esa etiqueta y filtramos los leads por
+    // su conversation_id.
+    let convIdsForTag: string[] | null = null;
+    if (filters.tagId) {
+      const { data: tagged } = await this.supabase.admin
+        .from('conversation_tags')
+        .select('conversation_id')
+        .eq('organization_id', orgId)
+        .eq('tag_id', filters.tagId);
+      convIdsForTag = [...new Set((tagged ?? []).map((r) => r.conversation_id as string))];
+      if (convIdsForTag.length === 0) return [];
+    }
+
     let query = this.supabase.admin
       .from('leads')
       .select(
@@ -145,6 +159,7 @@ export class LeadsService {
 
     if (filters.status) query = query.eq('status', filters.status);
     if (filters.source) query = query.eq('source', filters.source);
+    if (convIdsForTag) query = query.in('conversation_id', convIdsForTag);
     if (filters.search) {
       // Escapamos los caracteres reservados de la gramática de filtros de
       // PostgREST (`,`, `%`, `(`, `)`, `.`, `"`, `*`, `\`) para que el término de
@@ -157,7 +172,97 @@ export class LeadsService {
 
     const { data, error } = await query;
     if (error) throw error;
-    return data ?? [];
+    const leads = data ?? [];
+    return this.attachTags(orgId, leads);
+  }
+
+  /** Adjunta a cada lead sus etiquetas (vía su conversación), en 2 consultas. */
+  private async attachTags<T extends { conversation_id?: string | null }>(
+    orgId: string,
+    leads: T[],
+  ): Promise<Array<T & { tags: Array<{ tag_id: string; name: string; color: string }> }>> {
+    const convIds = leads.map((l) => l.conversation_id).filter(Boolean) as string[];
+    if (convIds.length === 0) return leads.map((l) => ({ ...l, tags: [] }));
+
+    const { data: applied } = await this.supabase.admin
+      .from('conversation_tags')
+      .select('conversation_id, tag_id')
+      .eq('organization_id', orgId)
+      .in('conversation_id', convIds);
+    const rows = applied ?? [];
+    if (rows.length === 0) return leads.map((l) => ({ ...l, tags: [] }));
+
+    const tagIds = [...new Set(rows.map((r) => r.tag_id as string))];
+    const { data: defs } = await this.supabase.admin
+      .from('tag_definitions')
+      .select('id, name, color')
+      .in('id', tagIds);
+    const byId = new Map((defs ?? []).map((d) => [d.id as string, d]));
+
+    const byConv = new Map<string, Array<{ tag_id: string; name: string; color: string }>>();
+    for (const r of rows) {
+      const def = byId.get(r.tag_id as string);
+      if (!def) continue;
+      const arr = byConv.get(r.conversation_id as string) ?? [];
+      arr.push({ tag_id: r.tag_id as string, name: def.name as string, color: def.color as string });
+      byConv.set(r.conversation_id as string, arr);
+    }
+    return leads.map((l) => ({
+      ...l,
+      tags: (l.conversation_id ? byConv.get(l.conversation_id) : undefined) ?? [],
+    }));
+  }
+
+  /** Alta manual de un lead desde el CRM (deduplica igual que el intake). */
+  async create(orgId: string, input: RecordLeadInput) {
+    return this.record(orgId, { ...input, source: input.source ?? 'manual' });
+  }
+
+  /**
+   * Alta masiva desde un CSV. Devuelve un resumen. Deduplica por
+   * external_id/teléfono/email (reutiliza `record`).
+   */
+  async importCsv(orgId: string, csvText: string) {
+    const rows = parseCsv(csvText);
+    let imported = 0;
+    let skipped = 0;
+    const errors: string[] = [];
+    for (const row of rows) {
+      const mapped = mapCsvRow(row);
+      if (!mapped.name && !mapped.phone && !mapped.email) {
+        skipped++;
+        continue;
+      }
+      try {
+        await this.record(orgId, {
+          name: mapped.name,
+          phone: mapped.phone,
+          email: mapped.email,
+          source: mapped.source ?? 'csv',
+          sourceDetail: mapped.source_detail,
+          campaign: mapped.campaign,
+          consentOptin: true,
+          fields: mapped.fields,
+          raw: row,
+        });
+        imported++;
+      } catch (err) {
+        skipped++;
+        if (errors.length < 5) errors.push(String(err));
+      }
+    }
+    return { total: rows.length, imported, skipped, errors };
+  }
+
+  /** Elimina un lead del CRM. La conversación (si la hay) NO se toca. */
+  async remove(orgId: string, id: string) {
+    const { error } = await this.supabase.admin
+      .from('leads')
+      .delete()
+      .eq('id', id)
+      .eq('organization_id', orgId);
+    if (error) throw error;
+    return { ok: true };
   }
 
   async get(orgId: string, id: string) {
@@ -271,4 +376,125 @@ function normalizeEmail(email?: string | null): string | null {
   if (!email) return null;
   const e = email.trim().toLowerCase();
   return e.includes('@') ? e : null;
+}
+
+/**
+ * Parser CSV mínimo pero correcto: soporta comillas dobles, separador coma o
+ * punto y coma (autodetectado), y saltos de línea dentro de campos entrecomillados.
+ * Devuelve un array de objetos { cabecera: valor }.
+ */
+function parseCsv(text: string): Array<Record<string, string>> {
+  const clean = text.replace(/^\uFEFF/, '').replace(/\r\n?/g, '\n');
+  if (!clean.trim()) return [];
+
+  // Autodetección de separador en la primera línea (fuera de comillas).
+  const firstLine = clean.split('\n')[0] ?? '';
+  const commas = (firstLine.match(/,/g) ?? []).length;
+  const semis = (firstLine.match(/;/g) ?? []).length;
+  const sep = semis > commas ? ';' : ',';
+
+  const records: string[][] = [];
+  let field = '';
+  let record: string[] = [];
+  let inQuotes = false;
+  for (let i = 0; i < clean.length; i++) {
+    const c = clean[i];
+    if (inQuotes) {
+      if (c === '"') {
+        if (clean[i + 1] === '"') {
+          field += '"';
+          i++;
+        } else {
+          inQuotes = false;
+        }
+      } else {
+        field += c;
+      }
+    } else if (c === '"') {
+      inQuotes = true;
+    } else if (c === sep) {
+      record.push(field);
+      field = '';
+    } else if (c === '\n') {
+      record.push(field);
+      records.push(record);
+      record = [];
+      field = '';
+    } else {
+      field += c;
+    }
+  }
+  if (field.length > 0 || record.length > 0) {
+    record.push(field);
+    records.push(record);
+  }
+
+  if (records.length === 0) return [];
+  const headers = records[0].map((h) => h.trim());
+  const out: Array<Record<string, string>> = [];
+  for (let r = 1; r < records.length; r++) {
+    const row = records[r];
+    if (row.length === 1 && row[0].trim() === '') continue; // línea vacía
+    const obj: Record<string, string> = {};
+    headers.forEach((h, idx) => {
+      obj[h] = (row[idx] ?? '').trim();
+    });
+    out.push(obj);
+  }
+  return out;
+}
+
+/** Mapea las cabeceras del CSV (en varios idiomas) a los campos del lead. */
+function mapCsvRow(row: Record<string, string>): {
+  name?: string;
+  phone?: string;
+  email?: string;
+  source?: string;
+  source_detail?: string;
+  campaign?: string;
+  fields: Record<string, string>;
+} {
+  const KNOWN: Record<string, 'name' | 'phone' | 'email' | 'source' | 'source_detail' | 'campaign'> = {
+    name: 'name',
+    nombre: 'name',
+    'full name': 'name',
+    'nombre completo': 'name',
+    phone: 'phone',
+    telefono: 'phone',
+    teléfono: 'phone',
+    movil: 'phone',
+    móvil: 'phone',
+    whatsapp: 'phone',
+    email: 'email',
+    correo: 'email',
+    'e-mail': 'email',
+    source: 'source',
+    fuente: 'source',
+    origen: 'source',
+    campaign: 'campaign',
+    campaña: 'campaign',
+    campana: 'campaign',
+    detail: 'source_detail',
+    detalle: 'source_detail',
+  };
+  const result: {
+    name?: string;
+    phone?: string;
+    email?: string;
+    source?: string;
+    source_detail?: string;
+    campaign?: string;
+    fields: Record<string, string>;
+  } = { fields: {} };
+  for (const [key, value] of Object.entries(row)) {
+    if (!value) continue;
+    const norm = key.trim().toLowerCase();
+    const target = KNOWN[norm];
+    if (target) {
+      result[target] = value;
+    } else if (key.trim()) {
+      result.fields[key.trim()] = value;
+    }
+  }
+  return result;
 }

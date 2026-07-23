@@ -533,7 +533,7 @@ export default function AdminPanel() {
           <section className={styles.card}>
             <h2 className={styles.cardTitle}>Costes del mes en curso</h2>
             <span className={styles.hint}>
-              Consumo de IA (tokens + coste real de OpenRouter) y cuentas conectadas de Unipile
+              Consumo de IA (tokens + coste real de OpenRouter) y cuentas de mensajería conectadas
               (a {costs ? `$${costs.unipile_usd_per_account}` : "$5"}/cuenta). Desde{" "}
               {costs ? new Date(costs.period_start).toLocaleDateString("es-ES") : "—"}.
             </span>
@@ -548,7 +548,7 @@ export default function AdminPanel() {
                     <th>Tokens IA</th>
                     <th>Coste IA</th>
                     <th>Canales</th>
-                    <th>Coste Unipile</th>
+                    <th>Coste conexiones</th>
                     <th>Total</th>
                   </tr>
                 </thead>

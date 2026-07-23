@@ -27,7 +27,7 @@ export default async function ChannelsPage() {
       </h1>
       <p className={styles.lead}>
         Vincula WhatsApp, Instagram y Messenger con un clic. La conexión es segura:
-        las credenciales las custodia Unipile, nosotros nunca las almacenamos.
+        las credenciales las custodia nuestro proveedor de mensajería, nunca las almacenamos.
       </p>
 
       <ChannelsManager

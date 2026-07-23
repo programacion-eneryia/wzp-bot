@@ -184,10 +184,11 @@ export default function Inbox() {
     }
   }, []);
 
-  const loadConv = useCallback(async (id: string) => {
+  const loadConv = useCallback(async (id: string, refresh = false) => {
     try {
+      // refresh=0 → solo BD (rápido). Sin el flag, además sincroniza el historial.
       const data = await apiFetch<{ conversation: Conversation; messages: Message[] }>(
-        `/api/inbox/conversations/${id}`,
+        `/api/inbox/conversations/${id}${refresh ? "" : "?refresh=0"}`,
       );
       setConv(data.conversation);
       // Solo reemplazamos si de verdad cambió: así el refresco periódico no crea
@@ -217,9 +218,19 @@ export default function Inbox() {
 
   useEffect(() => {
     if (!selectedId) return;
-    loadConv(selectedId);
-    const t = setInterval(() => loadConv(selectedId), 5000);
-    return () => clearInterval(t);
+    let cancelled = false;
+      // 1) Carga instantánea desde la BD para que el cambio de chat sea inmediato.
+    loadConv(selectedId, false);
+    // 2) Refresco del historial con el proveedor en segundo plano (no bloquea).
+    const bg = setTimeout(() => {
+      if (!cancelled) loadConv(selectedId, true);
+    }, 60);
+    const t = setInterval(() => loadConv(selectedId, false), 6000);
+    return () => {
+      cancelled = true;
+      clearTimeout(bg);
+      clearInterval(t);
+    };
   }, [selectedId, loadConv]);
 
   useEffect(() => {
@@ -235,8 +246,16 @@ export default function Inbox() {
   }, [messages]);
 
   function selectConv(id: string) {
+    if (id === selectedId) return;
     forceBottomRef.current = true;
     atBottomRef.current = true;
+    // Pintamos al instante la cabecera con lo que ya tenemos en la lista y
+    // limpiamos los mensajes del chat anterior para que no se vea contenido
+    // equivocado mientras carga el nuevo (la carga real llega en ~100ms).
+    const fromList = list.find((c) => c.id === id) ?? null;
+    setConv(fromList);
+    setMessages([]);
+    setAnalysis(null);
     setSelectedId(id);
     setNotesOpen(false);
     setTagMenuOpen(false);
