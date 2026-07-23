@@ -359,6 +359,29 @@
   color: #ffcaca;
   border-color: rgba(255, 80, 80, 0.4);
 }
+.loadingMsgs {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  padding: 40px 0;
+  color: var(--text-muted, #b3b3b3);
+  font-size: 13.5px;
+}
+.spinner {
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  border: 2px solid rgba(255, 255, 255, 0.18);
+  border-top-color: var(--accent, #ffe600);
+  animation: inboxSpin 0.7s linear infinite;
+}
+@keyframes inboxSpin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
 .messages {
   flex: 1;
   overflow-y: auto;

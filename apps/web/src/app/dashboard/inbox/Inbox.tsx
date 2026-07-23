@@ -163,6 +163,7 @@ export default function Inbox() {
   const [exampleBusy, setExampleBusy] = useState(false);
 
   const scrollRef = useRef<HTMLDivElement>(null);
+  const [msgsLoading, setMsgsLoading] = useState(false);
   // ¿El usuario está pegado al fondo? Solo autoscrolleamos si es así (o al abrir
   // un chat). Evita que el refresco cada 5s le arrastre hacia abajo al leer arriba.
   const atBottomRef = useRef(true);
@@ -198,6 +199,9 @@ export default function Inbox() {
       setNotesDraft(data.conversation.notes ?? "");
     } catch (e) {
       setError(e instanceof Error ? e.message : "Error");
+    } finally {
+      // La primera carga (rápida, desde BD) ya terminó → quitamos el spinner.
+      setMsgsLoading(false);
     }
   }, []);
 
@@ -256,6 +260,7 @@ export default function Inbox() {
     setConv(fromList);
     setMessages([]);
     setAnalysis(null);
+    setMsgsLoading(true);
     setSelectedId(id);
     setNotesOpen(false);
     setTagMenuOpen(false);
@@ -747,6 +752,12 @@ export default function Inbox() {
             )}
 
             <div className={styles.messages} ref={scrollRef} onScroll={onMessagesScroll}>
+              {msgsLoading && messages.length === 0 && (
+                <div className={styles.loadingMsgs}>
+                  <span className={styles.spinner} />
+                  <span>Cargando mensajes…</span>
+                </div>
+              )}
               {messages.map((m, i) => {
                 const fromUs = m.role !== "contact";
                 const prev = messages[i - 1];
