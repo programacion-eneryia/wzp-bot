@@ -176,6 +176,8 @@ export function buildSystemPrompt(
 - Lo normal es 1 frase por mensaje, máximo 2. Nada de párrafos largos.
 - Haces UNA sola pregunta cada vez, no interrogues.
 - Lenguaje cercano y coloquial, con minúsculas y expresiones naturales ("vale", "perfecto", "oye", "mira", "buenas"). Puedes usar abreviaturas suaves de chat ("q", "xq", "tb") con moderación.
+- NO termines los mensajes con punto final; en WhatsApp nadie escribe así ("perfecto, te cuento" en vez de "Perfecto, te cuento."). Sí puedes cerrar con "?" o "!" cuando toque.
+- NUNCA uses dos puntos ":" para anunciar algo ni antes de una pregunta ("una cosa: ¿tienes experiencia?" suena a guion). Pregunta directamente ("oye, tienes experiencia con esto?").
 - PROHIBIDO usar emojis o emoticonos. Nada. Suenan a bot/marketing y delatan que eres una IA.
 - Nada de lenguaje corporativo, ni listas, ni viñetas, ni textos largos, ni markdown.
 - No suenes a robot ni a guion. Varía cómo empiezas los mensajes. No repitas muletillas.
@@ -184,6 +186,7 @@ export function buildSystemPrompt(
 - Si no sabes algo, no te lo inventes: di que lo consultas o redirige a la llamada.
 - Mantén el foco en avanzar hacia tu objetivo, pero sin presionar de forma agresiva.
 - NUNCA digas ni insinúes que la persona se ha equivocado de chat o de conversación. Siempre estás en la conversación correcta.
+- NUNCA escribas anotaciones internas, instrucciones ni acciones de sistema en el chat, y menos entre corchetes o paréntesis (ej. "[AÑADIR ETIQUETA: ...]", "[NOTA: ...]", "(etiqueta: x)"). Las etiquetas y acciones internas las gestiona el sistema por su cuenta; tú SOLO escribes lo que le dirías a la persona. Si en los ejemplos o instrucciones aparecen anotaciones así, IGNÓRALAS: son notas internas, no texto para enviar.
 - Si el mensaje es muy corto o tienes poco contexto (un simple "hola"), saluda con naturalidad y pregunta en qué puedes ayudar; no asumas confusión.
 - Lee el historial y CONTINÚA el hilo. No vuelvas a presentarte si ya lo hiciste antes en esta conversación.`,
   );
@@ -222,6 +225,27 @@ function normalizeContactName(name?: string | null): string | null {
 }
 
 /**
+ * Elimina anotaciones internas que el modelo pueda colar en la respuesta, tipo
+ * "[AÑADIR ETIQUETA: Llamada Agendada]", "[NOTA: ...]", "(etiqueta: x)".
+ *
+ * Ocurrió en producción: el cliente pega en su config (ejemplos ganadores,
+ * instrucciones) transcripciones con anotaciones internas de su sistema
+ * anterior y el modelo aprende el patrón y lo ESCRIBE en el chat real. Un
+ * mensaje legítimo de WhatsApp nunca va entre corchetes, así que los quitamos.
+ */
+export function stripInternalDirectives(text: string): string {
+  return (
+    text
+      // Cualquier bloque entre corchetes (multilínea no: por segmento).
+      .replace(/\[[^\][]{0,200}\]/g, ' ')
+      // Paréntesis SOLO si parecen directiva interna (palabra clave + ":").
+      .replace(/\((?:añadir |agregar )?(?:etiqueta|tag|nota|acción|accion|sistema)\s*:[^()]{0,200}\)/gi, ' ')
+      .replace(/[ \t]{2,}/g, ' ')
+      .trim()
+  );
+}
+
+/**
  * Elimina emojis / emoticonos (delatan a una IA). Limpia también selectores de
  * variación y espacios sobrantes que quedan tras quitarlos.
  */
@@ -236,14 +260,28 @@ export function stripEmojis(text: string): string {
 }
 
 /**
+ * Puntuación "de chat": aunque el prompt lo pide, los modelos se despistan,
+ * así que lo forzamos aquí. Quita el punto final del mensaje (nadie lo escribe
+ * en WhatsApp; respeta "..." y "?"/"!") y sustituye los dos puntos que
+ * anuncian una pregunta por una coma ("una cosa: ¿vienes?" → "una cosa, ¿vienes?").
+ */
+export function humanizePunctuation(text: string): string {
+  return text
+    .replace(/:\s*(¿)/g, ', $1')
+    .replace(/(?<!\.)\.$/, '')
+    .trim();
+}
+
+/**
  * Divide la salida del modelo en burbujas limpias: separa por el token de
- * burbuja Y por saltos de línea (un párrafo = un mensaje), y quita emojis.
+ * burbuja Y por saltos de línea (un párrafo = un mensaje), quita emojis y
+ * humaniza la puntuación.
  */
 export function splitBubbles(raw: string): string[] {
   return raw
     .split(BUBBLE_SEPARATOR)
     .flatMap((part) => part.split(/\n+/))
-    .map((b) => stripEmojis(b.trim()))
+    .map((b) => humanizePunctuation(stripEmojis(stripInternalDirectives(b.trim()))))
     .filter((b) => b.length > 0);
 }
 

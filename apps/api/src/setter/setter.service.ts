@@ -8,8 +8,10 @@ import { SetterConfigService } from './setter-config.service';
 import {
   buildSystemPrompt,
   humanDelayMs,
+  humanizePunctuation,
   splitBubbles,
   stripEmojis,
+  stripInternalDirectives,
   type ChatMode,
 } from './prompt';
 
@@ -107,7 +109,9 @@ export class SetterService {
 
     const parts = cfg.multi_bubble
       ? splitBubbles(raw)
-      : [stripEmojis(raw.trim())].filter((p) => p.length > 0);
+      : [humanizePunctuation(stripEmojis(stripInternalDirectives(raw.trim())))].filter(
+          (p) => p.length > 0,
+        );
     const bubbles: Bubble[] = parts.map((content) => ({
       content,
       delayMs: humanDelayMs(content, cfg.min_delay_ms, cfg.max_delay_ms),
