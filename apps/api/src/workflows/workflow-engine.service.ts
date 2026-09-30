@@ -330,13 +330,33 @@ export class WorkflowEngineService {
       };
     }
 
+    const method = (node.data?.method ?? 'POST').toUpperCase();
+    const headers: Record<string, string> = { 'content-type': 'application/json' };
+    // Headers personalizados (JSON), con variables del lead permitidas en los valores.
+    const headersTpl = (node.data?.headers ?? '').trim();
+    if (headersTpl) {
+      try {
+        const parsed: unknown = JSON.parse(renderMessage(headersTpl, vars));
+        if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+          for (const [k, v] of Object.entries(parsed as Record<string, unknown>)) {
+            if (typeof v === 'string' && k.trim()) headers[k.trim().toLowerCase()] = v;
+          }
+        }
+      } catch {
+        this.logger.warn(`Nodo webhook con headers JSON inválidos (run ${run.id}); se ignoran.`);
+      }
+    }
+    const authToken = (node.data?.auth_token ?? '').trim();
+    if (authToken) headers.authorization = `Bearer ${authToken}`;
+
     let status = 'sent';
     const response: Record<string, unknown> = {};
     try {
       const res = await fetch(url, {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify(payload),
+        method,
+        headers,
+        // GET no admite body; el resto envían el payload JSON.
+        ...(method === 'GET' ? {} : { body: JSON.stringify(payload) }),
         redirect: 'error',
         signal: AbortSignal.timeout(10_000),
       });

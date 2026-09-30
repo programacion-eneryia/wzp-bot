@@ -20,7 +20,24 @@ export class AppointmentsService {
       .order('start_at', { ascending: true, nullsFirst: false })
       .order('created_at', { ascending: false });
     if (error) throw error;
-    return data ?? [];
+    const appts = data ?? [];
+
+    // Nombre y teléfono de quien agendó: viven en la conversación vinculada.
+    const convIds = [...new Set(appts.map((a) => a.conversation_id as string).filter(Boolean))];
+    if (convIds.length === 0) return appts;
+    const { data: convs } = await this.supabase.admin
+      .from('conversations')
+      .select('id, contact_name, contact_handle')
+      .in('id', convIds);
+    const byId = new Map((convs ?? []).map((c) => [c.id as string, c]));
+    return appts.map((a) => {
+      const conv = byId.get(a.conversation_id as string);
+      return {
+        ...a,
+        contact_name: (conv?.contact_name as string) ?? null,
+        contact_handle: (conv?.contact_handle as string) ?? null,
+      };
+    });
   }
 
   /**
@@ -102,9 +119,16 @@ export class AppointmentsService {
       }
 
       if (conversationId) {
+        // Cita confirmada en el calendario (ground-truth): el bot deja de
+        // hablar con este lead hasta que un humano o un flow lo reactive.
         await this.supabase.admin
           .from('conversations')
-          .update({ stage: 'call_scheduled' })
+          .update({
+            stage: 'call_scheduled',
+            ai_enabled: false,
+            respond_after: null,
+            followups_paused: true,
+          })
           .eq('id', conversationId)
           .eq('organization_id', orgId)
           .neq('stage', 'won');

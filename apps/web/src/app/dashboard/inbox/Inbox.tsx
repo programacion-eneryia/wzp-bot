@@ -40,6 +40,7 @@ type Conversation = {
   contact_handle: string | null;
   stage: Stage;
   mode?: Mode;
+  suggested_mode?: "support" | "ignored" | null;
   ai_enabled: boolean;
   blocked?: boolean;
   notes?: string | null;
@@ -332,7 +333,7 @@ export default function Inbox() {
 
   async function changeMode(mode: "setter" | "support" | "ignored") {
     if (!conv) return;
-    setConv({ ...conv, mode });
+    setConv({ ...conv, mode, suggested_mode: null });
     await patch({ mode });
     loadList();
   }
@@ -592,6 +593,31 @@ export default function Inbox() {
                 {conv.ai_enabled ? "IA activa" : "IA en pausa"}
               </button>
             </div>
+
+            {/* Sugerencia de modo de la IA: nunca se aplica sola, la confirma un humano. */}
+            {conv.suggested_mode && (
+              <div className={styles.suggestBanner}>
+                <span className={styles.suggestText}>
+                  La IA sugiere marcar este chat como{" "}
+                  <strong>{MODE_LABEL[conv.suggested_mode]}</strong>. Mientras
+                  tanto sigue en modo Setter.
+                </span>
+                <div className={styles.suggestActions}>
+                  <button
+                    className={styles.suggestApply}
+                    onClick={() => changeMode(conv.suggested_mode!)}
+                  >
+                    Aplicar {MODE_LABEL[conv.suggested_mode]}
+                  </button>
+                  <button
+                    className={styles.suggestDismiss}
+                    onClick={() => changeMode("setter")}
+                  >
+                    Mantener Setter
+                  </button>
+                </div>
+              </div>
+            )}
 
             {/* Barra de acciones (estilo SkaleX) */}
             <div className={styles.toolbar}>

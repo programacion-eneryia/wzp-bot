@@ -255,6 +255,54 @@
   border-bottom: 1px solid rgba(0, 0, 0, 0.25);
   background: #1b262d;
 }
+
+/* Banner de sugerencia de modo (la IA propone, el humano confirma) */
+.suggestBanner {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 8px 14px;
+  border-bottom: 1px solid rgba(0, 0, 0, 0.25);
+  background: rgba(80, 160, 255, 0.1);
+}
+.suggestText {
+  font-size: 12.5px;
+  color: #8fd0ff;
+}
+.suggestActions {
+  display: flex;
+  gap: 6px;
+}
+.suggestApply {
+  background: rgba(80, 160, 255, 0.18);
+  border: 1px solid rgba(80, 160, 255, 0.45);
+  color: #8fd0ff;
+  font-size: 12px;
+  font-weight: 600;
+  padding: 4px 11px;
+  border-radius: 7px;
+  cursor: pointer;
+  transition: all 0.12s ease;
+}
+.suggestApply:hover {
+  background: rgba(80, 160, 255, 0.3);
+}
+.suggestDismiss {
+  background: transparent;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  color: var(--text-muted);
+  font-size: 12px;
+  padding: 4px 11px;
+  border-radius: 7px;
+  cursor: pointer;
+  transition: all 0.12s ease;
+}
+.suggestDismiss:hover {
+  border-color: rgba(255, 255, 255, 0.3);
+  color: var(--text);
+}
 .moveSelect {
   background: var(--bg-1, #0d0d0f);
   color: var(--text);

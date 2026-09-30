@@ -9,6 +9,8 @@ import { ConversationClassifierService } from '../setter/conversation-classifier
 import { AppointmentDetectorService } from '../calendar/appointment-detector.service';
 import { TransportService } from './transport.service';
 import { TagClassifierService } from '../tags/tag-classifier.service';
+import { WorkflowTriggerService } from '../workflows/workflow-trigger.service';
+import { newConversationsStartPaused } from '../common/flags';
 import { DEBOUNCE_MS, type OutgoingJob, type RespondJob } from './queues';
 
 /** Lock obsoleto: si una respuesta/envío quedó "en curso" más de esto, se reclama. */
@@ -27,6 +29,8 @@ type IncomingEvent = {
   messageId?: string;
   senderName?: string;
   senderProviderId?: string;
+  /** El mensaje salió de NUESTRA cuenta (eco): bot, agente o humano en el móvil. */
+  fromSelf?: boolean;
 };
 
 @Injectable()
@@ -44,6 +48,7 @@ export class MessagingService {
     private readonly appointmentDetector: AppointmentDetectorService,
     private readonly transport: TransportService,
     private readonly tagClassifier: TagClassifierService,
+    private readonly workflowTrigger: WorkflowTriggerService,
   ) {}
 
   /**
@@ -91,6 +96,14 @@ export class MessagingService {
       // formato exacto del webhook (que varía) para el texto y el remitente.
       const evt = await this.resolveIncoming(payload, accountId, chatId);
       if (!evt) return;
+
+      // Eco de un mensaje SALIENTE de nuestra cuenta: si no lo envió el bot ni
+      // un agente desde el portal, es un humano respondiendo desde el móvil /
+      // WhatsApp Business → pausamos la IA (human takeover).
+      if (evt.fromSelf) {
+        await this.handleOwnOutboundEcho(orgId, channel, evt);
+        return;
+      }
 
       const conv = await this.upsertConversation(orgId, channel, evt);
 
@@ -214,7 +227,7 @@ export class MessagingService {
             source: params.referral ? 'ctwa' : 'whatsapp',
             mode: 'setter',
             mode_locked: true,
-            ai_enabled: true,
+            ai_enabled: !newConversationsStartPaused(),
             consent_optin: true,
             is_test: false,
             stage: 'new',
@@ -223,6 +236,7 @@ export class MessagingService {
           .single();
         if (error) throw error;
         convId = created.id as string;
+        void this.workflowTrigger.fire(orgId, convId, 'conversation_created');
       }
 
       if (params.messageId && (await this.messageExists(convId, params.messageId))) return;
@@ -401,9 +415,21 @@ export class MessagingService {
     const senderProviderId = extractSenderProviderId(payload);
 
     // Si el propio webhook indica que el mensaje lo enviamos NOSOTROS, no
-    // respondemos (evita bucles). El webhook de mensajería de Unipile se dispara
-    // para mensajes entrantes, así que por defecto lo tratamos como entrante.
-    if (isFromSelf(payload)) return null;
+    // respondemos (evita bucles), pero lo devolvemos marcado como eco: puede
+    // ser un humano escribiendo desde el móvil (human takeover).
+    if (isFromSelf(payload)) {
+      const echoText = extractText(payload);
+      if (!echoText) return null;
+      return {
+        accountId,
+        chatId,
+        text: echoText,
+        messageId: payload.message_id ? String(payload.message_id) : undefined,
+        senderName,
+        senderProviderId,
+        fromSelf: true,
+      };
+    }
 
     // Texto e id que viajan EN el webhook. Es la fuente fiable: no depende de que
     // la lista de mensajes de Unipile ya refleje el mensaje (esa lectura puede ir
@@ -436,9 +462,19 @@ export class MessagingService {
     }
 
     // Eco de un mensaje NUESTRO: el último de Unipile es nuestro y el texto
-    // coincide. Solo así descartamos (no basta con que el último sea nuestro,
-    // porque la lista puede ir con retraso mientras entra un mensaje real).
-    if (latestIsSelf && latestText && text === latestText) return null;
+    // coincide. Solo así lo tratamos como eco (no basta con que el último sea
+    // nuestro, porque la lista puede ir con retraso mientras entra uno real).
+    if (latestIsSelf && latestText && text === latestText) {
+      return {
+        accountId,
+        chatId,
+        text,
+        messageId: payloadId ?? latestId,
+        senderName,
+        senderProviderId,
+        fromSelf: true,
+      };
+    }
 
     return {
       accountId,
@@ -448,6 +484,71 @@ export class MessagingService {
       senderName,
       senderProviderId,
     };
+  }
+
+  /**
+   * Eco de un mensaje saliente de nuestra propia cuenta de WhatsApp. Todos los
+   * envíos del sistema (burbujas del bot, agente del portal, outbox) se
+   * persisten al enviarse, así que si el texto NO coincide con ningún mensaje
+   * reciente nuestro, lo escribió un humano desde el móvil / WhatsApp Business
+   * → pausamos la IA para que la persona lleve el chat.
+   */
+  private async handleOwnOutboundEcho(
+    orgId: string,
+    channel: { id: string; provider: string },
+    evt: IncomingEvent,
+  ): Promise<void> {
+    try {
+      // Solo conversaciones existentes: no creamos chats a partir de ecos.
+      const { data: conv } = await this.supabase.admin
+        .from('conversations')
+        .select('id, ai_enabled')
+        .eq('organization_id', orgId)
+        .eq('channel_id', channel.id)
+        .eq('contact_external_id', evt.chatId)
+        .eq('is_test', false)
+        .maybeSingle();
+      if (!conv) return;
+
+      const text = evt.text.trim();
+      if (!text) return;
+
+      const since = new Date(Date.now() - 15 * 60_000).toISOString();
+      const { data: recent } = await this.supabase.admin
+        .from('messages')
+        .select('content')
+        .eq('conversation_id', conv.id)
+        .in('role', ['assistant', 'agent'])
+        .gte('created_at', since)
+        .order('created_at', { ascending: false })
+        .limit(30);
+      const isOurs = (recent ?? []).some((m) => String(m.content ?? '').trim() === text);
+      if (isOurs) return;
+
+      if (evt.messageId && (await this.messageExists(conv.id as string, evt.messageId))) return;
+
+      await this.supabase.admin.from('messages').insert({
+        conversation_id: conv.id,
+        organization_id: orgId,
+        role: 'agent',
+        content: text,
+        metadata: { message_id: evt.messageId ?? null, source: 'manual_echo' },
+      });
+
+      const update: Record<string, unknown> = {
+        last_outbound_at: new Date().toISOString(),
+        last_message_at: new Date().toISOString(),
+      };
+      if (conv.ai_enabled) {
+        // Cancela también cualquier respuesta pendiente del bot.
+        update.ai_enabled = false;
+        update.respond_after = null;
+        this.logger.log(`Mensaje manual detectado en ${conv.id}; IA pausada (human takeover)`);
+      }
+      await this.supabase.admin.from('conversations').update(update).eq('id', conv.id);
+    } catch (err) {
+      this.logger.warn(`No se pudo procesar el eco saliente: ${String(err)}`);
+    }
   }
 
   private async messageExists(convId: string, messageId: string): Promise<boolean> {
@@ -573,18 +674,35 @@ export class MessagingService {
       }
     }
 
-    for (const id of [conv.contact_external_id, conv.contact_handle].filter(Boolean) as string[]) {
-      if (await this.silenced.isSilenced(orgId, id)) {
-        this.logger.log(`Contacto silenciado ${id}; no se responde`);
-        return;
-      }
+    const silenceCandidates = [conv.contact_external_id, conv.contact_handle].filter(
+      Boolean,
+    ) as string[];
+    if (await this.silenced.isAnySilenced(orgId, silenceCandidates)) {
+      this.logger.log(`Contacto silenciado (${silenceCandidates.join(', ')}); no se responde`);
+      return;
     }
 
     if (
       cfg.active_hours_enabled &&
       !inActiveHours(cfg.active_hours_start, cfg.active_hours_end, cfg.timezone)
     ) {
-      this.logger.log('Fuera de horario; no se responde');
+      // El lock ya limpió respond_after; si no lo reprogramamos, este lead se
+      // quedaría sin respuesta para siempre. Lo diferimos a la próxima franja
+      // activa para que el bot RETOME la conversación al abrirse el horario.
+      const resumeAt = nextActiveSlot(
+        Date.now(),
+        true,
+        cfg.active_hours_start,
+        cfg.active_hours_end,
+        cfg.timezone,
+      );
+      await this.supabase.admin
+        .from('conversations')
+        .update({ respond_after: new Date(resumeAt).toISOString() })
+        .eq('id', conversationId);
+      this.logger.log(
+        `Fuera de horario; respuesta diferida a ${new Date(resumeAt).toISOString()} (${conversationId})`,
+      );
       return;
     }
 
@@ -599,12 +717,26 @@ export class MessagingService {
       .maybeSingle();
     if (!last || last.role !== 'contact') return;
 
-    // Clasificación (una vez) por si aún no tiene modo.
+    // Clasificación (una vez) por si aún no tiene modo. La IA solo APLICA
+    // 'setter'; si propone 'support' o 'ignored' lo guarda como sugerencia
+    // (suggested_mode) y el chat sigue en modo setter hasta que un humano la
+    // confirme desde el inbox. Así un lead real nunca se degrada solo.
     let mode = conv.mode as string;
     if (mode === 'unclassified' && !conv.mode_locked) {
-      mode = await this.classifier.classify(orgId, chatId, provider);
-      await this.supabase.admin.from('conversations').update({ mode }).eq('id', conversationId);
-      this.logger.log(`Conversación ${conversationId} clasificada como: ${mode}`);
+      const proposed = await this.classifier.classify(orgId, chatId, provider);
+      mode = 'setter';
+      await this.supabase.admin
+        .from('conversations')
+        .update(
+          proposed === 'setter'
+            ? { mode: 'setter' }
+            : { mode: 'setter', suggested_mode: proposed },
+        )
+        .eq('id', conversationId);
+      this.logger.log(
+        `Conversación ${conversationId} clasificada como: ${proposed}` +
+          (proposed !== 'setter' ? ' (solo sugerencia; sigue en setter)' : ''),
+      );
     }
     if (mode === 'ignored') return;
 
@@ -1032,12 +1164,17 @@ export class MessagingService {
         contact_handle: evt.senderProviderId ?? null,
         contact_name: evt.senderName ?? 'Lead',
         is_test: false,
-        ai_enabled: true,
+        // Con el flag NEW_CONVERSATIONS_START_PAUSED la IA arranca pausada y se
+        // activa desde un workflow (nodo "Pasar a IA"), el inbox o GHL.
+        ai_enabled: !newConversationsStartPaused(),
         stage: 'new',
       })
       .select('id, ai_enabled, mode, mode_locked, contact_name, contact_external_id, contact_handle, unread_count')
       .single();
     if (error) throw error;
+
+    // Dispara el workflow "Cuando entra una conversación nueva" (si existe).
+    void this.workflowTrigger.fire(orgId, created.id as string, 'conversation_created');
     return created;
   }
 

@@ -1,5 +1,6 @@
 import { Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { SupabaseService } from '../supabase/supabase.service';
+import { WorkflowTriggerService } from '../workflows/workflow-trigger.service';
 import type { AppliedTag, FunnelStage, TagDefinition } from './tags.types';
 
 type UpsertTagInput = {
@@ -15,7 +16,10 @@ type UpsertTagInput = {
 export class TagsService {
   private readonly logger = new Logger(TagsService.name);
 
-  constructor(private readonly supabase: SupabaseService) {}
+  constructor(
+    private readonly supabase: SupabaseService,
+    private readonly workflowTrigger: WorkflowTriggerService,
+  ) {}
 
   // --- Catálogo de etiquetas (definiciones) ----------------------------------
 
@@ -243,6 +247,8 @@ export class TagsService {
       .update({ status: stage })
       .eq('organization_id', orgId)
       .eq('conversation_id', conversationId);
+    // Workflows con trigger "Al cambiar de estado".
+    void this.workflowTrigger.fire(orgId, conversationId, 'stage', { stage });
   }
 
   private async assertTagOwned(orgId: string, tagId: string): Promise<void> {

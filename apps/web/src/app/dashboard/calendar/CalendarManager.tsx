@@ -40,6 +40,8 @@ type Appointment = {
   detected_by: string;
   meet_url: string | null;
   notes: string | null;
+  contact_name: string | null;
+  contact_handle: string | null;
 };
 
 const STATUS_LABEL: Record<Calendar["status"], string> = {
@@ -297,7 +299,16 @@ export default function CalendarManager() {
         ) : (
           appts.map((a) => (
             <div key={a.id} className={styles.apptRow}>
-              <span>{a.start_at ? new Date(a.start_at).toLocaleString("es-ES") : "Sin fecha concreta"}</span>
+              <span>
+                {a.start_at ? new Date(a.start_at).toLocaleString("es-ES") : "Sin fecha concreta"}
+                {(a.contact_name || a.contact_handle) && (
+                  <span className={styles.muted}>
+                    {" · "}
+                    {a.contact_name ?? "Lead"}
+                    {a.contact_handle ? ` (${a.contact_handle})` : ""}
+                  </span>
+                )}
+              </span>
               <span className={styles.badge}>
                 {a.detected_by === "bot" ? "detectada por el bot" : a.detected_by} · {a.status}
               </span>

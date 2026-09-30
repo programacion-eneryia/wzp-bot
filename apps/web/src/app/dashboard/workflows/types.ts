@@ -18,6 +18,9 @@ export type WfNodeData = {
   pause_followups?: boolean;
   url?: string;
   body?: string;
+  method?: "POST" | "GET" | "PUT" | "PATCH";
+  headers?: string;
+  auth_token?: string;
   label?: string;
 };
 
@@ -40,7 +43,7 @@ export type WorkflowDefinition = { nodes: WfDefNode[]; edges: WfDefEdge[] };
 export type Workflow = {
   id: string;
   name: string;
-  trigger: "lead_created" | "manual" | "stage";
+  trigger: "lead_created" | "conversation_created" | "manual" | "stage";
   trigger_config: Record<string, unknown>;
   is_active: boolean;
   resume_after_hours: number | null;
@@ -51,6 +54,7 @@ export type Workflow = {
 
 export const TRIGGER_LABEL: Record<Workflow["trigger"], string> = {
   lead_created: "Cuando entra un lead",
+  conversation_created: "Cuando entra una conversación nueva",
   manual: "Manual",
   stage: "Al cambiar de estado",
 };

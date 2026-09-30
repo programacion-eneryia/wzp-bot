@@ -27,4 +27,26 @@ export class GhlWebhookController {
     const orgId = await this.ghl.resolveOrgByToken(token);
     return this.ghl.handleAppointmentWebhook(orgId, body);
   }
+
+  /** Pausar/reactivar el bot de un lead desde un workflow de GHL. */
+  @Post('bot')
+  @HttpCode(200)
+  async bot(
+    @Query('token') token: string,
+    @Body() body: Record<string, unknown>,
+  ) {
+    const orgId = await this.ghl.resolveOrgByToken(token);
+    return this.ghl.handleBotControlWebhook(orgId, body);
+  }
+
+  /** Enviar un mensaje al lead (por el canal del bot) desde un flow de GHL. */
+  @Post('send')
+  @HttpCode(200)
+  async send(
+    @Query('token') token: string,
+    @Body() body: Record<string, unknown>,
+  ) {
+    const orgId = await this.ghl.resolveOrgByToken(token);
+    return this.ghl.handleSendMessageWebhook(orgId, body);
+  }
 }

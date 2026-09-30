@@ -15,6 +15,7 @@ import {
 import { MessagingService } from '../messaging/messaging.service';
 import { ConversionsApiService } from '../whatsapp-cloud/conversions-api.service';
 import { TagsService } from '../tags/tags.service';
+import { WorkflowTriggerService } from '../workflows/workflow-trigger.service';
 
 type FunnelStage =
   | 'new'
@@ -39,13 +40,14 @@ export class InboxService {
     private readonly capi: ConversionsApiService,
     private readonly tags: TagsService,
     private readonly setterConfig: SetterConfigService,
+    private readonly workflowTrigger: WorkflowTriggerService,
   ) {}
 
   async list(orgId: string, stage?: string, archived = false) {
     let query = this.supabase.admin
       .from('conversations')
       .select(
-        'id, provider, contact_name, contact_handle, stage, mode, ai_enabled, blocked, unread_count, last_message_at, created_at',
+        'id, provider, contact_name, contact_handle, stage, mode, suggested_mode, ai_enabled, blocked, unread_count, last_message_at, created_at',
       )
       .eq('organization_id', orgId)
       .eq('is_test', false)
@@ -177,9 +179,11 @@ export class InboxService {
     if (typeof patch.ai_enabled === 'boolean') update.ai_enabled = patch.ai_enabled;
     if (patch.stage) update.stage = patch.stage;
     if (patch.mode) {
-      // Si el usuario fija el modo a mano, lo bloqueamos (no reclasificar).
+      // Si el usuario fija el modo a mano, lo bloqueamos (no reclasificar) y
+      // resolvemos cualquier sugerencia pendiente de la IA.
       update.mode = patch.mode;
       update.mode_locked = true;
+      update.suggested_mode = null;
     }
     if (typeof patch.notes === 'string') update.notes = patch.notes;
     if (typeof patch.unread === 'boolean') update.unread_count = patch.unread ? 1 : 0;
@@ -209,6 +213,8 @@ export class InboxService {
         .update({ status: patch.stage })
         .eq('organization_id', orgId)
         .eq('conversation_id', id);
+      // Workflows con trigger "Al cambiar de estado".
+      void this.workflowTrigger.fire(orgId, id, 'stage', { stage: patch.stage });
     }
 
     // Atribución a Meta: al CUALIFICAR (o GANAR) un lead que vino de un anuncio
@@ -566,7 +572,7 @@ export class InboxService {
     const { data } = await this.supabase.admin
       .from('conversations')
       .select(
-        'id, provider, contact_name, contact_handle, stage, mode, mode_locked, ai_enabled, blocked, notes, unread_count, assigned_to, unipile_chat_id, ai_analysis, ai_analysis_at, last_message_at, created_at',
+        'id, provider, contact_name, contact_handle, stage, mode, mode_locked, suggested_mode, ai_enabled, blocked, notes, unread_count, assigned_to, unipile_chat_id, ai_analysis, ai_analysis_at, last_message_at, created_at',
       )
       .eq('id', id)
       .eq('organization_id', orgId)

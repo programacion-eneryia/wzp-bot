@@ -4,7 +4,6 @@ import { useCallback, useMemo, useRef, useState } from "react";
 import {
   addEdge,
   Background,
-  Controls,
   Handle,
   MarkerType,
   Position,
@@ -32,6 +31,9 @@ type NodeData = {
   pause_followups?: boolean;
   url?: string;
   body?: string;
+  method?: "POST" | "GET" | "PUT" | "PATCH";
+  headers?: string;
+  auth_token?: string;
 };
 
 const META: Record<NodeKind, { label: string; branch?: boolean; terminal?: boolean }> = {
@@ -352,6 +354,7 @@ function Editor({ workflow, onBack }: { workflow: Workflow; onBack: () => void }
           onChange={(e) => setTrigger(e.target.value as Workflow["trigger"])}
         >
           <option value="lead_created">Cuando entra un lead</option>
+          <option value="conversation_created">Cuando entra una conversación nueva</option>
           <option value="manual">Manual</option>
           <option value="stage">Al cambiar de estado</option>
         </select>
@@ -376,8 +379,11 @@ function Editor({ workflow, onBack }: { workflow: Workflow; onBack: () => void }
           />
           Activo
         </label>
-        <label className={styles.resume}>
-          Reanudar si silencio (h)
+        <label
+          className={styles.resume}
+          title="Cuando el lead responde, los seguimientos se pausan. Si vuelve a quedarse en silencio durante estas horas, el workflow se reanuda solo desde donde iba. Vacío = no se reanuda."
+        >
+          Reanudar seguimientos tras horas sin respuesta:
           <input
             className={styles.smallInput}
             type="number"
@@ -428,7 +434,6 @@ function Editor({ workflow, onBack }: { workflow: Workflow; onBack: () => void }
             proOptions={{ hideAttribution: true }}
           >
             <Background gap={16} />
-            <Controls />
           </ReactFlow>
         </div>
 
@@ -570,6 +575,21 @@ function Editor({ workflow, onBack }: { workflow: Workflow; onBack: () => void }
                     />
                   </label>
                   <label className={styles.field}>
+                    Método HTTP
+                    <select
+                      className={styles.input}
+                      value={selData.method ?? "POST"}
+                      onChange={(e) =>
+                        patchSelected({ method: e.target.value as NodeData["method"] })
+                      }
+                    >
+                      <option value="POST">POST</option>
+                      <option value="GET">GET</option>
+                      <option value="PUT">PUT</option>
+                      <option value="PATCH">PATCH</option>
+                    </select>
+                  </label>
+                  <label className={styles.field}>
                     Cuerpo JSON (opcional)
                     <textarea
                       className={styles.textarea}
@@ -579,10 +599,30 @@ function Editor({ workflow, onBack }: { workflow: Workflow; onBack: () => void }
                       placeholder={'{\n  "nombre": "{name}",\n  "telefono": "{phone}"\n}'}
                     />
                   </label>
+                  <label className={styles.field}>
+                    Headers JSON (opcional)
+                    <textarea
+                      className={styles.textarea}
+                      rows={3}
+                      value={selData.headers ?? ""}
+                      onChange={(e) => patchSelected({ headers: e.target.value })}
+                      placeholder={'{\n  "x-api-key": "tu-clave"\n}'}
+                    />
+                  </label>
+                  <label className={styles.field}>
+                    Token Bearer (opcional)
+                    <input
+                      className={styles.input}
+                      type="password"
+                      value={selData.auth_token ?? ""}
+                      onChange={(e) => patchSelected({ auth_token: e.target.value })}
+                      placeholder="Se envía como Authorization: Bearer …"
+                    />
+                  </label>
                   <span className={styles.hint}>
                     Si dejas el cuerpo vacío se envían los datos del lead (nombre, teléfono, email,
                     fuente, campaña y campos del formulario). Puedes usar variables como {"{name}"} o{" "}
-                    {"{phone}"}.
+                    {"{phone}"} en el cuerpo y en los headers.
                   </span>
                 </>
               )}

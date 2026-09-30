@@ -112,6 +112,7 @@ export default function Workflows() {
             onChange={(e) => setTrigger(e.target.value as Workflow["trigger"])}
           >
             <option value="lead_created">Cuando entra un lead</option>
+            <option value="conversation_created">Cuando entra una conversación nueva</option>
             <option value="manual">Manual</option>
             <option value="stage">Al cambiar de estado</option>
           </select>

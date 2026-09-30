@@ -1,5 +1,6 @@
-import { ForbiddenException, Injectable, Logger } from '@nestjs/common';
+import { BadRequestException, ForbiddenException, Injectable, Logger } from '@nestjs/common';
 import { SupabaseService } from '../supabase/supabase.service';
+import { MessagingService } from '../messaging/messaging.service';
 import { safeWebhookUrlOrNull } from '../common/url-safety';
 
 /** Datos para el webhook de salida "lead registrado" hacia GHL (paso 2). */
@@ -34,7 +35,10 @@ type MatchKeys = {
 export class GhlService {
   private readonly logger = new Logger(GhlService.name);
 
-  constructor(private readonly supabase: SupabaseService) {}
+  constructor(
+    private readonly supabase: SupabaseService,
+    private readonly messaging: MessagingService,
+  ) {}
 
   /** Resuelve la organización a partir del intake_token (endpoints públicos). */
   async resolveOrgByToken(token: string): Promise<string> {
@@ -221,13 +225,20 @@ export class GhlService {
     });
 
     if (conv) {
+      // Con la llamada ya agendada, el bot deja de hablar: pausamos también la
+      // IA (no solo los seguimientos) para que no siga insistiendo al lead.
       await this.supabase.admin
         .from('conversations')
-        .update({ stage: conv.stage === 'won' ? 'won' : 'call_scheduled', followups_paused: true })
+        .update({
+          stage: conv.stage === 'won' ? 'won' : 'call_scheduled',
+          followups_paused: true,
+          ai_enabled: false,
+          respond_after: null,
+        })
         .eq('id', conv.id)
         .eq('organization_id', orgId);
       await this.syncLeadStatus(orgId, conv.id, 'call_scheduled');
-      this.logger.log(`Cita AGENDADA en GHL → seguimientos pausados (conv ${conv.id})`);
+      this.logger.log(`Cita AGENDADA en GHL → IA y seguimientos pausados (conv ${conv.id})`);
     } else {
       this.logger.warn(
         `Cita de GHL sin conversación correlacionada (org ${orgId}, keys=${JSON.stringify(keys)})`,
@@ -235,6 +246,79 @@ export class GhlService {
     }
 
     return { ok: true, matched: Boolean(conv), action };
+  }
+
+  /**
+   * Webhook "control del bot" desde GHL: pausa o reactiva la IA de la
+   * conversación del lead. Body esperado (flexible):
+   *   { action: 'pause' | 'resume', setter_id | contact_id | phone | email }
+   * Sin `action` (o no reconocida) se asume 'pause'.
+   */
+  async handleBotControlWebhook(
+    orgId: string,
+    body: Record<string, unknown>,
+  ): Promise<{ ok: boolean; matched: boolean; action: string }> {
+    const keys = extractMatchKeys(body);
+    const rawAction = (
+      str(body.action ?? body.event ?? body.type ?? body.bot ?? body.status) ?? ''
+    ).toLowerCase();
+    const action = /resume|reactivar|activar|activate|unpause|on|start/.test(rawAction)
+      ? 'resume'
+      : 'pause';
+
+    const conv = await this.findConversation(orgId, keys);
+    if (!conv) {
+      this.logger.warn(
+        `Webhook bot ${action} de GHL sin conversación (org ${orgId}, keys=${JSON.stringify(keys)})`,
+      );
+      return { ok: true, matched: false, action };
+    }
+
+    await this.supabase.admin
+      .from('conversations')
+      .update(
+        action === 'resume'
+          ? { ai_enabled: true }
+          : { ai_enabled: false, respond_after: null },
+      )
+      .eq('id', conv.id)
+      .eq('organization_id', orgId);
+    this.logger.log(`GHL → bot ${action === 'resume' ? 'REACTIVADO' : 'PAUSADO'} (conv ${conv.id})`);
+    return { ok: true, matched: true, action };
+  }
+
+  /**
+   * Webhook "enviar mensaje" desde GHL: entrega al lead, por el canal del bot
+   * (Unipile/Cloud), el texto que mande un flow de GHL. Como es un envío
+   * manual, PAUSA la IA (mismo comportamiento que escribir desde el inbox).
+   * Body esperado: { message | text, setter_id | contact_id | phone | email }.
+   */
+  async handleSendMessageWebhook(
+    orgId: string,
+    body: Record<string, unknown>,
+  ): Promise<{ ok: boolean; matched: boolean }> {
+    const customData = (body.customData ?? {}) as Record<string, unknown>;
+    const message = str(
+      body.message ?? body.text ?? body.body ?? customData.message ?? customData.text,
+    );
+    if (!message) {
+      throw new BadRequestException(
+        'Falta el texto: envía el campo "message" (o "text") en el body del webhook',
+      );
+    }
+
+    const keys = extractMatchKeys(body);
+    const conv = await this.findConversation(orgId, keys);
+    if (!conv) {
+      this.logger.warn(
+        `Webhook send de GHL sin conversación (org ${orgId}, keys=${JSON.stringify(keys)})`,
+      );
+      return { ok: true, matched: false };
+    }
+
+    await this.messaging.sendAgentMessage(orgId, conv.id, message);
+    this.logger.log(`GHL → mensaje enviado al lead por el bot (conv ${conv.id}); IA pausada`);
+    return { ok: true, matched: true };
   }
 
   // --- helpers ----------------------------------------------------------------
@@ -402,6 +486,18 @@ export class GhlService {
       .eq('organization_id', orgId)
       .eq('conversation_id', conversationId);
   }
+}
+
+/** Claves de correlación comunes a todos los webhooks de GHL. */
+function extractMatchKeys(body: Record<string, unknown>): MatchKeys {
+  const contact = (body.contact ?? {}) as Record<string, unknown>;
+  const customData = (body.customData ?? {}) as Record<string, unknown>;
+  return {
+    setterId: str(body.setter_id ?? body.setterId ?? customData.setter_id),
+    contactId: str(body.contact_id ?? body.contactId ?? contact.id),
+    phone: digits(str(body.phone ?? contact.phone ?? customData.phone)),
+    email: (str(body.email ?? contact.email) || '').toLowerCase() || undefined,
+  };
 }
 
 function str(v: unknown): string | undefined {

@@ -101,6 +101,8 @@ export class IntegrationsService {
       lead_intake: `${base}/api/leads/intake?token=${token}`,
       ghl_lead: `${base}/api/leads/ghl?token=${token}`,
       ghl_appointment: `${base}/api/webhooks/ghl/appointment?token=${token}`,
+      ghl_bot: `${base}/api/webhooks/ghl/bot?token=${token}`,
+      ghl_send: `${base}/api/webhooks/ghl/send?token=${token}`,
       manychat_dynamic: `${base}/api/integrations/manychat/dynamic?token=${token}`,
     };
   }

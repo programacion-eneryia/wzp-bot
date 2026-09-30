@@ -8,6 +8,8 @@ type Urls = {
   lead_intake: string;
   ghl_lead: string;
   ghl_appointment: string;
+  ghl_bot: string;
+  ghl_send: string;
   manychat_dynamic: string;
 };
 
@@ -111,18 +113,32 @@ export default function Integrations({ isAdmin = true }: { isAdmin?: boolean }) 
         </p>
 
         <UrlRow
-          label="① Registrar leads en el CRM (GoHighLevel, Zapier, Make, tu formulario)"
-          hint="ESTA es la URL para que un lead ENTRE al CRM. Un único webhook para todos. POST con JSON. Detecta automáticamente GoHighLevel (first_name, customData, contact_id) y marca la fuente. En GHL: Workflow (trigger de nuevo lead) → acción “Webhook (Outbound)” (POST) a esta URL."
+          label="① GoHighLevel · Registrar leads en el CRM"
+          hint="ESTA es la URL para que un lead ENTRE al CRM. POST con JSON. En GHL: Workflow (trigger de nuevo lead) → acción “Webhook (Outbound)” (POST) a esta URL."
           url={data.urls.lead_intake}
           copied={copied === "generic"}
           onCopy={() => copy(data.urls.lead_intake, "generic")}
         />
         <UrlRow
           label="② GoHighLevel · Cita agendada/cancelada (NO usar para registrar leads)"
-          hint="SOLO para eventos de cita. Workflow → trigger “Appointment (Booked/Cancelled)” → acción “Webhook (Outbound)” (POST). Incluye el campo setter_id para enlazarlo. Al recibirlo, se pausan los seguimientos. Si registras leads aquí por error, NO aparecerán en el CRM."
+          hint="SOLO para eventos de cita. Workflow → trigger “Appointment (Booked/Cancelled)” → acción “Webhook (Outbound)” (POST). Incluye el campo setter_id para enlazarlo. Al recibirlo se pausan el bot y los seguimientos. Si registras leads aquí por error, NO aparecerán en el CRM."
           url={data.urls.ghl_appointment}
           copied={copied === "ghl_appt"}
           onCopy={() => copy(data.urls.ghl_appointment, "ghl_appt")}
+        />
+        <UrlRow
+          label="③ GoHighLevel · Pausar / reactivar el bot"
+          hint='Para controlar la IA desde un workflow de GHL. POST con JSON: {"action": "pause"} o {"action": "resume"}, más setter_id (o phone/contact_id) para identificar al lead.'
+          url={data.urls.ghl_bot}
+          copied={copied === "ghl_bot"}
+          onCopy={() => copy(data.urls.ghl_bot, "ghl_bot")}
+        />
+        <UrlRow
+          label="④ GoHighLevel · Enviar mensaje al lead por el bot"
+          hint='Envía por WhatsApp (canal del bot) el texto que mande un flow de GHL. POST con JSON: {"message": "tu texto"}, más setter_id (o phone/contact_id). Al enviarse, la IA se pausa (lo tratamos como mensaje manual).'
+          url={data.urls.ghl_send}
+          copied={copied === "ghl_send"}
+          onCopy={() => copy(data.urls.ghl_send, "ghl_send")}
         />
         <UrlRow
           label="ManyChat (Instagram)"
@@ -144,24 +160,13 @@ export default function Integrations({ isAdmin = true }: { isAdmin?: boolean }) 
         )}
       </section>
 
+      {/* El apartado de "mensaje proactivo" está oculto: el primer contacto se
+          define en Workflows. Se mantiene el selector de canal, que usan los
+          envíos de los workflows. */}
       <section className={styles.card}>
-        <h2 className={styles.cardTitle}>Primer mensaje proactivo (WhatsApp)</h2>
-        <label className={styles.checkRow}>
-          <input
-            type="checkbox"
-            checked={data.proactive_enabled}
-            onChange={(e) => patch({ proactive_enabled: e.target.checked })}
-            disabled={saving}
-          />
-          <span>
-            <strong>Contactar leads automáticamente</strong> — cuando entra un lead con teléfono,
-            el bot envía el primer mensaje (definido por tu workflow de “Lead entra”) de forma
-            espaciada y respetando el horario activo.
-          </span>
-        </label>
-
+        <h2 className={styles.cardTitle}>Canal de salida (WhatsApp)</h2>
         <label className={styles.field}>
-          <span className={styles.label}>Canal de WhatsApp para el primer contacto</span>
+          <span className={styles.label}>Canal de WhatsApp para el primer contacto de los workflows</span>
           <select
             className={styles.input}
             value={data.default_channel_id ?? ""}
@@ -178,7 +183,7 @@ export default function Integrations({ isAdmin = true }: { isAdmin?: boolean }) 
         </label>
         <p className={styles.muted}>
           El primer mensaje y los seguimientos se definen en <strong>Workflows</strong> (“Lead
-          entra”). Usa variables como {"{nombre}"}.
+          entra” / “Conversación nueva”). Usa variables como {"{nombre}"}.
         </p>
       </section>
 

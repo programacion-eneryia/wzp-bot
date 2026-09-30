@@ -3,7 +3,7 @@
  * La definición se guarda como JSON en `workflows.definition`.
  */
 
-export type WorkflowTrigger = 'lead_created' | 'manual' | 'stage';
+export type WorkflowTrigger = 'lead_created' | 'conversation_created' | 'manual' | 'stage';
 
 export type NodeType =
   | 'start'
@@ -32,6 +32,12 @@ export type WorkflowNodeData = {
   /** webhook: URL de salida (https) y cuerpo opcional (JSON con variables). */
   url?: string;
   body?: string;
+  /** webhook: método HTTP (por defecto POST). */
+  method?: 'POST' | 'GET' | 'PUT' | 'PATCH';
+  /** webhook: headers extra como JSON (`{"x-api-key": "..."}`, admite variables). */
+  headers?: string;
+  /** webhook: si se define, se envía como `Authorization: Bearer <token>`. */
+  auth_token?: string;
   label?: string;
 };
 

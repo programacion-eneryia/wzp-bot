@@ -3,6 +3,7 @@ import { SupabaseService } from '../supabase/supabase.service';
 import { SetterConfigService } from '../setter/setter-config.service';
 import { MessagingService } from '../messaging/messaging.service';
 import { GhlService } from '../ghl/ghl.service';
+import { newConversationsStartPaused } from '../common/flags';
 import { WorkflowEngineService } from '../workflows/workflow-engine.service';
 import { LeadsService } from './leads.service';
 
@@ -180,27 +181,24 @@ export class LeadIntakeService {
       };
     }
 
-    const wantsProactive = (input.proactive ?? true) && org.proactive_enabled;
-    if (!wantsProactive) {
-      return { conversationId: conv.id, leadId, proactiveSent: false, reason: 'proactivo desactivado' };
-    }
     if (conv.proactive_sent) {
       return { conversationId: conv.id, leadId, proactiveSent: false, reason: 'ya se contactó antes' };
     }
 
-    // Por ahora el primer mensaje proactivo solo está soportado en WhatsApp
+    // Por ahora el primer contacto solo está soportado en WhatsApp
     // (en IG/Messenger la ventana de 24h obliga a pasar por ManyChat).
     if (provider !== 'whatsapp') {
       return {
         conversationId: conv.id,
         leadId,
         proactiveSent: false,
-        reason: 'proactivo solo en WhatsApp',
+        reason: 'primer contacto solo en WhatsApp',
       };
     }
 
     // Si hay un workflow "Lead entra" ACTIVO, es la fuente de verdad del primer
-    // mensaje + seguimientos. Sustituye a la plantilla proactiva simple.
+    // mensaje + seguimientos. NO depende del toggle proactivo legacy: los
+    // workflows son el mecanismo actual de primer contacto.
     const startedWorkflow = await this.workflow.startForConversation(orgId, conv.id, 'lead_created');
     if (startedWorkflow) {
       return {
@@ -209,6 +207,13 @@ export class LeadIntakeService {
         proactiveSent: true,
         reason: 'workflow "Lead entra" iniciado',
       };
+    }
+
+    // Plantilla proactiva simple (legacy, oculta en la UI): solo si sigue
+    // habilitada en la org y el intake no la desactivó.
+    const wantsProactive = (input.proactive ?? true) && org.proactive_enabled;
+    if (!wantsProactive) {
+      return { conversationId: conv.id, leadId, proactiveSent: false, reason: 'proactivo desactivado' };
     }
 
     const cfg = await this.setterConfig.getOrCreate(orgId);
@@ -343,7 +348,6 @@ export class LeadIntakeService {
             ...(channel && !data.channel_id ? { channel_id: channel.id } : {}),
             consent_optin: true,
             mode: 'setter',
-            ai_enabled: true,
           })
           .eq('id', data.id);
         return data;
@@ -367,7 +371,9 @@ export class LeadIntakeService {
         // Origen de campaña/lead → siempre setter, y fijado (no reclasificar).
         mode: 'setter',
         mode_locked: true,
-        ai_enabled: true,
+        // Con NEW_CONVERSATIONS_START_PAUSED la IA arranca pausada y la activa
+        // el workflow (nodo "Pasar a IA"), el inbox o GHL.
+        ai_enabled: !newConversationsStartPaused(),
         is_test: false,
         stage: 'new',
       })

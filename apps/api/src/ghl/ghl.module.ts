@@ -1,4 +1,5 @@
 import { Module } from '@nestjs/common';
+import { MessagingModule } from '../messaging/messaging.module';
 import { GhlService } from './ghl.service';
 import { GhlWebhookController } from './ghl-webhook.controller';
 
@@ -9,6 +10,7 @@ import { GhlWebhookController } from './ghl-webhook.controller';
  * intake de leads dispare la salida sin ciclos de dependencias.
  */
 @Module({
+  imports: [MessagingModule],
   controllers: [GhlWebhookController],
   providers: [GhlService],
   exports: [GhlService],
