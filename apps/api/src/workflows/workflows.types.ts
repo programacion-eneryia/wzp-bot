@@ -9,6 +9,8 @@ export type NodeType =
   | 'start'
   | 'message'
   | 'wait'
+  /** Espera hasta que el lead responda o venza el tiempo máximo (2 salidas: yes/no). */
+  | 'wait_reply'
   | 'if_replied'
   | 'if_stage'
   | 'stop'
@@ -21,7 +23,7 @@ export type WaitUnit = 'minutes' | 'hours' | 'days';
 export type WorkflowNodeData = {
   /** message: texto a enviar (admite variables {{name}} / {name}). */
   text?: string;
-  /** wait: cantidad + unidad de espera. */
+  /** wait / wait_reply: cantidad + unidad de espera (en wait_reply, tiempo máximo). */
   amount?: number;
   unit?: WaitUnit;
   /** if_stage: estado con el que comparar. */

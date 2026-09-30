@@ -3,6 +3,8 @@ import { SetterModule } from '../setter/setter.module';
 import { CalendarModule } from '../calendar/calendar.module';
 import { TagsModule } from '../tags/tags.module';
 import { WorkflowTriggerModule } from '../workflows/workflow-trigger.module';
+import { AgentsModule } from '../agents/agents.module';
+import { StagesModule } from '../stages/stages.module';
 import { MessagingService } from './messaging.service';
 import { TransportService } from './transport.service';
 
@@ -13,7 +15,14 @@ import { TransportService } from './transport.service';
  * Así todo puede desplegarse como funciones serverless, sin workers encendidos.
  */
 @Module({
-  imports: [SetterModule, CalendarModule, TagsModule, WorkflowTriggerModule],
+  imports: [
+    SetterModule,
+    CalendarModule,
+    TagsModule,
+    WorkflowTriggerModule,
+    AgentsModule,
+    StagesModule,
+  ],
   providers: [MessagingService, TransportService],
   exports: [MessagingService, TransportService],
 })

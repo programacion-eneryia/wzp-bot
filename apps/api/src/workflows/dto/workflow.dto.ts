@@ -11,6 +11,7 @@ import {
   MaxLength,
   Min,
   MinLength,
+  ValidateIf,
 } from 'class-validator';
 
 const TRIGGERS = ['lead_created', 'conversation_created', 'manual', 'stage'] as const;
@@ -20,6 +21,7 @@ export class CreateWorkflowDto {
   @IsOptional() @IsIn(TRIGGERS) trigger?: (typeof TRIGGERS)[number];
   @IsOptional() @IsObject() trigger_config?: Record<string, unknown>;
   @IsOptional() @Type(() => Number) @IsInt() @Min(1) @Max(8760) resume_after_hours?: number;
+  @IsOptional() @ValidateIf((_, v) => v !== null) @IsString() @MaxLength(64) agent_id?: string | null;
   @IsOptional() @IsObject() definition?: Record<string, unknown>;
 }
 
@@ -29,6 +31,7 @@ export class UpdateWorkflowDto {
   @IsOptional() @IsObject() trigger_config?: Record<string, unknown>;
   @IsOptional() @IsBoolean() is_active?: boolean;
   @IsOptional() @Type(() => Number) @IsInt() @Min(0) @Max(8760) resume_after_hours?: number;
+  @IsOptional() @ValidateIf((_, v) => v !== null) @IsString() @MaxLength(64) agent_id?: string | null;
   @IsOptional() @IsObject() definition?: Record<string, unknown>;
 }
 

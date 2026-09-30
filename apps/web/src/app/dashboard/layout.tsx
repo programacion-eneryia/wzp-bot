@@ -84,14 +84,21 @@ export default async function DashboardLayout({
         { label: "Chats", href: "/dashboard/inbox" },
         { label: "Workflows", href: "/dashboard/workflows" },
         { label: "Probar IA", href: "/dashboard/playground" },
-        { label: "Mi Setter", href: "/dashboard/setter" },
         { label: "Calendarios", href: "/dashboard/calendar" },
+      ],
+    },
+    {
+      label: "Gestión de agentes",
+      items: [
+        { label: "Agentes", href: "/dashboard/agents" },
+        { label: "Base de Conocimiento", href: "/dashboard/setter" },
+        { label: "Pipelines y Stages", href: "/dashboard/stages" },
+        { label: "Etiquetas", href: "/dashboard/tags" },
       ],
     },
     {
       label: "Gestión",
       items: [
-        { label: "Etiquetas", href: "/dashboard/tags" },
         ...(role === "admin"
           ? [{ label: "Equipo", href: "/dashboard/team" }]
           : [{ label: "Equipo" }]),

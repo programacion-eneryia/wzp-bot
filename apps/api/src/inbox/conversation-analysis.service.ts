@@ -3,20 +3,16 @@ import { ConfigService } from '@nestjs/config';
 import { OpenRouterService } from '../openrouter/openrouter.service';
 import { SupabaseService } from '../supabase/supabase.service';
 import { SetterConfigService } from '../setter/setter-config.service';
+import { StagesService } from '../stages/stages.service';
+import { AgentsService } from '../agents/agents.service';
 
 export type ConversationAnalysis = {
   summary: string;
   qualification: 'cualificado' | 'en_proceso' | 'no_cualifica' | 'desconocido';
   interest_level: 'alto' | 'medio' | 'bajo';
   sentiment: 'positivo' | 'neutral' | 'negativo';
-  suggested_stage:
-    | 'new'
-    | 'qualifying'
-    | 'qualified'
-    | 'not_qualified'
-    | 'call_scheduled'
-    | 'won'
-    | 'lost';
+  /** Key de una etapa del pipeline de la organización. */
+  suggested_stage: string;
   next_step: string;
   key_points: string[];
   objections: string[];
@@ -37,6 +33,8 @@ export class ConversationAnalysisService {
     private readonly openrouter: OpenRouterService,
     private readonly setterConfig: SetterConfigService,
     private readonly config: ConfigService,
+    private readonly stages: StagesService,
+    private readonly agents: AgentsService,
   ) {}
 
   /**
@@ -46,7 +44,7 @@ export class ConversationAnalysisService {
   async analyze(orgId: string, conversationId: string): Promise<ConversationAnalysis> {
     const { data: conv } = await this.supabase.admin
       .from('conversations')
-      .select('id, contact_name')
+      .select('id, contact_name, agent_id, channel_id, mode')
       .eq('id', conversationId)
       .eq('organization_id', orgId)
       .maybeSingle();
@@ -64,6 +62,14 @@ export class ConversationAnalysisService {
     }
 
     const cfg = await this.setterConfig.getOrCreate(orgId);
+    const agent = await this.agents.resolveForConversation(orgId, {
+      agent_id: conv.agent_id as string | null,
+      channel_id: conv.channel_id as string | null,
+      mode: conv.mode as string | null,
+    });
+    const stageList = await this.stages.list(orgId);
+    const stageKeys = stageList.map((s) => s.key);
+    const stageHelp = stageList.map((s) => `${s.key} = ${s.name}`).join(', ');
 
     const transcript = messages
       .filter((m) => m.role !== 'system')
@@ -76,8 +82,11 @@ export class ConversationAnalysisService {
       '',
       'CONTEXTO DEL NEGOCIO:',
       cfg.offer ? `Oferta: ${cfg.offer}` : '',
-      cfg.qualification_criteria ? `Criterios de cualificación: ${cfg.qualification_criteria}` : '',
-      cfg.objective ? `Objetivo del setter: ${cfg.objective}` : '',
+      agent?.qualification_criteria
+        ? `Criterios de cualificación: ${agent.qualification_criteria}`
+        : '',
+      agent?.objective ? `Objetivo del agente: ${agent.objective}` : '',
+      `Etapas del pipeline (usa la key): ${stageHelp}`,
       '',
       'Devuelve EXCLUSIVAMENTE un objeto JSON válido (sin markdown, sin texto extra)',
       'con esta forma exacta:',
@@ -86,7 +95,7 @@ export class ConversationAnalysisService {
       '  "qualification": "cualificado | en_proceso | no_cualifica | desconocido",',
       '  "interest_level": "alto | medio | bajo",',
       '  "sentiment": "positivo | neutral | negativo",',
-      '  "suggested_stage": "new | qualifying | qualified | not_qualified | call_scheduled | won | lost",',
+      `  "suggested_stage": "${stageKeys.join(' | ')}",`,
       '  "next_step": "la siguiente acción concreta recomendada",',
       '  "key_points": ["datos clave que ha dado el lead"],',
       '  "objections": ["dudas u objeciones detectadas"],',
@@ -113,6 +122,7 @@ export class ConversationAnalysisService {
     );
 
     const analysis = this.parse(raw);
+    if (!stageKeys.includes(analysis.suggested_stage)) analysis.suggested_stage = 'new';
 
     await this.supabase.admin
       .from('conversations')
@@ -139,7 +149,7 @@ export class ConversationAnalysisService {
         qualification: (obj.qualification ?? 'desconocido') as ConversationAnalysis['qualification'],
         interest_level: (obj.interest_level ?? 'medio') as ConversationAnalysis['interest_level'],
         sentiment: (obj.sentiment ?? 'neutral') as ConversationAnalysis['sentiment'],
-        suggested_stage: (obj.suggested_stage ?? 'new') as ConversationAnalysis['suggested_stage'],
+        suggested_stage: String(obj.suggested_stage ?? 'new'),
         next_step: String(obj.next_step ?? ''),
         key_points: Array.isArray(obj.key_points) ? obj.key_points.map(String) : [],
         objections: Array.isArray(obj.objections) ? obj.objections.map(String) : [],

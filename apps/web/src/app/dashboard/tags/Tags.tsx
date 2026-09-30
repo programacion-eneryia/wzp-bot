@@ -2,7 +2,8 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { apiFetch } from "@/lib/api";
-import { STAGE_LABEL, STAGES, type Stage, type Tag } from "./types";
+import { useStages } from "@/lib/stages";
+import { type Stage, type Tag } from "./types";
 import styles from "./tags.module.css";
 
 const PRESET_COLORS = [
@@ -33,6 +34,7 @@ const EMPTY: Draft = {
 };
 
 export default function Tags() {
+  const { stages, label: stageLabel } = useStages();
   const [items, setItems] = useState<Tag[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -166,9 +168,9 @@ export default function Tags() {
                 }
               >
                 <option value="">— No cambiar la etapa —</option>
-                {STAGES.map((s) => (
-                  <option key={s} value={s}>
-                    {STAGE_LABEL[s]}
+                {stages.map((s) => (
+                  <option key={s.key} value={s.key}>
+                    {s.name}
                   </option>
                 ))}
               </select>
@@ -226,7 +228,7 @@ export default function Tags() {
                 </span>
                 {tag.set_stage && (
                   <span className={`${styles.chip} ${styles.chipStage}`}>
-                    → {STAGE_LABEL[tag.set_stage]}
+                    → {stageLabel(tag.set_stage)}
                   </span>
                 )}
               </span>

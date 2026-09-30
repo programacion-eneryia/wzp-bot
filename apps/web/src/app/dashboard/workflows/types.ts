@@ -2,6 +2,7 @@ export type NodeKind =
   | "start"
   | "message"
   | "wait"
+  | "wait_reply"
   | "if_replied"
   | "if_stage"
   | "stop"
@@ -46,6 +47,8 @@ export type Workflow = {
   trigger: "lead_created" | "conversation_created" | "manual" | "stage";
   trigger_config: Record<string, unknown>;
   is_active: boolean;
+  /** Agente al que pertenece (null = genérico, vale para cualquier agente). */
+  agent_id?: string | null;
   resume_after_hours: number | null;
   definition: WorkflowDefinition;
   created_at: string;
@@ -59,12 +62,3 @@ export const TRIGGER_LABEL: Record<Workflow["trigger"], string> = {
   stage: "Al cambiar de estado",
 };
 
-export const STAGES = [
-  "new",
-  "qualifying",
-  "qualified",
-  "not_qualified",
-  "call_scheduled",
-  "won",
-  "lost",
-];

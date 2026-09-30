@@ -29,6 +29,7 @@ export class PlaygroundController {
       user.organizationId,
       dto.provider,
       dto.contact_name ?? '',
+      dto.agent_id ?? null,
     );
   }
 

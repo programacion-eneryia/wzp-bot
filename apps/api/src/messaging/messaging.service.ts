@@ -10,6 +10,8 @@ import { AppointmentDetectorService } from '../calendar/appointment-detector.ser
 import { TransportService } from './transport.service';
 import { TagClassifierService } from '../tags/tag-classifier.service';
 import { WorkflowTriggerService } from '../workflows/workflow-trigger.service';
+import { AgentsService } from '../agents/agents.service';
+import { StagesService } from '../stages/stages.service';
 import { newConversationsStartPaused } from '../common/flags';
 import { DEBOUNCE_MS, type OutgoingJob, type RespondJob } from './queues';
 
@@ -49,6 +51,8 @@ export class MessagingService {
     private readonly transport: TransportService,
     private readonly tagClassifier: TagClassifierService,
     private readonly workflowTrigger: WorkflowTriggerService,
+    private readonly agents: AgentsService,
+    private readonly stages: StagesService,
   ) {}
 
   /**
@@ -654,7 +658,7 @@ export class MessagingService {
     const { data: conv } = await this.supabase.admin
       .from('conversations')
       .select(
-        'id, ai_enabled, blocked, mode, mode_locked, contact_name, contact_external_id, contact_handle, last_inbound_at, transport, channel_id',
+        'id, ai_enabled, blocked, mode, mode_locked, contact_name, contact_external_id, contact_handle, last_inbound_at, transport, channel_id, agent_id',
       )
       .eq('id', conversationId)
       .maybeSingle();
@@ -744,12 +748,32 @@ export class MessagingService {
     // envío entra uno más nuevo, abortamos.
     const watermark = conv.last_inbound_at ?? null;
 
-    const respondMode = mode === 'support' ? 'support' : 'setter';
-    const bubbles = await this.setter.respond(orgId, conversationId, respondMode, {
+    // Qué agente atiende: override de la conversación → modo soporte confirmado
+    // → agente por defecto del canal → primer setter activo.
+    const agent = await this.agents.resolveForConversation(orgId, {
+      agent_id: conv.agent_id as string | null,
+      channel_id: conv.channel_id as string | null,
+      mode,
+    });
+    if (!agent) {
+      this.logger.warn(`Org ${orgId} sin agentes activos; no se responde (${conversationId})`);
+      return;
+    }
+
+    const bubbles = await this.setter.respond(orgId, conversationId, {
+      agent,
       contactName: conv.contact_name,
       persist: false,
     });
     if (bubbles.length === 0) return;
+
+    // Enlace de agenda del agente (modo enlace): si lo manda, la conversación
+    // pasa a "Calendario enviado". "Llamada agendada" solo la pone la cita
+    // confirmada (webhook de GHL / calendario interno).
+    const calendarLink =
+      agent.kind !== 'support' && agent.calendar_mode === 'link' && agent.calendar_link
+        ? normalizeLink(agent.calendar_link)
+        : null;
 
     // Retardo inicial (simula "leer"). El cps/longitud da el ritmo entre burbujas.
     await sleep(randomSeconds(cfg.first_reply_min_s, cfg.first_reply_max_s) * 1000);
@@ -787,14 +811,23 @@ export class MessagingService {
         .from('conversations')
         .update({ last_outbound_at: new Date().toISOString(), last_message_at: new Date().toISOString() })
         .eq('id', conversationId);
+
+      if (calendarLink && agent.uses_stages && normalizeLink(b.content).includes(calendarLink)) {
+        void this.stages.setConversationStage(orgId, conversationId, 'calendar_sent', {
+          skipIfIn: ['calendar_sent', 'call_scheduled', 'won', 'lost', 'not_qualified'],
+        });
+      }
     }
 
     // El bot ha hablado con este contacto → lo registramos como lead en el CRM
     // (si aún no lo estaba). Así todos los chats atendidos quedan en el CRM.
     void this.ensureLeadForConversation(orgId, conversationId);
     // Tras responder, el bot comprueba si el lead ha agendado/confirmado una
-    // llamada y, si es así, etiqueta la conversación como `call_scheduled`.
-    void this.appointmentDetector.maybeDetect(orgId, conversationId);
+    // llamada. Solo agentes con pipeline; y NO en modo enlace, donde el flujo es
+    // "Calendario enviado" → la confirmación llega por el webhook de la cita.
+    if (agent.uses_stages && agent.calendar_mode !== 'link') {
+      void this.appointmentDetector.maybeDetect(orgId, conversationId);
+    }
     // Auto-etiquetado IA: analiza la conversación y aplica las etiquetas que
     // correspondan según sus criterios (respeta lo manual).
     void this.tagClassifier.maybeTag(orgId, conversationId);
@@ -1115,14 +1148,26 @@ export class MessagingService {
     );
   }
 
-  /** Pausa los workflows activos de una conversación (el lead respondió). */
+  /**
+   * El lead respondió: los runs que estaban en un nodo "Esperar respuesta" se
+   * DESPIERTAN ya (para salir por la rama "respondió"); el resto de workflows
+   * activos se pausan (los seguimientos no persiguen a quien ya contesta).
+   */
   private async pauseWorkflowRuns(conversationId: string) {
+    const now = new Date().toISOString();
     try {
       await this.supabase.admin
         .from('workflow_runs')
-        .update({ status: 'paused', locked_at: null, updated_at: new Date().toISOString() })
+        .update({ next_run_at: now, locked_at: null, updated_at: now })
         .eq('conversation_id', conversationId)
-        .eq('status', 'active');
+        .eq('status', 'active')
+        .eq('context->>waiting_reply', 'true');
+      await this.supabase.admin
+        .from('workflow_runs')
+        .update({ status: 'paused', locked_at: null, updated_at: now })
+        .eq('conversation_id', conversationId)
+        .eq('status', 'active')
+        .or('context->>waiting_reply.is.null,context->>waiting_reply.neq.true');
     } catch (err) {
       this.logger.warn(`No se pudieron pausar los workflows de ${conversationId}: ${String(err)}`);
     }
@@ -1351,4 +1396,18 @@ function nextActiveSlot(
     if (withinWindow(hourInTz(next.getTime(), tz), start, end)) return next.getTime();
   }
   return slotMs;
+}
+
+/**
+ * Normaliza un enlace (o un texto que lo contenga) para comparar: minúsculas,
+ * sin protocolo, sin "www." ni barra final. Así "https://www.x.com/agenda/"
+ * y "x.com/agenda" coinciden.
+ */
+function normalizeLink(s: string): string {
+  return s
+    .toLowerCase()
+    .replace(/https?:\/\//g, '')
+    .replace(/(^|\s)www\./g, '$1')
+    .replace(/\/(?=\s|$)/g, '')
+    .trim();
 }

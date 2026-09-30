@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { apiFetch } from "@/lib/api";
+import { useAgents } from "@/lib/agents";
 import styles from "./playground.module.css";
 
 type Provider = "whatsapp" | "instagram" | "messenger";
@@ -11,6 +12,7 @@ type Conversation = {
   provider: Provider;
   contact_name: string | null;
   stage: string;
+  agent_id?: string | null;
   created_at: string;
 };
 
@@ -41,6 +43,8 @@ export default function Playground() {
   const [input, setInput] = useState("");
   const [provider, setProvider] = useState<Provider>("whatsapp");
   const [contactName, setContactName] = useState("");
+  const { agents } = useAgents();
+  const [agentId, setAgentId] = useState("");
   const [typing, setTyping] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -97,7 +101,11 @@ export default function Playground() {
     try {
       const conv = await apiFetch<Conversation>("/api/playground/conversations", {
         method: "POST",
-        body: JSON.stringify({ provider, contact_name: contactName }),
+        body: JSON.stringify({
+          provider,
+          contact_name: contactName,
+          agent_id: agentId || undefined,
+        }),
       });
       setContactName("");
       setConversations((prev) => [conv, ...prev]);
@@ -190,6 +198,23 @@ export default function Playground() {
             <option value="instagram">Instagram</option>
             <option value="messenger">Messenger</option>
           </select>
+          {agents.length > 1 && (
+            <select
+              className={styles.select}
+              value={agentId}
+              onChange={(e) => setAgentId(e.target.value)}
+              title="Agente de IA a probar"
+            >
+              <option value="">Agente por defecto</option>
+              {agents
+                .filter((a) => a.is_active)
+                .map((a) => (
+                  <option key={a.id} value={a.id}>
+                    {a.name}
+                  </option>
+                ))}
+            </select>
+          )}
           <input
             className={styles.nameInput}
             placeholder="Nombre del lead (opcional)"
@@ -213,7 +238,12 @@ export default function Playground() {
             >
               <div className={styles.convInfo}>
                 <span className={styles.convName}>{c.contact_name ?? "Lead"}</span>
-                <span className={styles.convMeta}>{PROVIDER_LABEL[c.provider]}</span>
+                <span className={styles.convMeta}>
+                  {PROVIDER_LABEL[c.provider]}
+                  {c.agent_id && agents.find((a) => a.id === c.agent_id)
+                    ? ` · ${agents.find((a) => a.id === c.agent_id)!.name}`
+                    : ""}
+                </span>
               </div>
               <button
                 className={styles.del}

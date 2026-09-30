@@ -28,6 +28,53 @@ export class SilencedContactsService {
     return data;
   }
 
+  /**
+   * Importa desde CSV/texto: un identificador por línea (teléfono o usuario de
+   * Instagram). Si hay varias columnas se usa la primera. Ignora cabeceras
+   * típicas ("telefono", "phone", "contacto", "usuario"…), vacíos y duplicados.
+   */
+  async importCsv(
+    orgId: string,
+    text: string,
+  ): Promise<{ total: number; imported: number; skipped: number }> {
+    const lines = text
+      .replace(/^\uFEFF/, '')
+      .split(/\r?\n/)
+      .map((l) => l.trim())
+      .filter(Boolean);
+
+    const HEADER = /^(tel[eé]fono|telefono|phone|whatsapp|contacto|contact|usuario|user|instagram|ig|handle|identifier|identificador|n[uú]mero|numero)s?$/i;
+    const ids = new Set<string>();
+    let total = 0;
+    for (const line of lines) {
+      const first = line.split(/[;,\t]/)[0]?.trim().replace(/^"|"$/g, '') ?? '';
+      if (!first) continue;
+      if (HEADER.test(first)) continue;
+      total++;
+      const id = first.slice(0, 120);
+      if (normalizeIdentifier(id).length < 3) continue;
+      ids.add(id);
+    }
+    if (ids.size === 0) return { total, imported: 0, skipped: total };
+
+    const { data: existing } = await this.supabase.admin
+      .from('silenced_contacts')
+      .select('identifier')
+      .eq('organization_id', orgId);
+    const have = new Set((existing ?? []).map((r) => normalizeIdentifier(String(r.identifier))));
+
+    const rows = [...ids]
+      .filter((id) => !have.has(normalizeIdentifier(id)))
+      .map((identifier) => ({ organization_id: orgId, identifier }));
+    if (rows.length > 0) {
+      const { error } = await this.supabase.admin
+        .from('silenced_contacts')
+        .upsert(rows, { onConflict: 'organization_id,identifier', ignoreDuplicates: true });
+      if (error) throw error;
+    }
+    return { total, imported: rows.length, skipped: total - rows.length };
+  }
+
   async remove(orgId: string, id: string) {
     const { error } = await this.supabase.admin
       .from('silenced_contacts')

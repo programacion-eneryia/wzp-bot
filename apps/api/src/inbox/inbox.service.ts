@@ -15,16 +15,10 @@ import {
 import { MessagingService } from '../messaging/messaging.service';
 import { ConversionsApiService } from '../whatsapp-cloud/conversions-api.service';
 import { TagsService } from '../tags/tags.service';
-import { WorkflowTriggerService } from '../workflows/workflow-trigger.service';
+import { StagesService } from '../stages/stages.service';
+import { AgentsService } from '../agents/agents.service';
 
-type FunnelStage =
-  | 'new'
-  | 'qualifying'
-  | 'qualified'
-  | 'not_qualified'
-  | 'call_scheduled'
-  | 'won'
-  | 'lost';
+type FunnelStage = string;
 
 const MAX_CHATS = 40;
 const MAX_MESSAGES = 25;
@@ -40,14 +34,20 @@ export class InboxService {
     private readonly capi: ConversionsApiService,
     private readonly tags: TagsService,
     private readonly setterConfig: SetterConfigService,
-    private readonly workflowTrigger: WorkflowTriggerService,
+    private readonly stages: StagesService,
+    private readonly agents: AgentsService,
   ) {}
 
-  async list(orgId: string, stage?: string, archived = false) {
+  async list(
+    orgId: string,
+    stage?: string,
+    archived = false,
+    opts: { provider?: string; agentId?: string } = {},
+  ) {
     let query = this.supabase.admin
       .from('conversations')
       .select(
-        'id, provider, contact_name, contact_handle, stage, mode, suggested_mode, ai_enabled, blocked, unread_count, last_message_at, created_at',
+        'id, provider, contact_name, contact_handle, stage, mode, suggested_mode, ai_enabled, blocked, unread_count, last_message_at, created_at, agent_id, channel_id',
       )
       .eq('organization_id', orgId)
       .eq('is_test', false)
@@ -61,6 +61,8 @@ export class InboxService {
     query = archived ? query.not('archived_at', 'is', null) : query.is('archived_at', null);
 
     if (stage) query = query.eq('stage', stage);
+    if (opts.provider) query = query.eq('provider', opts.provider);
+    if (opts.agentId) query = query.eq('agent_id', opts.agentId);
 
     const { data, error } = await query;
     if (error) throw error;
@@ -172,12 +174,21 @@ export class InboxService {
       blocked?: boolean;
       unread?: boolean;
       assigned_to?: string | null;
+      agent_id?: string | null;
     },
   ) {
     await this.assertOwned(orgId, id);
     const update: Record<string, unknown> = {};
     if (typeof patch.ai_enabled === 'boolean') update.ai_enabled = patch.ai_enabled;
-    if (patch.stage) update.stage = patch.stage;
+    if (patch.stage) {
+      await this.stages.assertValidKey(orgId, patch.stage);
+      update.stage = patch.stage;
+    }
+    // Cambiar el agente que atiende este chat (cadena vacía / null = el del canal).
+    if (patch.agent_id !== undefined) {
+      if (patch.agent_id) await this.agents.get(orgId, patch.agent_id);
+      update.agent_id = patch.agent_id ? patch.agent_id : null;
+    }
     if (patch.mode) {
       // Si el usuario fija el modo a mano, lo bloqueamos (no reclasificar) y
       // resolvemos cualquier sugerencia pendiente de la IA.
@@ -202,7 +213,7 @@ export class InboxService {
       .update(update)
       .eq('id', id)
       .eq('organization_id', orgId)
-      .select('id, stage, mode, ai_enabled, blocked, notes, unread_count, assigned_to')
+      .select('id, stage, mode, ai_enabled, blocked, notes, unread_count, assigned_to, agent_id')
       .single();
     if (error) throw error;
 
@@ -214,7 +225,7 @@ export class InboxService {
         .eq('organization_id', orgId)
         .eq('conversation_id', id);
       // Workflows con trigger "Al cambiar de estado".
-      void this.workflowTrigger.fire(orgId, id, 'stage', { stage: patch.stage });
+      void this.stages.fireStageWorkflows(orgId, id, patch.stage);
     }
 
     // Atribución a Meta: al CUALIFICAR (o GANAR) un lead que vino de un anuncio
@@ -303,12 +314,16 @@ export class InboxService {
     const header = `===== CONVERSACIÓN: ${conv.contact_name || 'Lead'} (${date}) =====`;
     const block = `${header}\n${transcript.text}`;
 
-    const current = await this.setterConfig.getOrCreate(orgId);
-    const combined = current.winning_examples
-      ? `${current.winning_examples}\n\n${block}`
-      : block;
+    // El ejemplo entrena al AGENTE que atiende esta conversación.
+    const agent = await this.agents.resolveForConversation(orgId, {
+      agent_id: (conv.agent_id as string | null) ?? null,
+      channel_id: (conv.channel_id as string | null) ?? null,
+      mode: (conv.mode as string | null) ?? null,
+    });
+    if (!agent) throw new BadRequestException('No hay ningún agente al que añadir el ejemplo.');
+    const combined = agent.winning_examples ? `${agent.winning_examples}\n\n${block}` : block;
     const winning_examples = combined.slice(0, 58000);
-    await this.setterConfig.update(orgId, { winning_examples });
+    await this.agents.update(orgId, agent.id, { winning_examples });
 
     return {
       ok: true,
@@ -572,7 +587,7 @@ export class InboxService {
     const { data } = await this.supabase.admin
       .from('conversations')
       .select(
-        'id, provider, contact_name, contact_handle, stage, mode, mode_locked, suggested_mode, ai_enabled, blocked, notes, unread_count, assigned_to, unipile_chat_id, ai_analysis, ai_analysis_at, last_message_at, created_at',
+        'id, provider, contact_name, contact_handle, stage, mode, mode_locked, suggested_mode, ai_enabled, blocked, notes, unread_count, assigned_to, unipile_chat_id, ai_analysis, ai_analysis_at, last_message_at, created_at, agent_id, channel_id',
       )
       .eq('id', id)
       .eq('organization_id', orgId)

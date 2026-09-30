@@ -9,8 +9,8 @@ export default function StatsPage() {
         Tus <span className="serif">métricas</span>
       </h1>
       <p className={styles.lead}>
-        Todo lo relevante en un vistazo: leads por estado y fuente, etiquetas, llamadas
-        agendadas y ratios de conversión.
+        Leads con los que el agente ha hablado, por etapa, canal y agente; calendarios enviados,
+        llamadas agendadas y ratios de conversión. Los chats de soporte no entran en el embudo.
       </p>
 
       <Stats />

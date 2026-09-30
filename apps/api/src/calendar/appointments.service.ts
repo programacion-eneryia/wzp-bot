@@ -1,5 +1,6 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { SupabaseService } from '../supabase/supabase.service';
+import { StagesService } from '../stages/stages.service';
 
 /**
  * Citas (llamadas agendadas). Se crean por dos vías:
@@ -10,7 +11,10 @@ import { SupabaseService } from '../supabase/supabase.service';
 export class AppointmentsService {
   private readonly logger = new Logger(AppointmentsService.name);
 
-  constructor(private readonly supabase: SupabaseService) {}
+  constructor(
+    private readonly supabase: SupabaseService,
+    private readonly stages: StagesService,
+  ) {}
 
   async list(orgId: string) {
     const { data, error } = await this.supabase.admin
@@ -121,17 +125,10 @@ export class AppointmentsService {
       if (conversationId) {
         // Cita confirmada en el calendario (ground-truth): el bot deja de
         // hablar con este lead hasta que un humano o un flow lo reactive.
-        await this.supabase.admin
-          .from('conversations')
-          .update({
-            stage: 'call_scheduled',
-            ai_enabled: false,
-            respond_after: null,
-            followups_paused: true,
-          })
-          .eq('id', conversationId)
-          .eq('organization_id', orgId)
-          .neq('stage', 'won');
+        await this.stages.setConversationStage(orgId, conversationId, 'call_scheduled', {
+          extra: { ai_enabled: false, respond_after: null, followups_paused: true },
+          skipIfIn: ['won'],
+        });
       }
     } catch (err) {
       this.logger.warn(`Webhook de calendario falló: ${String(err)}`);

@@ -19,13 +19,14 @@ export default async function SetterPage() {
 
   return (
     <div>
-      <span className={styles.eyebrow}>Mi negocio · Mi Setter</span>
+      <span className={styles.eyebrow}>Gestión de agentes · Base de Conocimiento</span>
       <h1 className={styles.title}>
-        Configura tu <span className="serif">setter</span>
+        Base de <span className="serif">Conocimiento</span>
       </h1>
       <p className={styles.lead}>
-        Cuanto mejor alimentes a tu setter con la información de tu negocio, más
-        natural y eficaz cualificará. Todo esto define cómo conversa con tus leads.
+        Todo lo que tus agentes saben de tu negocio: oferta, producto, precios, pruebas
+        sociales y el brief completo. Lo comparten todos los agentes; cuanto mejor esté, más
+        natural y eficaz conversan.
       </p>
 
       <SetterForm isAdmin={isAdmin} />

@@ -14,7 +14,7 @@ export class PlaygroundService {
   async listConversations(orgId: string) {
     const { data, error } = await this.supabase.admin
       .from('conversations')
-      .select('id, provider, contact_name, stage, last_message_at, created_at')
+      .select('id, provider, contact_name, stage, last_message_at, created_at, agent_id')
       .eq('organization_id', orgId)
       .eq('is_test', true)
       .order('created_at', { ascending: false });
@@ -22,7 +22,12 @@ export class PlaygroundService {
     return data ?? [];
   }
 
-  async createConversation(orgId: string, provider: Provider, contactName: string) {
+  async createConversation(
+    orgId: string,
+    provider: Provider,
+    contactName: string,
+    agentId: string | null = null,
+  ) {
     const { data, error } = await this.supabase.admin
       .from('conversations')
       .insert({
@@ -31,8 +36,9 @@ export class PlaygroundService {
         contact_name: contactName || 'Lead de prueba',
         is_test: true,
         stage: 'new',
+        agent_id: agentId,
       })
-      .select('id, provider, contact_name, stage, created_at')
+      .select('id, provider, contact_name, stage, created_at, agent_id')
       .single();
     if (error) throw error;
     return data;

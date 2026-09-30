@@ -1,6 +1,7 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { SupabaseService } from '../supabase/supabase.service';
 import type { WorkflowTrigger } from './workflows.types';
+import { resolveConversationAgentId } from './workflows.service';
 
 /**
  * Arranque de workflows desde CUALQUIER módulo sin ciclos de dependencias.
@@ -27,24 +28,31 @@ export class WorkflowTriggerService {
     opts: { stage?: string } = {},
   ): Promise<boolean> {
     try {
-      const { data: wf } = await this.supabase.admin
+      const { data: rows } = await this.supabase.admin
         .from('workflows')
-        .select('id, organization_id, definition, trigger_config, resume_after_hours')
+        .select('id, organization_id, definition, trigger_config, resume_after_hours, agent_id')
         .eq('organization_id', orgId)
         .eq('trigger', trigger)
         .eq('is_active', true)
-        .order('created_at', { ascending: false })
-        .limit(1)
-        .maybeSingle();
-      if (!wf) return false;
+        .order('created_at', { ascending: false });
 
-      // Trigger por estado: solo si coincide el configurado en el workflow.
-      if (trigger === 'stage') {
+      // Trigger por estado: solo los que coinciden con la etapa (o sin etapa fija).
+      let candidates = (rows ?? []).filter((w) => {
+        if (trigger !== 'stage') return true;
         const want =
-          ((wf.trigger_config as Record<string, unknown> | null)?.stage as string | undefined) ??
+          ((w.trigger_config as Record<string, unknown> | null)?.stage as string | undefined) ??
           null;
-        if (want && opts.stage && want !== opts.stage) return false;
-      }
+        return !want || !opts.stage || want === opts.stage;
+      });
+      if (candidates.length === 0) return false;
+
+      // Con varios agentes: preferimos el workflow del agente que atiende esta
+      // conversación; si no hay uno específico, el genérico (sin agente).
+      const agentId = await resolveConversationAgentId(this.supabase, conversationId);
+      const specific = agentId ? candidates.find((w) => w.agent_id === agentId) : undefined;
+      if (!specific) candidates = candidates.filter((w) => !w.agent_id);
+      const wf = specific ?? candidates[0];
+      if (!wf) return false;
 
       const def = (wf.definition ?? {}) as { nodes?: Array<{ id?: string; type?: string }> };
       const nodes = Array.isArray(def.nodes) ? def.nodes : [];

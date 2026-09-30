@@ -51,15 +51,11 @@ export class WorkflowEngineService {
     trigger: WorkflowTrigger,
     opts: { stage?: string } = {},
   ): Promise<boolean> {
-    const wf = await this.workflows.findActiveByTrigger(orgId, trigger);
+    const wf = await this.workflows.findActiveByTrigger(orgId, trigger, {
+      stage: opts.stage,
+      conversationId,
+    });
     if (!wf) return false;
-
-    // Trigger por estado: solo si coincide el configurado.
-    if (trigger === 'stage') {
-      const want = (wf.trigger_config?.stage as string | undefined) ?? null;
-      if (want && opts.stage && want !== opts.stage) return false;
-    }
-
     return this.enroll(wf, conversationId);
   }
 
@@ -242,6 +238,47 @@ export class WorkflowEngineService {
           await this.schedule(run.id, target, Date.now() + ms);
           return;
         }
+        case 'wait_reply': {
+          // Espera condicional: sale por "yes" en cuanto el lead responde (el
+          // inbound despierta el run: ver MessagingService.pauseWorkflowRuns) o
+          // por "no" al vencer el tiempo máximo.
+          const since = run.context?.wait_reply_since as string | undefined;
+          const deadline = Number(run.context?.wait_reply_deadline ?? 0);
+          if (!since || !deadline) {
+            const ms = waitMs(node.data?.amount, node.data?.unit);
+            const now = Date.now();
+            await this.schedule(run.id, node.id, now + ms, {
+              ...run.context,
+              waiting_reply: true,
+              wait_reply_since: new Date(now).toISOString(),
+              wait_reply_deadline: now + ms,
+            });
+            return;
+          }
+          const lastIn = conv.row.last_inbound_at
+            ? new Date(conv.row.last_inbound_at as string).getTime()
+            : 0;
+          const replied = lastIn > new Date(since).getTime();
+          const expired = Date.now() >= deadline;
+          if (!replied && !expired) {
+            // Despertar espurio: seguimos esperando hasta el plazo.
+            await this.schedule(run.id, node.id, deadline);
+            return;
+          }
+          // Limpiamos el estado de espera y seguimos por la rama que toque.
+          const { waiting_reply: _w, wait_reply_since: _s, wait_reply_deadline: _d, ...rest } =
+            run.context ?? {};
+          void _w;
+          void _s;
+          void _d;
+          run.context = rest;
+          await this.supabase.admin
+            .from('workflow_runs')
+            .update({ context: rest })
+            .eq('id', run.id);
+          node = this.nextNode(def, node.id, replied ? 'yes' : 'no');
+          break;
+        }
         case 'if_replied': {
           const replied = hasReplied(conv.row);
           node = this.nextNode(def, node.id, replied ? 'yes' : 'no');
@@ -258,9 +295,12 @@ export class WorkflowEngineService {
           return;
         }
         case 'ai_handoff': {
+          // Si el workflow pertenece a un agente, es ese agente el que retoma.
+          const update: Record<string, unknown> = { ai_enabled: true };
+          if (wf.agent_id) update.agent_id = wf.agent_id;
           await this.supabase.admin
             .from('conversations')
-            .update({ ai_enabled: true })
+            .update(update)
             .eq('id', run.conversation_id);
           await this.finish(run.id, 'completed');
           return;
@@ -401,7 +441,12 @@ export class WorkflowEngineService {
 
   // ---- helpers de estado ----
 
-  private async schedule(runId: string, currentNodeId: string, at: number): Promise<void> {
+  private async schedule(
+    runId: string,
+    currentNodeId: string,
+    at: number,
+    context?: Record<string, unknown>,
+  ): Promise<void> {
     await this.supabase.admin
       .from('workflow_runs')
       .update({
@@ -409,6 +454,7 @@ export class WorkflowEngineService {
         next_run_at: new Date(at).toISOString(),
         locked_at: null,
         updated_at: new Date().toISOString(),
+        ...(context ? { context } : {}),
       })
       .eq('id', runId);
   }

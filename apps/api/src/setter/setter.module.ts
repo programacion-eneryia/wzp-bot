@@ -1,20 +1,24 @@
 import { Module } from '@nestjs/common';
 import { AuthGuard } from '../auth/auth.guard';
 import { CalendarModule } from '../calendar/calendar.module';
+import { AgentsModule } from '../agents/agents.module';
+import { StagesModule } from '../stages/stages.module';
 import { ConversationClassifierService } from './conversation-classifier.service';
 import { SetterAssistantService } from './setter-assistant.service';
+import { BriefApplyService } from './brief-apply.service';
 import { SetterConfigService } from './setter-config.service';
 import { SetterController } from './setter.controller';
 import { SetterService } from './setter.service';
 import { SilencedContactsService } from './silenced-contacts.service';
 
 @Module({
-  imports: [CalendarModule],
+  imports: [CalendarModule, AgentsModule, StagesModule],
   controllers: [SetterController],
   providers: [
     SetterConfigService,
     SetterService,
     SetterAssistantService,
+    BriefApplyService,
     SilencedContactsService,
     ConversationClassifierService,
     AuthGuard,

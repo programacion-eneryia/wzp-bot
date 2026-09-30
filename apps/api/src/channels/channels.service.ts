@@ -48,7 +48,7 @@ export class ChannelsService {
   async list(orgId: string) {
     const { data, error } = await this.supabase.admin
       .from('channels')
-      .select('id, provider, status, display_name, unipile_account_id, last_error, created_at, connected_at')
+      .select('id, provider, status, display_name, agent_id, unipile_account_id, last_error, created_at, connected_at')
       .eq('organization_id', orgId)
       .order('created_at', { ascending: false });
 

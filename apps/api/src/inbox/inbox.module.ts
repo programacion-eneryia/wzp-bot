@@ -3,13 +3,14 @@ import { AuthGuard } from '../auth/auth.guard';
 import { MessagingModule } from '../messaging/messaging.module';
 import { SetterModule } from '../setter/setter.module';
 import { TagsModule } from '../tags/tags.module';
-import { WorkflowTriggerModule } from '../workflows/workflow-trigger.module';
+import { StagesModule } from '../stages/stages.module';
+import { AgentsModule } from '../agents/agents.module';
 import { ConversationAnalysisService } from './conversation-analysis.service';
 import { InboxController } from './inbox.controller';
 import { InboxService } from './inbox.service';
 
 @Module({
-  imports: [MessagingModule, SetterModule, TagsModule, WorkflowTriggerModule],
+  imports: [MessagingModule, SetterModule, TagsModule, StagesModule, AgentsModule],
   controllers: [InboxController],
   providers: [InboxService, ConversationAnalysisService, AuthGuard],
 })

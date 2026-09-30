@@ -2,6 +2,7 @@ import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { OpenRouterService } from '../openrouter/openrouter.service';
 import { SupabaseService } from '../supabase/supabase.service';
+import { StagesService } from '../stages/stages.service';
 
 type StoredMessage = { role: string; content: string; created_at: string };
 
@@ -19,6 +20,7 @@ export class AppointmentDetectorService {
     private readonly supabase: SupabaseService,
     private readonly openrouter: OpenRouterService,
     private readonly config: ConfigService,
+    private readonly stages: StagesService,
   ) {}
 
   /**
@@ -52,12 +54,10 @@ export class AppointmentDetectorService {
       const detection = await this.classify(recent, orgId, conversationId);
       if (!detection.booked || detection.confidence === 'baja') return;
 
-      // Marca la conversación como "llamada agendada".
-      await this.supabase.admin
-        .from('conversations')
-        .update({ stage: 'call_scheduled', last_message_at: new Date().toISOString() })
-        .eq('id', conversationId)
-        .eq('organization_id', orgId);
+      // Marca la conversación como "llamada agendada" (+ espejo en CRM y workflows).
+      await this.stages.setConversationStage(orgId, conversationId, 'call_scheduled', {
+        extra: { last_message_at: new Date().toISOString() },
+      });
 
       // Crea la cita si no existe ya una activa para esta conversación.
       const { data: existing } = await this.supabase.admin

@@ -99,7 +99,7 @@ export class ManyChatService {
 
     let texts: string[];
     try {
-      const bubbles = await this.setter.respond(orgId, convId, 'setter', {
+      const bubbles = await this.setter.respond(orgId, convId, {
         contactName: name,
         persist: true,
       });

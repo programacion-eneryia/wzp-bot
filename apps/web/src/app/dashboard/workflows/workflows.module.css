@@ -290,6 +290,9 @@
 .node[data-kind="wait"] {
   border-left-color: #eab308;
 }
+.node[data-kind="wait_reply"] {
+  border-left-color: #f59e0b;
+}
 .node[data-kind="if_replied"],
 .node[data-kind="if_stage"] {
   border-left-color: #a855f7;

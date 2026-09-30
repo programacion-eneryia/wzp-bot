@@ -1,14 +1,13 @@
-export const FUNNEL_STAGES = [
-  'new',
-  'qualifying',
-  'qualified',
-  'not_qualified',
-  'call_scheduled',
-  'won',
-  'lost',
-] as const;
+import { SYSTEM_STAGE_KEYS } from '../stages/stages.types';
 
-export type FunnelStage = (typeof FUNNEL_STAGES)[number];
+/**
+ * Etapas de sistema (las que el código conoce). El pipeline real de cada
+ * organización es editable (`pipeline_stages`), así que `FunnelStage` es un
+ * string: cualquier key del pipeline de la org.
+ */
+export const FUNNEL_STAGES = SYSTEM_STAGE_KEYS;
+
+export type FunnelStage = string;
 
 export type TagDefinition = {
   id: string;

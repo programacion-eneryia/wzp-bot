@@ -1,36 +1,25 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import Link from "next/link";
 import { apiFetch, apiUpload } from "@/lib/api";
+import { invalidateAgents, type Agent } from "@/lib/agents";
+import { invalidateStages } from "@/lib/stages";
 import SilencedContacts from "./SilencedContacts";
 import styles from "./setter.module.css";
 
+/** Base de Conocimiento + comportamiento global de la IA (setter_configs). */
 type SetterConfig = {
-  setter_name: string;
-  identity_role: string;
   company_name: string | null;
-  offer: string | null;
-  knowledge_base: string | null;
-  objective: string;
-  qualification_criteria: string | null;
-  tone: string;
-  rules: string | null;
   summary: string | null;
   promise: string | null;
-  funnel_phases: string | null;
-  conversation_types: string | null;
-  best_practices: string | null;
+  offer: string | null;
   product: string | null;
-  team: string | null;
   social_proof: string | null;
   pricing_links: string | null;
-  special_cases: string | null;
-  followups: string | null;
-  support_enabled: boolean;
-  support_objective: string | null;
-  support_instructions: string | null;
+  team: string | null;
+  knowledge_base: string | null;
   proactive_template: string | null;
-  winning_examples: string | null;
   multi_bubble: boolean;
   first_reply_min_s: number;
   first_reply_max_s: number;
@@ -43,6 +32,16 @@ type SetterConfig = {
   model: string | null;
   daily_token_limit: number;
   is_active: boolean;
+};
+
+type BriefResult = {
+  config: SetterConfig;
+  setter?: Agent;
+  support?: Agent;
+  created_tags?: string[];
+  created_stages?: string[];
+  extractedChars?: number;
+  files?: number;
 };
 
 // Modelos permitidos (deben coincidir con ALLOWED_MODELS del backend).
@@ -82,15 +81,38 @@ function timezoneOptions(): string[] {
   return COMMON_TIMEZONES;
 }
 
-type Tab = "business" | "conversation" | "support" | "learn" | "ai" | "silenced";
+type Tab = "business" | "ai" | "silenced";
 
 const TABS: { id: Tab; label: string }[] = [
   { id: "business", label: "Negocio" },
-  { id: "conversation", label: "Conversación" },
-  { id: "support", label: "Soporte" },
-  { id: "learn", label: "Aprendizaje" },
   { id: "ai", label: "Ajustes de IA" },
   { id: "silenced", label: "Silenciados" },
+];
+
+/** Campos que llegan del servidor pero el validador del PUT rechaza. */
+const SERVER_FIELDS = [
+  "organization_id",
+  "updated_at",
+  "created_at",
+  "setter_name",
+  "identity_role",
+  "objective",
+  "qualification_criteria",
+  "tone",
+  "rules",
+  "funnel_phases",
+  "conversation_types",
+  "best_practices",
+  "special_cases",
+  "followups",
+  "support_enabled",
+  "support_objective",
+  "support_instructions",
+  "winning_examples",
+  "calendar_mode",
+  "calendar_link",
+  "call_duration_min",
+  "default_calendar_id",
 ];
 
 export default function SetterForm({ isAdmin = true }: { isAdmin?: boolean }) {
@@ -105,8 +127,6 @@ export default function SetterForm({ isAdmin = true }: { isAdmin?: boolean }) {
   const [generating, setGenerating] = useState(false);
   const [uploadInfo, setUploadInfo] = useState<string | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
-  const examplesRef = useRef<HTMLInputElement>(null);
-  const [examplesInfo, setExamplesInfo] = useState<string | null>(null);
 
   useEffect(() => {
     apiFetch<SetterConfig>("/api/setter/config")
@@ -131,10 +151,8 @@ export default function SetterForm({ isAdmin = true }: { isAdmin?: boolean }) {
     setSaving(true);
     setError(null);
     try {
-      // Quitamos campos gestionados por el servidor (el validador los rechaza).
       const payload = { ...cfg } as Record<string, unknown>;
-      delete payload.organization_id;
-      delete payload.updated_at;
+      for (const k of SERVER_FIELDS) delete payload[k];
       const updated = await apiFetch<SetterConfig>("/api/setter/config", {
         method: "PUT",
         body: JSON.stringify(payload),
@@ -148,6 +166,31 @@ export default function SetterForm({ isAdmin = true }: { isAdmin?: boolean }) {
     }
   }
 
+  function describeResult(r: BriefResult): string {
+    const parts: string[] = [];
+    if (r.files) {
+      parts.push(
+        `${r.files} documento(s) leídos (${(r.extractedChars ?? 0).toLocaleString()} caracteres)`,
+      );
+    }
+    parts.push("Base de Conocimiento actualizada");
+    const agents = [r.setter?.name, r.support?.name].filter(Boolean) as string[];
+    if (agents.length) parts.push(`agentes configurados: ${agents.join(" y ")}`);
+    if (r.created_tags?.length) parts.push(`etiquetas nuevas: ${r.created_tags.join(", ")}`);
+    if (r.created_stages?.length) parts.push(`etapas nuevas: ${r.created_stages.join(", ")}`);
+    return parts.join(" · ") + ".";
+  }
+
+  function applyResult(r: BriefResult) {
+    setCfg(r.config);
+    setBrief(r.config.knowledge_base ?? "");
+    setUploadInfo(describeResult(r));
+    setSaved(true);
+    setTab("business");
+    invalidateAgents();
+    invalidateStages();
+  }
+
   async function generate() {
     if (!brief.trim()) {
       setError("Pega primero el brief de tu negocio");
@@ -155,14 +198,13 @@ export default function SetterForm({ isAdmin = true }: { isAdmin?: boolean }) {
     }
     setGenerating(true);
     setError(null);
+    setUploadInfo(null);
     try {
-      const { config } = await apiFetch<{ config: SetterConfig }>("/api/setter/generate", {
+      const r = await apiFetch<BriefResult>("/api/setter/generate", {
         method: "POST",
         body: JSON.stringify({ brief, apply: true }),
       });
-      setCfg(config);
-      setSaved(true);
-      setTab("business");
+      applyResult(r);
     } catch (e) {
       setError(e instanceof Error ? e.message : "Error al generar");
     } finally {
@@ -178,49 +220,13 @@ export default function SetterForm({ isAdmin = true }: { isAdmin?: boolean }) {
       const form = new FormData();
       Array.from(files).forEach((f) => form.append("files", f));
       form.append("apply", "true");
-      const { config, extractedChars, files: count } = await apiUpload<{
-        config: SetterConfig;
-        extractedChars: number;
-        files: number;
-      }>("/api/setter/generate-from-file", form);
-      setCfg(config);
-      setBrief(config.knowledge_base ?? "");
-      setUploadInfo(
-        `${count} documento(s) leídos (${extractedChars.toLocaleString()} caracteres) y campos rellenados.`,
-      );
-      setSaved(true);
-      setTab("business");
+      const r = await apiUpload<BriefResult>("/api/setter/generate-from-file", form);
+      applyResult(r);
     } catch (e) {
       setError(e instanceof Error ? e.message : "Error al leer los documentos");
     } finally {
       setGenerating(false);
       if (fileRef.current) fileRef.current.value = "";
-    }
-  }
-
-  async function uploadExamples(files: FileList) {
-    setGenerating(true);
-    setError(null);
-    setExamplesInfo(null);
-    try {
-      const form = new FormData();
-      Array.from(files).forEach((f) => form.append("files", f));
-      form.append("append", "true");
-      const { config, extractedChars, files: count } = await apiUpload<{
-        config: SetterConfig;
-        extractedChars: number;
-        files: number;
-      }>("/api/setter/examples-from-file", form);
-      setCfg(config);
-      setExamplesInfo(
-        `${count} conversación(es) añadidas (${extractedChars.toLocaleString()} caracteres). El bot aprenderá de ellas.`,
-      );
-      setSaved(true);
-    } catch (e) {
-      setError(e instanceof Error ? e.message : "Error al leer las conversaciones");
-    } finally {
-      setGenerating(false);
-      if (examplesRef.current) examplesRef.current.value = "";
     }
   }
 
@@ -254,10 +260,12 @@ export default function SetterForm({ isAdmin = true }: { isAdmin?: boolean }) {
       {/* Panel de generación con IA */}
       <section className={styles.aiPanel}>
         <div className={styles.aiHead}>
-          <h2 className={styles.cardTitle}>✨ Generar con IA desde tu brief</h2>
+          <h2 className={styles.cardTitle}>✨ Generar todo desde tu brief</h2>
           <p className={styles.aiText}>
-            Pega aquí el brief de tu negocio (oferta, casos, FAQs, todo). La IA
-            redactará identidad, fases, cualificación, reglas, tono y más. Luego lo ajustas.
+            Pega el brief de tu negocio (oferta, casos, FAQs, objeciones… todo). La IA rellena
+            esta Base de Conocimiento y configura tus agentes <strong>Setter</strong> y{" "}
+            <strong>Soporte</strong> (identidad, fases, criterios, tono, reglas). También
+            propone etiquetas y etapas. Luego ajustas lo que quieras.
           </p>
         </div>
         <textarea
@@ -298,7 +306,14 @@ export default function SetterForm({ isAdmin = true }: { isAdmin?: boolean }) {
             La IA está leyendo y analizando el contenido. Puede tardar unos segundos…
           </p>
         )}
-        {uploadInfo && <p className={styles.savedMsg}>{uploadInfo}</p>}
+        {uploadInfo && (
+          <p className={styles.savedMsg}>
+            {uploadInfo}{" "}
+            <Link href="/dashboard/agents" style={{ color: "inherit" }}>
+              Ver agentes →
+            </Link>
+          </p>
+        )}
       </section>
 
       {error && <div className={styles.error}>{error}</div>}
@@ -318,34 +333,24 @@ export default function SetterForm({ isAdmin = true }: { isAdmin?: boolean }) {
       {tab === "business" && (
         <>
           <section className={styles.card}>
-            <h2 className={styles.cardTitle}>Identidad</h2>
-            <div className={styles.row}>
-              <label className={styles.field}>
-                <span className={styles.label}>Nombre del setter</span>
-                <input
-                  className={styles.input}
-                  value={cfg.setter_name}
-                  onChange={(e) => set("setter_name", e.target.value)}
-                />
-              </label>
-              <label className={styles.field}>
-                <span className={styles.label}>Empresa</span>
-                <input
-                  className={styles.input}
-                  value={cfg.company_name ?? ""}
-                  onChange={(e) => set("company_name", e.target.value)}
-                />
-              </label>
-            </div>
+            <h2 className={styles.cardTitle}>Tu negocio</h2>
+            <p className={styles.muted}>
+              Esta información la comparten todos tus agentes. La personalidad, el objetivo y las
+              reglas de cada uno se editan en{" "}
+              <Link href="/dashboard/agents" style={{ color: "inherit" }}>
+                Agentes
+              </Link>
+              .
+            </p>
             <label className={styles.field}>
-              <span className={styles.label}>Rol / quién es</span>
+              <span className={styles.label}>Empresa</span>
               <input
                 className={styles.input}
-                value={cfg.identity_role}
-                onChange={(e) => set("identity_role", e.target.value)}
+                value={cfg.company_name ?? ""}
+                onChange={(e) => set("company_name", e.target.value)}
               />
             </label>
-            {area("summary", "Resumen", 2, "una visión rápida del setter")}
+            {area("summary", "Resumen", 2, "qué hace la empresa en dos líneas")}
             {area("promise", "Promesa principal", 2)}
           </section>
 
@@ -356,112 +361,25 @@ export default function SetterForm({ isAdmin = true }: { isAdmin?: boolean }) {
             {area("social_proof", "Prueba social", 3, "casos de éxito, resultados")}
             {area("pricing_links", "Precios y enlaces", 2)}
             {area("team", "Equipo", 2)}
+          </section>
+
+          <section className={styles.card}>
+            <h2 className={styles.cardTitle}>Conocimiento completo</h2>
             {area(
               "knowledge_base",
               "Brief / conocimiento del negocio",
-              8,
-              "pega aquí todo: oferta, FAQs, objeciones…",
+              10,
+              "todo lo que los agentes deben saber: oferta, FAQs, objeciones, procesos…",
             )}
-          </section>
-        </>
-      )}
-
-      {tab === "conversation" && (
-        <section className={styles.card}>
-          <h2 className={styles.cardTitle}>Cómo conversa</h2>
-          {area("objective", "Objetivo", 2)}
-          {area("qualification_criteria", "Criterios de cualificación", 4)}
-          {area("funnel_phases", "Fases del embudo", 6, "apertura → cualificar → … → cierre")}
-          {area("conversation_types", "Tipos de conversación", 4)}
-          {area("special_cases", "Casos especiales", 4)}
-          {area("followups", "Seguimiento", 3, "qué hacer si no responde")}
-          {area("best_practices", "Buenas prácticas", 4)}
-          {area("tone", "Tono y estilo", 2)}
-          {area("rules", "Reglas y límites", 3, "qué NO hacer")}
-        </section>
-      )}
-
-      {tab === "support" && (
-        <>
-          <section className={styles.card}>
-            <h2 className={styles.cardTitle}>Cerebro de Soporte</h2>
-            <p className={styles.muted}>
-              Para conversaciones con clientes/contactos ya existentes. El bot da soporte y,
-              si detecta interés real de compra, escala a setter (cualifica y ofrece llamada).
-              Usa el mismo conocimiento del negocio de la pestaña Negocio.
-            </p>
-            <label className={styles.checkRow}>
-              <input
-                type="checkbox"
-                checked={cfg.support_enabled}
-                onChange={(e) => set("support_enabled", e.target.checked)}
-              />
-              <span>
-                <strong>Modo soporte activado</strong> — permite que el bot responda en
-                conversaciones clasificadas como soporte.
-              </span>
-            </label>
             {area(
-              "support_objective",
-              "Objetivo en soporte",
+              "proactive_template",
+              "Primer mensaje a leads que entran por formulario",
               3,
-              "qué debe lograr al dar soporte",
-            )}
-            {area(
-              "support_instructions",
-              "Instrucciones de soporte",
-              5,
-              "cómo atender, qué puede resolver, cuándo escalar a llamada",
+              "opcional; puedes usar {name}",
+              "Hola {name}! Vi que te interesaste en… ¿te viene bien que te cuente cómo funciona?",
             )}
           </section>
         </>
-      )}
-
-      {tab === "learn" && (
-        <section className={styles.card}>
-          <h2 className={styles.cardTitle}>Aprender de conversaciones que funcionaron</h2>
-          <p className={styles.muted}>
-            Sube conversaciones antiguas que salieron bien (cerraron o agendaron llamada).
-            El bot aprenderá su estilo, el orden de las preguntas y la forma de cerrar, para
-            llevar las nuevas conversaciones igual. Puedes subir varias; se acumulan.
-          </p>
-          <div className={styles.aiActions}>
-            <input
-              ref={examplesRef}
-              type="file"
-              multiple
-              accept=".pdf,.docx,.txt,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document,text/plain"
-              className={styles.fileInput}
-              onChange={(e) => {
-                const fs = e.target.files;
-                if (fs && fs.length > 0) uploadExamples(fs);
-              }}
-              disabled={generating}
-            />
-            <button
-              type="button"
-              className={styles.aiBtnGhost}
-              onClick={() => examplesRef.current?.click()}
-              disabled={generating}
-            >
-              Subir conversaciones (PDF, Word o TXT)
-            </button>
-          </div>
-          {examplesInfo && <p className={styles.savedMsg}>{examplesInfo}</p>}
-          <label className={styles.field} style={{ marginTop: 12 }}>
-            <span className={styles.label}>
-              Conversaciones de ejemplo
-              <span className={styles.hint}> — puedes pegarlas o editarlas a mano</span>
-            </span>
-            <textarea
-              className={styles.textarea}
-              rows={12}
-              value={cfg.winning_examples ?? ""}
-              onChange={(e) => set("winning_examples", e.target.value)}
-              placeholder="LEAD: hola, vi el anuncio...&#10;SETTER: hola! cuéntame, ¿qué te llamó la atención?..."
-            />
-          </label>
-        </section>
       )}
 
       {tab === "ai" && (
@@ -475,7 +393,8 @@ export default function SetterForm({ isAdmin = true }: { isAdmin?: boolean }) {
                 onChange={(e) => set("is_active", e.target.checked)}
               />
               <span>
-                <strong>IA activada</strong> — interruptor maestro. Si se apaga, deja de responder a todos.
+                <strong>IA activada</strong> — interruptor maestro. Si se apaga, ningún agente
+                responde.
               </span>
             </label>
             <label className={styles.checkRow}>
@@ -520,7 +439,8 @@ export default function SetterForm({ isAdmin = true }: { isAdmin?: boolean }) {
             </div>
             <label className={styles.field}>
               <span className={styles.label}>
-                Velocidad de escritura <span className={styles.hint}>— caracteres por segundo (3-5 recomendado)</span>
+                Velocidad de escritura{" "}
+                <span className={styles.hint}>— caracteres por segundo (3-5 recomendado)</span>
               </span>
               <input
                 type="number"
@@ -586,7 +506,10 @@ export default function SetterForm({ isAdmin = true }: { isAdmin?: boolean }) {
             <section className={styles.card}>
               <h2 className={styles.cardTitle}>Modelo</h2>
               <label className={styles.field}>
-                <span className={styles.label}>Modelo LLM</span>
+                <span className={styles.label}>
+                  Modelo LLM por defecto{" "}
+                  <span className={styles.hint}>— cada agente puede sobreescribirlo</span>
+                </span>
                 <select
                   className={styles.input}
                   value={cfg.model ?? ""}
@@ -608,7 +531,10 @@ export default function SetterForm({ isAdmin = true }: { isAdmin?: boolean }) {
               <label className={styles.field}>
                 <span className={styles.label}>
                   Límite de tokens de IA por día{" "}
-                  <span className={styles.hint}>— 0 = sin límite. Al superarlo, el bot deja de responder hasta el día siguiente.</span>
+                  <span className={styles.hint}>
+                    — 0 = sin límite. Al superarlo, el bot deja de responder hasta el día
+                    siguiente.
+                  </span>
                 </span>
                 <input
                   className={styles.input}

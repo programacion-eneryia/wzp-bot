@@ -16,6 +16,7 @@ import {
   IsString,
   MaxLength,
   MinLength,
+  ValidateIf,
 } from 'class-validator';
 import { AuthGuard } from '../auth/auth.guard';
 import { CurrentUser } from '../auth/current-user.decorator';
@@ -23,27 +24,21 @@ import type { AuthContext } from '../auth/auth.types';
 import { ConversationAnalysisService } from './conversation-analysis.service';
 import { InboxService } from './inbox.service';
 
-const STAGES = [
-  'new',
-  'qualifying',
-  'qualified',
-  'not_qualified',
-  'call_scheduled',
-  'won',
-  'lost',
-] as const;
-
 const MODES = ['setter', 'support', 'ignored'] as const;
+const PROVIDERS = ['whatsapp', 'instagram', 'messenger'] as const;
 
 class UpdateConversationDto {
   @IsOptional() @IsBoolean() ai_enabled?: boolean;
-  @IsOptional() @IsIn(STAGES) stage?: (typeof STAGES)[number];
+  // Key del pipeline de la org (editable); se valida en el servicio.
+  @IsOptional() @IsString() @MaxLength(60) stage?: string;
   @IsOptional() @IsIn(MODES) mode?: (typeof MODES)[number];
   @IsOptional() @IsString() @MaxLength(4000) notes?: string;
   @IsOptional() @IsBoolean() blocked?: boolean;
   @IsOptional() @IsBoolean() unread?: boolean;
   // Cadena vacía => desasignar. UUID => asignar a ese miembro.
   @IsOptional() @IsString() @MaxLength(64) assigned_to?: string | null;
+  // Cadena vacía => agente del canal. UUID => forzar ese agente en este chat.
+  @IsOptional() @ValidateIf((_, v) => v !== null) @IsString() @MaxLength(64) agent_id?: string | null;
 }
 
 class SendMessageDto {
@@ -63,8 +58,14 @@ export class InboxController {
     @CurrentUser() user: AuthContext,
     @Query('stage') stage?: string,
     @Query('archived') archived?: string,
+    @Query('provider') provider?: string,
+    @Query('agent_id') agentId?: string,
   ) {
-    return this.inbox.list(user.organizationId, stage, archived === 'true' || archived === '1');
+    const prov = (PROVIDERS as readonly string[]).includes(provider ?? '') ? provider : undefined;
+    return this.inbox.list(user.organizationId, stage, archived === 'true' || archived === '1', {
+      provider: prov,
+      agentId: agentId || undefined,
+    });
   }
 
   /** Sincroniza los chats existentes desde Unipile (IA en pausa por defecto). */

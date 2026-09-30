@@ -1,6 +1,6 @@
 import { Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { SupabaseService } from '../supabase/supabase.service';
-import { WorkflowTriggerService } from '../workflows/workflow-trigger.service';
+import { StagesService } from '../stages/stages.service';
 import type { AppliedTag, FunnelStage, TagDefinition } from './tags.types';
 
 type UpsertTagInput = {
@@ -18,7 +18,7 @@ export class TagsService {
 
   constructor(
     private readonly supabase: SupabaseService,
-    private readonly workflowTrigger: WorkflowTriggerService,
+    private readonly stages: StagesService,
   ) {}
 
   // --- Catálogo de etiquetas (definiciones) ----------------------------------
@@ -39,6 +39,7 @@ export class TagsService {
     userId: string | null,
     input: UpsertTagInput,
   ): Promise<TagDefinition> {
+    if (input.set_stage) await this.stages.assertValidKey(orgId, input.set_stage);
     const { data, error } = await this.supabase.admin
       .from('tag_definitions')
       .insert({
@@ -62,6 +63,7 @@ export class TagsService {
     id: string,
     input: UpsertTagInput,
   ): Promise<TagDefinition> {
+    if (input.set_stage) await this.stages.assertValidKey(orgId, input.set_stage);
     const update: Record<string, unknown> = { updated_at: new Date().toISOString() };
     if (input.name !== undefined) update.name = input.name.trim();
     if (input.color !== undefined) update.color = input.color;
@@ -231,24 +233,9 @@ export class TagsService {
       .filter(Boolean)
       .pop();
     if (stage) {
-      await this.setStage(orgId, conversationId, stage);
+      // Cambia etapa (y espejo en CRM) + dispara workflows "Al cambiar de estado".
+      await this.stages.setConversationStage(orgId, conversationId, stage);
     }
-  }
-
-  private async setStage(orgId: string, conversationId: string, stage: FunnelStage): Promise<void> {
-    await this.supabase.admin
-      .from('conversations')
-      .update({ stage })
-      .eq('id', conversationId)
-      .eq('organization_id', orgId);
-    // Mantener el CRM sincronizado (espejo de leads.status).
-    await this.supabase.admin
-      .from('leads')
-      .update({ status: stage })
-      .eq('organization_id', orgId)
-      .eq('conversation_id', conversationId);
-    // Workflows con trigger "Al cambiar de estado".
-    void this.workflowTrigger.fire(orgId, conversationId, 'stage', { stage });
   }
 
   private async assertTagOwned(orgId: string, tagId: string): Promise<void> {

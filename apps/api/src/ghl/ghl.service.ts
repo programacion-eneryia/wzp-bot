@@ -1,6 +1,7 @@
 import { BadRequestException, ForbiddenException, Injectable, Logger } from '@nestjs/common';
 import { SupabaseService } from '../supabase/supabase.service';
 import { MessagingService } from '../messaging/messaging.service';
+import { StagesService } from '../stages/stages.service';
 import { safeWebhookUrlOrNull } from '../common/url-safety';
 
 /** Datos para el webhook de salida "lead registrado" hacia GHL (paso 2). */
@@ -38,6 +39,7 @@ export class GhlService {
   constructor(
     private readonly supabase: SupabaseService,
     private readonly messaging: MessagingService,
+    private readonly stages: StagesService,
   ) {}
 
   /** Resuelve la organización a partir del intake_token (endpoints públicos). */
@@ -238,6 +240,9 @@ export class GhlService {
         .eq('id', conv.id)
         .eq('organization_id', orgId);
       await this.syncLeadStatus(orgId, conv.id, 'call_scheduled');
+      if (conv.stage !== 'won') {
+        void this.stages.fireStageWorkflows(orgId, conv.id, 'call_scheduled');
+      }
       this.logger.log(`Cita AGENDADA en GHL → IA y seguimientos pausados (conv ${conv.id})`);
     } else {
       this.logger.warn(

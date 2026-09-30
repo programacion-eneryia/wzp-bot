@@ -11,6 +11,12 @@ type Overview = {
     bySource: Record<string, number>;
     last30: { date: string; count: number }[];
   };
+  byChannel: Record<string, number>;
+  byAgent: Record<string, { name: string; count: number }>;
+  supportConversations: number;
+  crm: { total: number; byStatus: Record<string, number>; bySource: Record<string, number> };
+  stages: { key: string; name: string; color: string }[];
+  agents: { id: string; name: string; kind: string; uses_stages: boolean }[];
   conversations: { total: number; byStage: Record<string, number> };
   appointments: {
     total: number;
@@ -20,18 +26,27 @@ type Overview = {
   };
   tags: { id: string; name: string; color: string; count: number }[];
   messagesTotal: number;
-  rates: { qualifiedPct: number; callScheduledPct: number; wonPct: number; lostPct: number };
+  rates: {
+    qualifiedPct: number;
+    calendarSentPct: number;
+    callScheduledPct: number;
+    wonPct: number;
+    lostPct: number;
+  };
 };
 
-const STATUS_LABEL: Record<string, string> = {
-  new: "Nuevo",
-  qualifying: "Cualificando",
-  qualified: "Cualificado",
-  not_qualified: "No cualifica",
-  call_scheduled: "Llamada agendada",
-  won: "Ganado",
-  lost: "Perdido",
+const CHANNEL_LABEL: Record<string, string> = {
+  whatsapp: "WhatsApp",
+  instagram: "Instagram",
+  messenger: "Messenger",
 };
+
+const PRESETS: { id: string; label: string; days: number | null }[] = [
+  { id: "all", label: "Todo", days: null },
+  { id: "7", label: "7 días", days: 7 },
+  { id: "30", label: "30 días", days: 30 },
+  { id: "90", label: "90 días", days: 90 },
+];
 
 const SOURCE_LABEL: Record<string, string> = {
   ghl: "GoHighLevel",
@@ -51,38 +66,53 @@ const APPT_LABEL: Record<string, string> = {
   cancelled: "Canceladas",
 };
 
-const STATUS_ORDER = [
-  "new",
-  "qualifying",
-  "qualified",
-  "call_scheduled",
-  "won",
-  "not_qualified",
-  "lost",
-];
-
 export default function Stats() {
   const [data, setData] = useState<Overview | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
+  const [agentId, setAgentId] = useState("");
+  const [preset, setPreset] = useState("all");
 
   useEffect(() => {
-    apiFetch<Overview>("/api/stats/overview")
-      .then(setData)
+    const params = new URLSearchParams();
+    if (agentId) params.set("agent_id", agentId);
+    const days = PRESETS.find((p) => p.id === preset)?.days ?? null;
+    if (days) {
+      const from = new Date();
+      from.setDate(from.getDate() - days);
+      from.setHours(0, 0, 0, 0);
+      params.set("from", from.toISOString());
+    }
+    const qs = params.toString();
+    setLoading(true);
+    apiFetch<Overview>(`/api/stats/overview${qs ? `?${qs}` : ""}`)
+      .then((d) => {
+        setData(d);
+        setError(null);
+      })
       .catch((e) => setError(e instanceof Error ? e.message : "Error al cargar"))
       .finally(() => setLoading(false));
-  }, []);
+  }, [agentId, preset]);
 
-  if (loading) return <p className={styles.muted}>Cargando…</p>;
+  if (loading && !data) return <p className={styles.muted}>Cargando…</p>;
   if (error) return <div className={styles.error}>{error}</div>;
   if (!data) return null;
 
-  const statusEntries = STATUS_ORDER.filter((s) => data.leads.byStatus[s] != null).map((s) => ({
-    key: s,
-    label: STATUS_LABEL[s] ?? s,
-    count: data.leads.byStatus[s],
-  }));
+  const statusEntries = data.stages
+    .filter((s) => (data.leads.byStatus[s.key] ?? 0) > 0)
+    .map((s) => ({ key: s.key, label: s.name, color: s.color, count: data.leads.byStatus[s.key] }));
   const maxStatus = Math.max(1, ...statusEntries.map((e) => e.count));
+
+  const channelEntries = Object.entries(data.byChannel ?? {})
+    .sort((a, b) => b[1] - a[1])
+    .map(([k, v]) => ({ label: CHANNEL_LABEL[k] ?? k, count: v }));
+  const maxChannel = Math.max(1, ...channelEntries.map((e) => e.count));
+  const agentEntries = Object.values(data.byAgent ?? {}).sort((a, b) => b.count - a.count);
+  const maxAgent = Math.max(1, ...agentEntries.map((e) => e.count));
+  const by = data.leads.byStatus;
+  const calendarSent = (by.calendar_sent ?? 0) + (by.call_scheduled ?? 0) + (by.won ?? 0);
+  const callScheduled = (by.call_scheduled ?? 0) + (by.won ?? 0);
+  const qualified = (by.qualified ?? 0) + calendarSent;
 
   const sourceEntries = Object.entries(data.leads.bySource)
     .sort((a, b) => b[1] - a[1])
@@ -94,18 +124,55 @@ export default function Stats() {
 
   return (
     <div className={styles.wrap}>
+      <div className={styles.filters}>
+        <div className={styles.presets}>
+          {PRESETS.map((p) => (
+            <button
+              key={p.id}
+              className={`${styles.preset} ${preset === p.id ? styles.presetActive : ""}`}
+              onClick={() => setPreset(p.id)}
+            >
+              {p.label}
+            </button>
+          ))}
+        </div>
+        {data.agents.length > 1 && (
+          <select
+            className={styles.select}
+            value={agentId}
+            onChange={(e) => setAgentId(e.target.value)}
+          >
+            <option value="">Todos los agentes</option>
+            {data.agents.map((a) => (
+              <option key={a.id} value={a.id}>
+                {a.name}
+              </option>
+            ))}
+          </select>
+        )}
+        {loading && <span className={styles.muted}>Actualizando…</span>}
+      </div>
+
       <div className={styles.kpis}>
-        <Kpi label="Total leads" value={data.leads.total} accent />
-        <Kpi label="Cualificados" value={`${data.rates.qualifiedPct}%`} sub={`${(data.leads.byStatus.qualified ?? 0) + (data.leads.byStatus.call_scheduled ?? 0) + (data.leads.byStatus.won ?? 0)} leads`} />
-        <Kpi label="Llamadas agendadas" value={data.leads.byStatus.call_scheduled ?? 0} sub={`${data.rates.callScheduledPct}% del total`} />
-        <Kpi label="Ganados" value={data.leads.byStatus.won ?? 0} sub={`${data.rates.wonPct}% del total`} />
+        <Kpi
+          label="Leads atendidos"
+          value={data.leads.total}
+          sub="Conversaciones con al menos una respuesta del agente"
+          accent
+        />
+        <Kpi label="Cualificados" value={`${data.rates.qualifiedPct}%`} sub={`${qualified} leads`} />
+        <Kpi label="Calendario enviado" value={calendarSent} sub={`${data.rates.calendarSentPct}% del total`} />
+        <Kpi label="Llamadas agendadas" value={callScheduled} sub={`${data.rates.callScheduledPct}% del total`} />
+        <Kpi label="Ganados" value={by.won ?? 0} sub={`${data.rates.wonPct}% del total`} />
+        <Kpi label="Perdidos / no cualifican" value={(by.lost ?? 0) + (by.not_qualified ?? 0)} sub={`${data.rates.lostPct}% del total`} />
         <Kpi label="Citas próximas" value={data.appointments.upcoming} sub={`${data.appointments.total} en total`} />
-        <Kpi label="Conversaciones" value={data.conversations.total} sub={`${data.messagesTotal} mensajes`} />
+        <Kpi label="Soporte" value={data.supportConversations} sub="Chats atendidos sin pipeline" />
+        <Kpi label="Contactos en CRM" value={data.crm.total} sub={`${data.messagesTotal} mensajes en total`} />
       </div>
 
       <div className={styles.grid}>
         <section className={styles.card}>
-          <h2 className={styles.cardTitle}>Leads por estado (embudo)</h2>
+          <h2 className={styles.cardTitle}>Embudo por etapa</h2>
           {statusEntries.length === 0 ? (
             <p className={styles.muted}>Sin datos todavía.</p>
           ) : (
@@ -116,12 +183,48 @@ export default function Stats() {
                   label={e.label}
                   value={e.count}
                   pct={(e.count / maxStatus) * 100}
-                  color="var(--accent, #ffe600)"
+                  color={e.color || "var(--accent, #ffe600)"}
                 />
               ))}
             </div>
           )}
         </section>
+
+        <section className={styles.card}>
+          <h2 className={styles.cardTitle}>Leads por canal</h2>
+          {channelEntries.length === 0 ? (
+            <p className={styles.muted}>Sin datos todavía.</p>
+          ) : (
+            <div className={styles.bars}>
+              {channelEntries.map((e) => (
+                <BarRow
+                  key={e.label}
+                  label={e.label}
+                  value={e.count}
+                  pct={(e.count / maxChannel) * 100}
+                  color="#22c55e"
+                />
+              ))}
+            </div>
+          )}
+        </section>
+
+        {agentEntries.length > 1 && (
+          <section className={styles.card}>
+            <h2 className={styles.cardTitle}>Leads por agente</h2>
+            <div className={styles.bars}>
+              {agentEntries.map((e) => (
+                <BarRow
+                  key={e.name}
+                  label={e.name}
+                  value={e.count}
+                  pct={(e.count / maxAgent) * 100}
+                  color="#a855f7"
+                />
+              ))}
+            </div>
+          </section>
+        )}
 
         <section className={styles.card}>
           <h2 className={styles.cardTitle}>Leads por fuente</h2>

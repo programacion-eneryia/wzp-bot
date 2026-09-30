@@ -2,16 +2,12 @@
 
 import { Fragment, useCallback, useEffect, useRef, useState } from "react";
 import { apiFetch } from "@/lib/api";
+import { useStages } from "@/lib/stages";
+import { useAgents } from "@/lib/agents";
 import styles from "./inbox.module.css";
 
-type Stage =
-  | "new"
-  | "qualifying"
-  | "qualified"
-  | "not_qualified"
-  | "call_scheduled"
-  | "won"
-  | "lost";
+/** Key de una etapa del pipeline (editable por organización). */
+type Stage = string;
 
 type Analysis = {
   summary: string;
@@ -49,6 +45,8 @@ type Conversation = {
   ai_analysis?: Analysis | null;
   ai_analysis_at?: string | null;
   tags?: ConvTag[];
+  agent_id?: string | null;
+  channel_id?: string | null;
   last_message_at: string | null;
   created_at: string;
 };
@@ -70,19 +68,11 @@ function sameMessages(a: Message[], b: Message[]): boolean {
   return true;
 }
 
-const STAGES: { id: Stage; label: string }[] = [
-  { id: "new", label: "Nuevo" },
-  { id: "qualifying", label: "Cualificando" },
-  { id: "qualified", label: "Cualificado" },
-  { id: "call_scheduled", label: "Llamada agendada" },
-  { id: "won", label: "Ganado" },
-  { id: "not_qualified", label: "No cualifica" },
-  { id: "lost", label: "Perdido" },
+const PROVIDERS: { id: string; label: string }[] = [
+  { id: "whatsapp", label: "WhatsApp" },
+  { id: "instagram", label: "Instagram" },
+  { id: "messenger", label: "Messenger" },
 ];
-
-const STAGE_LABEL: Record<Stage, string> = Object.fromEntries(
-  STAGES.map((s) => [s.id, s.label]),
-) as Record<Stage, string>;
 
 const PROVIDER_LABEL: Record<string, string> = {
   whatsapp: "WhatsApp",
@@ -141,8 +131,11 @@ function dayLabel(iso: string): string {
 }
 
 export default function Inbox() {
+  const { stages, label: STAGE_LABEL } = useStages();
+  const { agents } = useAgents();
   const [list, setList] = useState<Conversation[]>([]);
   const [filter, setFilter] = useState<Stage | "all">("all");
+  const [providerFilter, setProviderFilter] = useState<string>("all");
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [conv, setConv] = useState<Conversation | null>(null);
   const [messages, setMessages] = useState<Message[]>([]);
@@ -179,12 +172,13 @@ export default function Inbox() {
 
   const loadList = useCallback(async () => {
     try {
-      const data = await apiFetch<Conversation[]>("/api/inbox/conversations");
+      const qs = providerFilter !== "all" ? `?provider=${providerFilter}` : "";
+      const data = await apiFetch<Conversation[]>(`/api/inbox/conversations${qs}`);
       setList(data);
     } catch (e) {
       setError(e instanceof Error ? e.message : "Error");
     }
-  }, []);
+  }, [providerFilter]);
 
   const loadConv = useCallback(async (id: string, refresh = false) => {
     try {
@@ -330,6 +324,23 @@ export default function Inbox() {
     await patch({ stage });
     loadList();
   }
+
+  async function changeAgent(agentId: string) {
+    if (!conv) return;
+    setConv({ ...conv, agent_id: agentId || null });
+    await patch({ agent_id: agentId || null });
+    loadList();
+  }
+
+  /** Agente que atiende este chat (override → agente del canal → setter). */
+  const currentAgent = conv
+    ? agents.find((a) => a.id === conv.agent_id) ??
+      agents.find((a) => (a.channels ?? []).some((ch) => ch.id === conv.channel_id)) ??
+      (conv.mode === "support" ? agents.find((a) => a.kind === "support") : undefined) ??
+      agents.find((a) => a.kind === "setter" && a.is_active) ??
+      null
+    : null;
+  const showStages = currentAgent ? currentAgent.uses_stages : true;
 
   async function changeMode(mode: "setter" | "support" | "ignored") {
     if (!conv) return;
@@ -496,19 +507,32 @@ export default function Inbox() {
         </div>
         {syncInfo && <div className={styles.syncInfo}>{syncInfo}</div>}
         <div className={styles.filters}>
+          <select
+            className={styles.moveSelect}
+            value={providerFilter}
+            onChange={(e) => setProviderFilter(e.target.value)}
+            title="Filtrar por canal"
+          >
+            <option value="all">Todos los canales</option>
+            {PROVIDERS.map((p) => (
+              <option key={p.id} value={p.id}>
+                {p.label}
+              </option>
+            ))}
+          </select>
           <button
             className={`${styles.filter} ${filter === "all" ? styles.filterActive : ""}`}
             onClick={() => setFilter("all")}
           >
             Todos
           </button>
-          {STAGES.map((s) => (
+          {stages.map((s) => (
             <button
-              key={s.id}
-              className={`${styles.filter} ${filter === s.id ? styles.filterActive : ""}`}
-              onClick={() => setFilter(s.id)}
+              key={s.key}
+              className={`${styles.filter} ${filter === s.key ? styles.filterActive : ""}`}
+              onClick={() => setFilter(s.key)}
             >
-              {s.label}
+              {s.name}
             </button>
           ))}
         </div>
@@ -640,18 +664,39 @@ export default function Inbox() {
                   </option>
                 ))}
               </select>
-              <select
-                className={styles.moveSelect}
-                value={conv.stage}
-                onChange={(e) => changeStage(e.target.value as Stage)}
-                title="Mover de fase"
-              >
-                {STAGES.map((s) => (
-                  <option key={s.id} value={s.id}>
-                    {s.label}
+              {showStages && (
+                <select
+                  className={styles.moveSelect}
+                  value={conv.stage}
+                  onChange={(e) => changeStage(e.target.value as Stage)}
+                  title="Mover de fase"
+                >
+                  {stages.map((s) => (
+                    <option key={s.key} value={s.key}>
+                      {s.name}
+                    </option>
+                  ))}
+                </select>
+              )}
+              {agents.length > 1 && (
+                <select
+                  className={styles.moveSelect}
+                  value={conv.agent_id ?? ""}
+                  onChange={(e) => changeAgent(e.target.value)}
+                  title="Agente de IA que atiende este chat"
+                >
+                  <option value="">
+                    Agente: {currentAgent ? `${currentAgent.name} (por defecto)` : "por defecto"}
                   </option>
-                ))}
-              </select>
+                  {agents
+                    .filter((a) => a.is_active)
+                    .map((a) => (
+                      <option key={a.id} value={a.id}>
+                        Agente: {a.name}
+                      </option>
+                    ))}
+                </select>
+              )}
               <select
                 className={styles.moveSelect}
                 value={conv.assigned_to ?? ""}
@@ -870,8 +915,10 @@ export default function Inbox() {
           </div>
 
           <div className={styles.panelSection}>
-            <div className={styles.panelTitle}>Fase del funnel</div>
-            <div className={styles.stageBadge}>{STAGE_LABEL[conv.stage]}</div>
+            <div className={styles.panelTitle}>{showStages ? "Etapa" : "Agente"}</div>
+            <div className={styles.stageBadge}>
+              {showStages ? STAGE_LABEL(conv.stage) : currentAgent?.name ?? "Soporte"}
+            </div>
             {analysis?.next_step && (
               <p className={styles.nextStep}>
                 <span>Siguiente paso</span>
@@ -943,7 +990,7 @@ export default function Inbox() {
                     className={styles.applyStage}
                     onClick={() => changeStage(analysis.suggested_stage)}
                   >
-                    Mover a: {STAGE_LABEL[analysis.suggested_stage]}
+                    Mover a: {STAGE_LABEL(analysis.suggested_stage)}
                   </button>
                 )}
 

@@ -1,31 +1,5 @@
-export type Stage =
-  | "new"
-  | "qualifying"
-  | "qualified"
-  | "not_qualified"
-  | "call_scheduled"
-  | "won"
-  | "lost";
-
-export const STAGE_LABEL: Record<Stage, string> = {
-  new: "Nuevo",
-  qualifying: "Cualificando",
-  qualified: "Cualificado",
-  not_qualified: "No cualifica",
-  call_scheduled: "Llamada agendada",
-  won: "Ganado",
-  lost: "Perdido",
-};
-
-export const STAGES: Stage[] = [
-  "new",
-  "qualifying",
-  "qualified",
-  "not_qualified",
-  "call_scheduled",
-  "won",
-  "lost",
-];
+/** Key de una etapa del pipeline de la organización (editable en "Pipelines y Stages"). */
+export type Stage = string;
 
 export type Tag = {
   id: string;

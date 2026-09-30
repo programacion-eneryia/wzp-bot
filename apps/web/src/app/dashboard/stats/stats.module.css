@@ -171,3 +171,36 @@
   color: var(--text-faint, #8a8a8a);
   font-family: var(--font-mono, monospace);
 }
+
+.filters {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+.presets {
+  display: flex;
+  gap: 6px;
+}
+.preset {
+  background: transparent;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  color: var(--text-muted, #9a9a9a);
+  font-size: 12px;
+  padding: 5px 10px;
+  border-radius: 999px;
+  cursor: pointer;
+}
+.presetActive {
+  border-color: var(--accent, #ffe600);
+  color: var(--text, #e8e8e8);
+  background: rgba(255, 230, 0, 0.08);
+}
+.select {
+  background: var(--surface-2, #1c1c1c);
+  border: 1px solid var(--border, rgba(255, 255, 255, 0.12));
+  border-radius: 8px;
+  padding: 6px 10px;
+  color: var(--text, #e8e8e8);
+  font-size: 13px;
+}

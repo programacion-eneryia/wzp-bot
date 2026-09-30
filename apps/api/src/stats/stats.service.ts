@@ -1,63 +1,146 @@
 import { Injectable } from '@nestjs/common';
 import { SupabaseService } from '../supabase/supabase.service';
+import { StagesService } from '../stages/stages.service';
+import { AgentsService } from '../agents/agents.service';
+
+export type StatsFilters = {
+  /** Solo conversaciones atendidas por este agente. */
+  agentId?: string;
+  /** Rango de fechas (ISO) por fecha de creación de la conversación. */
+  from?: string;
+  to?: string;
+};
 
 /**
- * Estadísticas agregadas por organización para el panel de "Estadísticas":
- * leads (por estado/fuente y evolución), conversaciones (por etapa), citas,
- * etiquetas y ratios de conversión.
+ * Estadísticas agregadas por organización para el panel de "Estadísticas".
+ *
+ * "Leads" aquí son las CONVERSACIONES CON LAS QUE EL BOT HA HABLADO (al menos
+ * un mensaje nuestro), no el total de contactos del CRM. Las conversaciones
+ * atendidas por agentes sin pipeline (soporte) NO cuentan en el embudo.
  */
 @Injectable()
 export class StatsService {
-  constructor(private readonly supabase: SupabaseService) {}
+  constructor(
+    private readonly supabase: SupabaseService,
+    private readonly stages: StagesService,
+    private readonly agents: AgentsService,
+  ) {}
 
-  async overview(orgId: string) {
-    const [leads, conversations, appointments, tags, messagesTotal] = await Promise.all([
-      this.leadStats(orgId),
-      this.conversationStats(orgId),
+  async overview(orgId: string, filters: StatsFilters = {}) {
+    const [funnel, crm, appointments, tags, messagesTotal, stageList] = await Promise.all([
+      this.funnelStats(orgId, filters),
+      this.crmStats(orgId),
       this.appointmentStats(orgId),
       this.tagStats(orgId),
       this.messagesTotal(orgId),
+      this.stages.list(orgId),
     ]);
 
-    const total = leads.total || 0;
+    const total = funnel.total;
     const pct = (n: number) => (total > 0 ? Math.round((n / total) * 1000) / 10 : 0);
+    const by = funnel.byStage;
     const qualified =
-      (leads.byStatus.qualified ?? 0) +
-      (leads.byStatus.call_scheduled ?? 0) +
-      (leads.byStatus.won ?? 0);
+      (by.qualified ?? 0) + (by.calendar_sent ?? 0) + (by.call_scheduled ?? 0) + (by.won ?? 0);
     const rates = {
       qualifiedPct: pct(qualified),
-      callScheduledPct: pct(
-        (leads.byStatus.call_scheduled ?? 0) + (leads.byStatus.won ?? 0),
-      ),
-      wonPct: pct(leads.byStatus.won ?? 0),
-      lostPct: pct((leads.byStatus.lost ?? 0) + (leads.byStatus.not_qualified ?? 0)),
+      calendarSentPct: pct((by.calendar_sent ?? 0) + (by.call_scheduled ?? 0) + (by.won ?? 0)),
+      callScheduledPct: pct((by.call_scheduled ?? 0) + (by.won ?? 0)),
+      wonPct: pct(by.won ?? 0),
+      lostPct: pct((by.lost ?? 0) + (by.not_qualified ?? 0)),
     };
 
-    return { leads, conversations, appointments, tags, messagesTotal, rates };
+    return {
+      // Compatibilidad con el front: `leads` = conversaciones con las que habló el bot.
+      leads: {
+        total,
+        byStatus: funnel.byStage,
+        bySource: funnel.bySource,
+        last30: funnel.last30,
+      },
+      byChannel: funnel.byChannel,
+      byAgent: funnel.byAgent,
+      supportConversations: funnel.supportTotal,
+      crm,
+      conversations: { total, byStage: funnel.byStage },
+      appointments,
+      tags,
+      messagesTotal,
+      rates,
+      stages: stageList.map((s) => ({ key: s.key, name: s.name, color: s.color })),
+      agents: (await this.agents.list(orgId)).map((a) => ({
+        id: a.id,
+        name: a.name,
+        kind: a.kind,
+        uses_stages: a.uses_stages,
+      })),
+    };
   }
 
-  private async leadStats(orgId: string) {
-    const { data } = await this.supabase.admin
-      .from('leads')
-      .select('status, source, created_at')
+  /** Embudo: conversaciones con al menos un mensaje del bot, de agentes con pipeline. */
+  private async funnelStats(orgId: string, filters: StatsFilters) {
+    let q = this.supabase.admin
+      .from('conversations')
+      .select('id, stage, source, provider, created_at, agent_id, channel_id, mode')
       .eq('organization_id', orgId)
-      .limit(10000);
+      .eq('is_test', false)
+      .is('archived_at', null)
+      .not('last_outbound_at', 'is', null)
+      .limit(20000);
+    if (filters.from) q = q.gte('created_at', filters.from);
+    if (filters.to) q = q.lte('created_at', filters.to);
+    const { data } = await q;
     const rows = data ?? [];
-    const byStatus: Record<string, number> = {};
-    const bySource: Record<string, number> = {};
 
-    // Evolución últimos 30 días (por día).
-    const last30: Array<{ date: string; count: number }> = [];
+    // Agente efectivo por conversación (override → canal → setter por defecto).
+    const agents = await this.agents.list(orgId);
+    const agentById = new Map(agents.map((a) => [a.id, a]));
+    const defaultAgent = agents.find((a) => a.kind === 'setter' && a.is_active) ?? agents[0] ?? null;
+    const { data: channels } = await this.supabase.admin
+      .from('channels')
+      .select('id, agent_id')
+      .eq('organization_id', orgId);
+    const channelAgent = new Map((channels ?? []).map((c) => [c.id as string, c.agent_id as string | null]));
+    const supportAgent = agents.find((a) => a.kind === 'support') ?? null;
+
+    const byStage: Record<string, number> = {};
+    const bySource: Record<string, number> = {};
+    const byChannel: Record<string, number> = {};
+    const byAgent: Record<string, { name: string; count: number }> = {};
     const byDay = new Map<string, number>();
+    let total = 0;
+    let supportTotal = 0;
+
     for (const r of rows) {
-      const st = (r.status as string) || 'new';
-      const sc = (r.source as string) || 'otro';
-      byStatus[st] = (byStatus[st] ?? 0) + 1;
+      const explicit = r.agent_id ? agentById.get(r.agent_id as string) : undefined;
+      const viaChannel = r.channel_id ? channelAgent.get(r.channel_id as string) : null;
+      const agent =
+        explicit ??
+        (r.mode === 'support' && supportAgent ? supportAgent : undefined) ??
+        (viaChannel ? agentById.get(viaChannel) : undefined) ??
+        defaultAgent;
+
+      if (filters.agentId && agent?.id !== filters.agentId) continue;
+      if (agent && !agent.uses_stages) {
+        supportTotal++;
+        continue;
+      }
+      total++;
+      const st = (r.stage as string) || 'new';
+      byStage[st] = (byStage[st] ?? 0) + 1;
+      const sc = (r.source as string) || (r.provider as string) || 'otro';
       bySource[sc] = (bySource[sc] ?? 0) + 1;
+      const ch = (r.provider as string) || 'otro';
+      byChannel[ch] = (byChannel[ch] ?? 0) + 1;
+      if (agent) {
+        const cur = byAgent[agent.id] ?? { name: agent.name, count: 0 };
+        cur.count++;
+        byAgent[agent.id] = cur;
+      }
       const d = (r.created_at as string | null)?.slice(0, 10);
       if (d) byDay.set(d, (byDay.get(d) ?? 0) + 1);
     }
+
+    const last30: Array<{ date: string; count: number }> = [];
     const today = new Date();
     for (let i = 29; i >= 0; i--) {
       const d = new Date(today);
@@ -66,24 +149,26 @@ export class StatsService {
       last30.push({ date: key, count: byDay.get(key) ?? 0 });
     }
 
-    return { total: rows.length, byStatus, bySource, last30 };
+    return { total, byStage, bySource, byChannel, byAgent, last30, supportTotal };
   }
 
-  private async conversationStats(orgId: string) {
+  /** Totales del CRM (todos los contactos, hablados o no). */
+  private async crmStats(orgId: string) {
     const { data } = await this.supabase.admin
-      .from('conversations')
-      .select('stage')
+      .from('leads')
+      .select('status, source')
       .eq('organization_id', orgId)
-      .eq('is_test', false)
-      .is('archived_at', null)
-      .limit(10000);
+      .limit(20000);
     const rows = data ?? [];
-    const byStage: Record<string, number> = {};
+    const byStatus: Record<string, number> = {};
+    const bySource: Record<string, number> = {};
     for (const r of rows) {
-      const st = (r.stage as string) || 'new';
-      byStage[st] = (byStage[st] ?? 0) + 1;
+      const st = (r.status as string) || 'new';
+      const sc = (r.source as string) || 'otro';
+      byStatus[st] = (byStatus[st] ?? 0) + 1;
+      bySource[sc] = (bySource[sc] ?? 0) + 1;
     }
-    return { total: rows.length, byStage };
+    return { total: rows.length, byStatus, bySource };
   }
 
   private async appointmentStats(orgId: string) {

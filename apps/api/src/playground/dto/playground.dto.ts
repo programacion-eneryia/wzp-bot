@@ -6,6 +6,10 @@ export class CreateConversationDto {
 
   @IsOptional() @IsString() @MaxLength(80)
   contact_name?: string;
+
+  /** Agente con el que probar (por defecto, el setter). */
+  @IsOptional() @IsString() @MaxLength(64)
+  agent_id?: string;
 }
 
 export class SendMessageDto {

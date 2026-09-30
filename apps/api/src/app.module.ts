@@ -19,6 +19,8 @@ import { OpenRouterModule } from './openrouter/openrouter.module';
 import { PlatformModule } from './platform/platform.module';
 import { PlaygroundModule } from './playground/playground.module';
 import { SetterModule } from './setter/setter.module';
+import { StagesModule } from './stages/stages.module';
+import { AgentsModule } from './agents/agents.module';
 import { StatsModule } from './stats/stats.module';
 import { SupabaseModule } from './supabase/supabase.module';
 import { TagsModule } from './tags/tags.module';
@@ -49,6 +51,8 @@ import { WorkflowsModule } from './workflows/workflows.module';
     OpenRouterModule,
     ChannelsModule,
     CalendarModule,
+    StagesModule,
+    AgentsModule,
     SetterModule,
     StatsModule,
     TagsModule,

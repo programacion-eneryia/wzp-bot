@@ -18,7 +18,9 @@ import {
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
 import { apiFetch } from "@/lib/api";
-import { STAGES, type NodeKind, type Workflow } from "./types";
+import { useStages } from "@/lib/stages";
+import { useAgents } from "@/lib/agents";
+import { type NodeKind, type Workflow } from "./types";
 import styles from "./workflows.module.css";
 
 type NodeData = {
@@ -40,6 +42,7 @@ const META: Record<NodeKind, { label: string; branch?: boolean; terminal?: boole
   start: { label: "Inicio" },
   message: { label: "Enviar mensaje" },
   wait: { label: "Esperar" },
+  wait_reply: { label: "Esperar respuesta", branch: true },
   if_replied: { label: "¿Respondió?", branch: true },
   if_stage: { label: "Según estado", branch: true },
   stop: { label: "Detener", terminal: true },
@@ -50,6 +53,7 @@ const META: Record<NodeKind, { label: string; branch?: boolean; terminal?: boole
 const PALETTE: NodeKind[] = [
   "message",
   "wait",
+  "wait_reply",
   "if_replied",
   "if_stage",
   "webhook",
@@ -69,24 +73,32 @@ const VARIABLES: { value: string; label: string }[] = [
   { value: "stage", label: "Estado" },
 ];
 
+const UNIT_LABEL: Record<NonNullable<NodeData["unit"]>, string> = {
+  minutes: "min",
+  hours: "h",
+  days: "días",
+};
+
 const V_GAP_Y = 150;
 const V_GAP_X = 220;
 
 const isTerminal = (k: NodeKind) => META[k].terminal === true;
 const isBranch = (k: NodeKind) => META[k].branch === true;
 
-function summarize(d: NodeData): string {
+function summarize(d: NodeData, stageLabel: (k: string) => string = (k) => k): string {
   switch (d.kind) {
     case "message":
       return d.text ? (d.text.length > 60 ? d.text.slice(0, 60) + "…" : d.text) : "(sin texto)";
     case "wait":
-      return `${d.amount ?? 0} ${d.unit ?? "minutes"}`;
+      return `${d.amount ?? 0} ${UNIT_LABEL[d.unit ?? "minutes"]}`;
+    case "wait_reply":
+      return `máx. ${d.amount ?? 0} ${UNIT_LABEL[d.unit ?? "hours"]}`;
     case "if_replied":
       return "sí / no";
     case "if_stage":
-      return d.stage ? `= ${d.stage}` : "(elige estado)";
+      return d.stage ? `= ${stageLabel(d.stage)}` : "(elige estado)";
     case "stop":
-      return [d.pause_followups ? "pausar" : null, d.set_stage ? `→ ${d.set_stage}` : null]
+      return [d.pause_followups ? "pausar" : null, d.set_stage ? `→ ${stageLabel(d.set_stage)}` : null]
         .filter(Boolean)
         .join(" · ") || "fin";
     case "ai_handoff":
@@ -101,11 +113,12 @@ function summarize(d: NodeData): string {
 function WfNode({ data, selected }: NodeProps) {
   const d = data as NodeData;
   const meta = META[d.kind];
+  const { label: stageLabel } = useStages();
   return (
     <div className={`${styles.node} ${selected ? styles.nodeSel : ""}`} data-kind={d.kind}>
       {d.kind !== "start" && <Handle type="target" position={Position.Top} />}
       <div className={styles.nodeTitle}>{meta.label}</div>
-      <div className={styles.nodeBody}>{summarize(d)}</div>
+      <div className={styles.nodeBody}>{summarize(d, stageLabel)}</div>
       {meta.branch ? (
         <>
           <Handle id="yes" type="source" position={Position.Bottom} style={{ left: "28%" }} />
@@ -164,6 +177,8 @@ function defToFlow(wf: Workflow): { nodes: Node[]; edges: Edge[] } {
 }
 
 function Editor({ workflow, onBack }: { workflow: Workflow; onBack: () => void }) {
+  const { stages } = useStages();
+  const { agents } = useAgents();
   const initial = useMemo(() => defToFlow(workflow), [workflow]);
   const [nodes, setNodes, onNodesChange] = useNodesState(initial.nodes);
   const [edges, setEdges, onEdgesChange] = useEdgesState(initial.edges);
@@ -171,6 +186,7 @@ function Editor({ workflow, onBack }: { workflow: Workflow; onBack: () => void }
   const [name, setName] = useState(workflow.name);
   const [trigger, setTrigger] = useState(workflow.trigger);
   const [isActive, setIsActive] = useState(workflow.is_active);
+  const [agentId, setAgentId] = useState<string>(workflow.agent_id ?? "");
   const [resumeHours, setResumeHours] = useState<string>(
     workflow.resume_after_hours ? String(workflow.resume_after_hours) : "",
   );
@@ -208,6 +224,8 @@ function Editor({ workflow, onBack }: { workflow: Workflow; onBack: () => void }
     const defaults: NodeData =
       kind === "wait"
         ? { kind, amount: 1, unit: "hours" }
+        : kind === "wait_reply"
+          ? { kind, amount: 24, unit: "hours" }
         : kind === "message"
           ? { kind, text: "" }
           : kind === "webhook"
@@ -322,6 +340,7 @@ function Editor({ workflow, onBack }: { workflow: Workflow; onBack: () => void }
           trigger,
           trigger_config: trigger === "stage" ? { stage: triggerStage } : {},
           is_active: isActive,
+          agent_id: agentId || null,
           resume_after_hours: resumeHours ? Number(resumeHours) : 0,
           definition,
         }),
@@ -364,9 +383,24 @@ function Editor({ workflow, onBack }: { workflow: Workflow; onBack: () => void }
             value={triggerStage}
             onChange={(e) => setTriggerStage(e.target.value)}
           >
-            {STAGES.map((s) => (
-              <option key={s} value={s}>
-                {s}
+            {stages.map((s) => (
+              <option key={s.key} value={s.key}>
+                {s.name}
+              </option>
+            ))}
+          </select>
+        )}
+        {agents.length > 1 && (
+          <select
+            className={styles.input}
+            value={agentId}
+            onChange={(e) => setAgentId(e.target.value)}
+            title="Si eliges un agente, este workflow solo se dispara para conversaciones que atiende ese agente (y 'Pasar a IA' se la asigna)."
+          >
+            <option value="">Cualquier agente</option>
+            {agents.map((a) => (
+              <option key={a.id} value={a.id}>
+                Agente: {a.name}
               </option>
             ))}
           </select>
@@ -478,10 +512,18 @@ function Editor({ workflow, onBack }: { workflow: Workflow; onBack: () => void }
                 </label>
               )}
 
-              {selData.kind === "wait" && (
+              {selData.kind === "wait_reply" && (
+                <p className={styles.hint}>
+                  Espera a que el lead conteste. Sale por <strong>sí</strong> en cuanto responde y
+                  por <strong>no</strong> si pasa el tiempo máximo sin respuesta. Mientras espera,
+                  la respuesta del lead no pausa este workflow.
+                </p>
+              )}
+
+              {(selData.kind === "wait" || selData.kind === "wait_reply") && (
                 <div className={styles.formRow}>
                   <label className={styles.field}>
-                    Cantidad
+                    {selData.kind === "wait_reply" ? "Tiempo máximo" : "Cantidad"}
                     <input
                       className={styles.smallInput}
                       type="number"
@@ -515,9 +557,9 @@ function Editor({ workflow, onBack }: { workflow: Workflow; onBack: () => void }
                     value={selData.stage ?? "qualified"}
                     onChange={(e) => patchSelected({ stage: e.target.value })}
                   >
-                    {STAGES.map((s) => (
-                      <option key={s} value={s}>
-                        {s}
+                    {stages.map((s) => (
+                      <option key={s.key} value={s.key}>
+                        {s.name}
                       </option>
                     ))}
                   </select>
@@ -548,9 +590,9 @@ function Editor({ workflow, onBack }: { workflow: Workflow; onBack: () => void }
                       onChange={(e) => patchSelected({ set_stage: e.target.value })}
                     >
                       <option value="">— sin cambio —</option>
-                      {STAGES.map((s) => (
-                        <option key={s} value={s}>
-                          {s}
+                      {stages.map((s) => (
+                        <option key={s.key} value={s.key}>
+                          {s.name}
                         </option>
                       ))}
                     </select>
@@ -559,7 +601,10 @@ function Editor({ workflow, onBack }: { workflow: Workflow; onBack: () => void }
               )}
 
               {selData.kind === "ai_handoff" && (
-                <p className={styles.hint}>Activa la IA setter para que responda a partir de aquí.</p>
+                <p className={styles.hint}>
+                  Activa la IA para que responda a partir de aquí
+                  {agentId ? " con el agente elegido en este workflow." : "."}
+                </p>
               )}
 
               {selData.kind === "webhook" && (

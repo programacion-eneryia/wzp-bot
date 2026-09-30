@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { apiFetch, apiUpload } from "@/lib/api";
+import { useStages } from "@/lib/stages";
 import styles from "./crm.module.css";
 
 type TagRef = { tag_id: string; name: string; color: string };
@@ -50,20 +51,6 @@ type Stats = {
   bySource: Record<string, number>;
 };
 
-const STATUSES: { value: string; label: string }[] = [
-  { value: "new", label: "Nuevo" },
-  { value: "qualifying", label: "Cualificando" },
-  { value: "qualified", label: "Cualificado" },
-  { value: "not_qualified", label: "No cualifica" },
-  { value: "call_scheduled", label: "Llamada agendada" },
-  { value: "won", label: "Ganado" },
-  { value: "lost", label: "Perdido" },
-];
-
-const STATUS_LABEL: Record<string, string> = Object.fromEntries(
-  STATUSES.map((s) => [s.value, s.label]),
-);
-
 const SOURCE_LABEL: Record<string, string> = {
   ghl: "GoHighLevel",
   manychat: "ManyChat",
@@ -96,6 +83,8 @@ function fmtDate(iso: string | null): string {
 }
 
 export default function Crm() {
+  const { stages, label: STATUS_LABEL, color: stageColor } = useStages();
+  const STATUSES = stages.map((s) => ({ value: s.key, label: s.name }));
   const [leads, setLeads] = useState<LeadRow[]>([]);
   const [stats, setStats] = useState<Stats | null>(null);
   const [loading, setLoading] = useState(true);
@@ -298,8 +287,14 @@ export default function Crm() {
                     )}
                   </td>
                   <td>
-                    <span className={`${styles.statusTag} ${styles[`st_${l.status}`] ?? ""}`}>
-                      {STATUS_LABEL[l.status] ?? l.status}
+                    <span
+                      className={styles.statusTag}
+                      style={{
+                        background: `${stageColor(l.status)}22`,
+                        color: stageColor(l.status),
+                      }}
+                    >
+                      {STATUS_LABEL(l.status)}
                     </span>
                   </td>
                   <td className={styles.muted}>{fmtDate(l.created_at)}</td>
@@ -458,6 +453,8 @@ function LeadDrawer({
   onSaved: () => void;
   onDeleted: () => void;
 }) {
+  const { stages, label: STATUS_LABEL } = useStages();
+  const STATUSES = stages.map((s) => ({ value: s.key, label: s.name }));
   const [data, setData] = useState<{ lead: LeadDetail; conversation: ConversationSummary } | null>(
     null,
   );
@@ -587,7 +584,7 @@ function LeadDrawer({
             {conv && (
               <section className={styles.block}>
                 <h3 className={styles.blockTitle}>Conversación</h3>
-                <Field label="Etapa" value={STATUS_LABEL[conv.stage] ?? conv.stage} />
+                <Field label="Etapa" value={STATUS_LABEL(conv.stage)} />
                 <Field label="Modo" value={conv.mode} />
                 <Field label="IA activa" value={conv.ai_enabled ? "Sí" : "No"} />
                 <Field label="Último mensaje" value={fmtDate(conv.last_message_at)} />
