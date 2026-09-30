@@ -29,8 +29,9 @@ export class MeController {
   }
 
   @Get('dashboard')
-  dashboard(@CurrentUser() user: AuthContext) {
-    return this.me.getDashboardPrefs(user.userId);
+  async dashboard(@CurrentUser() user: AuthContext) {
+    // Nest serializa `null` como body vacío; devolvemos siempre un objeto JSON.
+    return (await this.me.getDashboardPrefs(user.userId)) ?? { widgets: [] };
   }
 
   @Put('dashboard')
