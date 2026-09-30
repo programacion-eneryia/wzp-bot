@@ -29,7 +29,10 @@ type Channel = {
   display_name?: string | null;
 };
 
+type AppId = "ghl" | "manychat" | "webhook" | "outbound";
+
 export default function Integrations({ isAdmin = true }: { isAdmin?: boolean }) {
+  const [open, setOpen] = useState<AppId | null>(null);
   const [data, setData] = useState<Integration | null>(null);
   const [channels, setChannels] = useState<Channel[]>([]);
   const [loading, setLoading] = useState(true);
@@ -96,148 +99,232 @@ export default function Integrations({ isAdmin = true }: { isAdmin?: boolean }) 
 
   const waChannels = channels.filter((c) => c.provider === "whatsapp");
 
+  const apps: { id: AppId; name: string; text: string; status: string; ok: boolean; mark: string }[] = [
+    {
+      id: "ghl",
+      name: "GoHighLevel",
+      text: "Registra leads en el CRM, recibe citas agendadas y controla el bot desde tus workflows de GHL.",
+      status: data.ghl_webhook_url ? "Conectado" : "Disponible",
+      ok: Boolean(data.ghl_webhook_url),
+      mark: "GHL",
+    },
+    {
+      id: "manychat",
+      name: "ManyChat",
+      text: "Instagram vía flows de ManyChat: el bot responde dentro de tu flujo.",
+      status: data.manychat_api_key ? "Conectado" : "Disponible",
+      ok: Boolean(data.manychat_api_key),
+      mark: "MC",
+    },
+    {
+      id: "webhook",
+      name: "Webhook genérico",
+      text: "Cualquier formulario, CRM o herramienta (Zapier, Make, Meta Lead Ads…) que pueda hacer un POST.",
+      status: "Disponible",
+      ok: false,
+      mark: "{ }",
+    },
+    {
+      id: "outbound",
+      name: "Canal de salida",
+      text: "Qué número de WhatsApp usan los workflows para el primer contacto.",
+      status: data.default_channel_id ? "Configurado" : "Automático",
+      ok: true,
+      mark: "WA",
+    },
+  ];
+
   return (
     <div className={styles.wrap}>
       {error && <div className={styles.error}>{error}</div>}
 
-      <section className={styles.card}>
-        <h2 className={styles.cardTitle}>Webhooks de entrada</h2>
-        {!isAdmin ? (
-          <p className={styles.muted}>
-            Solo un administrador puede ver los tokens y las URLs de integración.
-          </p>
-        ) : (
-        <>
-        <p className={styles.muted}>
-          Pega estas URLs en cada plataforma. Llevan tu token secreto; trátalas como una contraseña.
-        </p>
-
-        <UrlRow
-          label="① GoHighLevel · Registrar leads en el CRM"
-          hint="ESTA es la URL para que un lead ENTRE al CRM. POST con JSON. En GHL: Workflow (trigger de nuevo lead) → acción “Webhook (Outbound)” (POST) a esta URL."
-          url={data.urls.lead_intake}
-          copied={copied === "generic"}
-          onCopy={() => copy(data.urls.lead_intake, "generic")}
-        />
-        <UrlRow
-          label="② GoHighLevel · Cita agendada/cancelada (NO usar para registrar leads)"
-          hint="SOLO para eventos de cita. Workflow → trigger “Appointment (Booked/Cancelled)” → acción “Webhook (Outbound)” (POST). Incluye el campo setter_id para enlazarlo. Al recibirlo se pausan el bot y los seguimientos. Si registras leads aquí por error, NO aparecerán en el CRM."
-          url={data.urls.ghl_appointment}
-          copied={copied === "ghl_appt"}
-          onCopy={() => copy(data.urls.ghl_appointment, "ghl_appt")}
-        />
-        <UrlRow
-          label="③ GoHighLevel · Pausar / reactivar el bot"
-          hint='Para controlar la IA desde un workflow de GHL. POST con JSON: {"action": "pause"} o {"action": "resume"}, más setter_id (o phone/contact_id) para identificar al lead.'
-          url={data.urls.ghl_bot}
-          copied={copied === "ghl_bot"}
-          onCopy={() => copy(data.urls.ghl_bot, "ghl_bot")}
-        />
-        <UrlRow
-          label="④ GoHighLevel · Enviar mensaje al lead por el bot"
-          hint='Envía por WhatsApp (canal del bot) el texto que mande un flow de GHL. POST con JSON: {"message": "tu texto"}, más setter_id (o phone/contact_id). Al enviarse, la IA se pausa (lo tratamos como mensaje manual).'
-          url={data.urls.ghl_send}
-          copied={copied === "ghl_send"}
-          onCopy={() => copy(data.urls.ghl_send, "ghl_send")}
-        />
-        <UrlRow
-          label="ManyChat (Instagram)"
-          hint="Flow → Dynamic Block / External Request (POST). El bot responde por IG."
-          url={data.urls.manychat_dynamic}
-          copied={copied === "mc"}
-          onCopy={() => copy(data.urls.manychat_dynamic, "mc")}
-        />
-
-        <div className={styles.tokenRow}>
-          <span className={styles.muted}>
-            Token: <code className={styles.code}>{data.intake_token}</code>
-          </span>
-          <button className={styles.ghostBtn} onClick={rotate} disabled={saving}>
-            Generar token nuevo
-          </button>
-        </div>
-        </>
-        )}
-      </section>
-
-      {/* El apartado de "mensaje proactivo" está oculto: el primer contacto se
-          define en Workflows. Se mantiene el selector de canal, que usan los
-          envíos de los workflows. */}
-      <section className={styles.card}>
-        <h2 className={styles.cardTitle}>Canal de salida (WhatsApp)</h2>
-        <label className={styles.field}>
-          <span className={styles.label}>Canal de WhatsApp para el primer contacto de los workflows</span>
-          <select
-            className={styles.input}
-            value={data.default_channel_id ?? ""}
-            onChange={(e) => patch({ default_channel_id: e.target.value })}
-            disabled={saving}
+      <div className={styles.appGrid}>
+        {apps.map((app) => (
+          <button
+            key={app.id}
+            type="button"
+            className={`${styles.appCard} ${open === app.id ? styles.appCardOpen : ""}`}
+            onClick={() => setOpen(open === app.id ? null : app.id)}
           >
-            <option value="">Automático (primer WhatsApp conectado)</option>
-            {waChannels.map((c) => (
-              <option key={c.id} value={c.id}>
-                {c.display_name ?? c.id} {c.status ? `· ${c.status}` : ""}
-              </option>
-            ))}
-          </select>
-        </label>
-        <p className={styles.muted}>
-          El primer mensaje y los seguimientos se definen en <strong>Workflows</strong> (“Lead
-          entra” / “Conversación nueva”). Usa variables como {"{nombre}"}.
-        </p>
-      </section>
+            <div className={styles.appHead}>
+              <span className={styles.appMark}>{app.mark}</span>
+              <span className={`${styles.appStatus} ${app.ok ? styles.appStatusOn : ""}`}>
+                {app.status}
+              </span>
+            </div>
+            <span className={styles.appName}>{app.name}</span>
+            <span className={styles.appText}>{app.text}</span>
+            <span className={styles.appCta}>{open === app.id ? "Cerrar" : "Configurar →"}</span>
+          </button>
+        ))}
+      </div>
 
-      <section className={styles.card}>
-        <h2 className={styles.cardTitle}>GoHighLevel · Respuesta de salida</h2>
-        <p className={styles.muted}>
-          Cuando entra un lead, el setter devuelve a GHL un webhook con el{" "}
-          <code className={styles.code}>setter_id</code> (id único de la conversación) y el{" "}
-          <code className={styles.code}>ghl_contact_id</code>. Crea en GHL un Workflow con trigger{" "}
-          <strong>“Inbound Webhook”</strong>, pega aquí su URL, y añade una acción{" "}
-          <strong>“Update Contact Field”</strong> guardando <code className={styles.code}>setter_id</code>{" "}
-          en un campo personalizado del contacto.
-        </p>
-        <label className={styles.field}>
-          <span className={styles.label}>URL del Inbound Webhook de GHL</span>
-          <input
-            className={styles.input}
-            type="url"
-            value={ghlWebhookUrl}
-            onChange={(e) => setGhlWebhookUrl(e.target.value)}
-            placeholder="https://services.leadconnectorhq.com/hooks/…"
-          />
-        </label>
-        <button
-          className={styles.saveBtn}
-          onClick={() => patch({ ghl_webhook_url: ghlWebhookUrl })}
-          disabled={saving}
-        >
-          {saving ? "Guardando…" : "Guardar URL de salida"}
-        </button>
-      </section>
-
-      {isAdmin && (
+      {open === "ghl" && (
         <section className={styles.card}>
-          <h2 className={styles.cardTitle}>ManyChat</h2>
+          <h2 className={styles.cardTitle}>GoHighLevel</h2>
+          {!isAdmin ? (
+            <p className={styles.muted}>Solo un administrador puede ver los tokens y las URLs.</p>
+          ) : (
+            <>
+              <p className={styles.muted}>
+                Pega estas URLs en tus workflows de GHL como acción “Webhook (Outbound)” (POST).
+                Llevan tu token secreto; trátalas como una contraseña.
+              </p>
+              <UrlRow
+                label="① Registrar leads en el CRM"
+                hint="ESTA es la URL para que un lead ENTRE al CRM. Workflow (trigger de nuevo lead) → “Webhook (Outbound)” (POST) a esta URL."
+                url={data.urls.lead_intake}
+                copied={copied === "generic"}
+                onCopy={() => copy(data.urls.lead_intake, "generic")}
+              />
+              <UrlRow
+                label="② Cita agendada/cancelada (NO usar para registrar leads)"
+                hint="SOLO para eventos de cita. Trigger “Appointment (Booked/Cancelled)” → “Webhook (Outbound)”. Incluye el campo setter_id. Al recibirlo, el lead pasa a “Llamada agendada” y se pausan bot y seguimientos."
+                url={data.urls.ghl_appointment}
+                copied={copied === "ghl_appt"}
+                onCopy={() => copy(data.urls.ghl_appointment, "ghl_appt")}
+              />
+              <UrlRow
+                label="③ Pausar / reactivar el bot"
+                hint='POST con JSON: {"action": "pause"} o {"action": "resume"}, más setter_id (o phone/contact_id).'
+                url={data.urls.ghl_bot}
+                copied={copied === "ghl_bot"}
+                onCopy={() => copy(data.urls.ghl_bot, "ghl_bot")}
+              />
+              <UrlRow
+                label="④ Enviar mensaje al lead por el bot"
+                hint='POST con JSON: {"message": "tu texto"}, más setter_id (o phone/contact_id). Al enviarse, la IA se pausa (mensaje manual).'
+                url={data.urls.ghl_send}
+                copied={copied === "ghl_send"}
+                onCopy={() => copy(data.urls.ghl_send, "ghl_send")}
+              />
+
+              <h3 className={styles.subTitle}>Respuesta de salida (setter_id)</h3>
+              <p className={styles.muted}>
+                Cuando entra un lead, devolvemos a GHL un webhook con el{" "}
+                <code className={styles.code}>setter_id</code> y el{" "}
+                <code className={styles.code}>ghl_contact_id</code>. Crea en GHL un Workflow con
+                trigger <strong>“Inbound Webhook”</strong>, pega aquí su URL y añade una acción{" "}
+                <strong>“Update Contact Field”</strong> guardando{" "}
+                <code className={styles.code}>setter_id</code> en un campo personalizado.
+              </p>
+              <label className={styles.field}>
+                <span className={styles.label}>URL del Inbound Webhook de GHL</span>
+                <input
+                  className={styles.input}
+                  type="url"
+                  value={ghlWebhookUrl}
+                  onChange={(e) => setGhlWebhookUrl(e.target.value)}
+                  placeholder="https://services.leadconnectorhq.com/hooks/…"
+                />
+              </label>
+              <button
+                className={styles.saveBtn}
+                onClick={() => patch({ ghl_webhook_url: ghlWebhookUrl })}
+                disabled={saving}
+              >
+                {saving ? "Guardando…" : "Guardar URL de salida"}
+              </button>
+            </>
+          )}
+        </section>
+      )}
+
+      {open === "manychat" && (
+        <section className={styles.card}>
+          <h2 className={styles.cardTitle}>ManyChat (Instagram)</h2>
+          {!isAdmin ? (
+            <p className={styles.muted}>Solo un administrador puede ver los tokens y las URLs.</p>
+          ) : (
+            <>
+              <UrlRow
+                label="URL para el flow"
+                hint="Flow → Dynamic Block / External Request (POST). El bot responde por IG dentro del flujo."
+                url={data.urls.manychat_dynamic}
+                copied={copied === "mc"}
+                onCopy={() => copy(data.urls.manychat_dynamic, "mc")}
+              />
+              <label className={styles.field}>
+                <span className={styles.label}>
+                  API key de ManyChat{" "}
+                  <span className={styles.hint}>— opcional, para enviar por IG fuera del flujo</span>
+                </span>
+                <input
+                  className={styles.input}
+                  type="password"
+                  value={manychatKey}
+                  onChange={(e) => setManychatKey(e.target.value)}
+                  placeholder="••••••••"
+                />
+              </label>
+              <button
+                className={styles.saveBtn}
+                onClick={() => patch({ manychat_api_key: manychatKey })}
+                disabled={saving}
+              >
+                {saving ? "Guardando…" : "Guardar API key"}
+              </button>
+            </>
+          )}
+        </section>
+      )}
+
+      {open === "webhook" && (
+        <section className={styles.card}>
+          <h2 className={styles.cardTitle}>Webhook genérico</h2>
+          {!isAdmin ? (
+            <p className={styles.muted}>Solo un administrador puede ver los tokens y las URLs.</p>
+          ) : (
+            <>
+              <UrlRow
+                label="Registrar un lead"
+                hint='POST con JSON. Campos: name, phone (con prefijo), email, source, campaign y cualquier campo extra del formulario. Ej: {"name":"Ana","phone":"+34600000000","source":"web"}'
+                url={data.urls.lead_intake}
+                copied={copied === "generic2"}
+                onCopy={() => copy(data.urls.lead_intake, "generic2")}
+              />
+              <div className={styles.tokenRow}>
+                <span className={styles.muted}>
+                  Token: <code className={styles.code}>{data.intake_token}</code>
+                </span>
+                <button className={styles.ghostBtn} onClick={rotate} disabled={saving}>
+                  Generar token nuevo
+                </button>
+              </div>
+              <p className={styles.hint}>
+                Si generas un token nuevo, todas las URLs anteriores (GHL, ManyChat, este webhook)
+                dejan de funcionar y hay que volver a pegarlas.
+              </p>
+            </>
+          )}
+        </section>
+      )}
+
+      {open === "outbound" && (
+        <section className={styles.card}>
+          <h2 className={styles.cardTitle}>Canal de salida (WhatsApp)</h2>
           <label className={styles.field}>
             <span className={styles.label}>
-              API key de ManyChat <span className={styles.hint}>— opcional, para enviar por IG fuera del flujo</span>
+              Canal de WhatsApp para el primer contacto de los workflows
             </span>
-            <input
+            <select
               className={styles.input}
-              type="password"
-              value={manychatKey}
-              onChange={(e) => setManychatKey(e.target.value)}
-              placeholder="••••••••"
-            />
+              value={data.default_channel_id ?? ""}
+              onChange={(e) => patch({ default_channel_id: e.target.value })}
+              disabled={saving}
+            >
+              <option value="">Automático (primer WhatsApp conectado)</option>
+              {waChannels.map((c) => (
+                <option key={c.id} value={c.id}>
+                  {c.display_name ?? c.id} {c.status ? `· ${c.status}` : ""}
+                </option>
+              ))}
+            </select>
           </label>
-          <button
-            className={styles.saveBtn}
-            onClick={() => patch({ manychat_api_key: manychatKey })}
-            disabled={saving}
-          >
-            {saving ? "Guardando…" : "Guardar API key"}
-          </button>
+          <p className={styles.muted}>
+            El primer mensaje y los seguimientos se definen en <strong>Workflows</strong> (“Cuando
+            entra un lead” / “Conversación nueva”). Usa variables como {"{name}"}.
+          </p>
         </section>
       )}
     </div>

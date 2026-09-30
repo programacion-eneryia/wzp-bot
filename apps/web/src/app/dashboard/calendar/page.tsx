@@ -4,7 +4,7 @@ import styles from "./calendar.module.css";
 export default function CalendarPage() {
   return (
     <div>
-      <span className={styles.eyebrow}>Mi negocio · Calendarios</span>
+      <span className={styles.eyebrow}>Configuración · Calendarios</span>
       <h1 className={styles.title}>
         Agenda de <span className="serif">llamadas</span>
       </h1>

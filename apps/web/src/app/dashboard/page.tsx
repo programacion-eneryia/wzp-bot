@@ -1,40 +1,45 @@
+import { cookies } from "next/headers";
+import { redirect } from "next/navigation";
 import { createClient } from "@/lib/supabase/server";
-import styles from "./overview.module.css";
+import Dashboard from "./Dashboard";
 
 export default async function DashboardHome() {
   const supabase = await createClient();
   const {
     data: { user },
   } = await supabase.auth.getUser();
+  if (!user) redirect("/login");
 
-  return (
-    <div>
-      <span className={styles.eyebrow}>Panel · Inicio</span>
-      <h1 className={styles.title}>
-        Bienvenido a tu <span className="serif">centro de control</span>
-      </h1>
-      <p className={styles.lead}>
-        La fundación está lista: estás autenticado y los datos están aislados por
-        organización con Row Level Security. Desde aquí iremos activando los módulos.
-      </p>
+  const { data: profile } = await supabase
+    .from("profiles")
+    .select("full_name, is_platform_admin")
+    .eq("id", user.id)
+    .maybeSingle();
 
-      <div className={styles.grid}>
-        <article className={styles.card}>
-          <span className={styles.cardNum}>Sesión</span>
-          <p className={styles.cardValue}>{user?.email}</p>
-          <p className={styles.cardText}>Usuario autenticado correctamente.</p>
-        </article>
-        <article className={styles.card}>
-          <span className={styles.cardNum}>Seguridad</span>
-          <p className={styles.cardValue}>RLS activo</p>
-          <p className={styles.cardText}>Solo ves los datos de tu organización.</p>
-        </article>
-        <article className={styles.card}>
-          <span className={styles.cardNum}>Siguiente</span>
-          <p className={styles.cardValue}>Conectar WhatsApp</p>
-          <p className={styles.cardText}>Bandeja unificada de WhatsApp, Instagram y Messenger.</p>
-        </article>
-      </div>
-    </div>
-  );
+  if (profile?.is_platform_admin) redirect("/dashboard/admin");
+
+  // Organización activa (misma lógica que el layout).
+  const { data: memRows } = await supabase
+    .from("memberships")
+    .select("organization_id")
+    .eq("user_id", user.id);
+  const cookieOrg = (await cookies()).get("org_id")?.value ?? null;
+  const orgId =
+    memRows?.find((m) => m.organization_id === cookieOrg)?.organization_id ??
+    memRows?.[0]?.organization_id ??
+    null;
+
+  // Primera vez en una organización nueva → tour de onboarding.
+  if (orgId) {
+    const { data: org } = await supabase
+      .from("organizations")
+      .select("onboarding_completed_at")
+      .eq("id", orgId)
+      .maybeSingle();
+    if (org && !org.onboarding_completed_at) redirect("/dashboard/onboarding");
+  }
+
+  const firstName = (profile?.full_name ?? "").trim().split(/\s+/)[0] || null;
+
+  return <Dashboard firstName={firstName} />;
 }

@@ -4,7 +4,7 @@ import styles from "../admin/admin.module.css";
 export default function TeamPage() {
   return (
     <div>
-      <span className={styles.eyebrow}>Gestión · Equipo</span>
+      <span className={styles.eyebrow}>Equipo</span>
       <h1 className={styles.title}>
         Tu <span className="serif">equipo</span>
       </h1>

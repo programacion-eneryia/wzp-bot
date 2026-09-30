@@ -4,7 +4,7 @@ import styles from "./crm.module.css";
 export default function CrmPage() {
   return (
     <div>
-      <span className={styles.eyebrow}>Mi negocio · CRM</span>
+      <span className={styles.eyebrow}>Zona de trabajo · CRM</span>
       <h1 className={styles.title}>
         Tus <span className="serif">leads</span>
       </h1>

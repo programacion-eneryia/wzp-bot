@@ -21,7 +21,7 @@ export default async function ChannelsPage() {
 
   return (
     <div>
-      <span className={styles.eyebrow}>Sistema · Canales</span>
+      <span className={styles.eyebrow}>Configuración · Canales</span>
       <h1 className={styles.title}>
         Conecta tus <span className="serif">canales</span>
       </h1>

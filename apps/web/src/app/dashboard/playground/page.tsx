@@ -4,7 +4,7 @@ import styles from "./playground.module.css";
 export default function PlaygroundPage() {
   return (
     <div>
-      <span className={styles.eyebrow}>Mi negocio · Probar IA</span>
+      <span className={styles.eyebrow}>Configuración · Probar IA</span>
       <h1 className={styles.title}>
         Prueba tu <span className="serif">setter</span>
       </h1>

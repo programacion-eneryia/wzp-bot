@@ -19,14 +19,13 @@ export default async function IntegrationsPage() {
 
   return (
     <div>
-      <span className={styles.eyebrow}>Sistema · Integraciones</span>
+      <span className={styles.eyebrow}>Configuración · Integraciones</span>
       <h1 className={styles.title}>
-        Entrada de <span className="serif">leads</span>
+        Integraciones
       </h1>
       <p className={styles.lead}>
-        Conecta tus campañas de Meta (vía GoHighLevel), Instagram (vía ManyChat) y
-        cualquier otra fuente. Cuando entra un lead nuevo, el bot lo registra como
-        setter y, si procede, le escribe el primer mensaje automáticamente.
+        Conecta las herramientas por las que entran tus leads: GoHighLevel, ManyChat o
+        cualquier webhook. Elige una app para ver sus URLs e instrucciones.
       </p>
 
       <Integrations isAdmin={isAdmin} />

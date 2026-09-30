@@ -1,0 +1,151 @@
+.wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+.head {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-end;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+.eyebrow {
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--text-faint);
+}
+.title {
+  font-size: 30px;
+  margin: 6px 0 0;
+}
+.controls {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.editBtn {
+  background: transparent;
+  border: 1px solid var(--line-strong);
+  color: var(--text-soft);
+  border-radius: 10px;
+  padding: 7px 12px;
+  font-size: 13px;
+  cursor: pointer;
+}
+.editBtn:hover,
+.editBtnOn {
+  background: var(--bg-panel-strong);
+  color: var(--text);
+}
+
+.editor {
+  background: var(--surface);
+  border: 1px dashed var(--line-strong);
+  border-radius: 14px;
+  padding: 14px 16px;
+}
+.editorHint {
+  margin: 0 0 10px;
+  color: var(--text-muted);
+  font-size: 13px;
+}
+.editorList {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+  gap: 6px 16px;
+}
+.editorItem {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 6px 8px;
+  border-radius: 8px;
+}
+.editorItem:hover {
+  background: var(--bg-panel);
+}
+.editorItemOff {
+  color: var(--text-muted);
+}
+.editorCheck {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 14px;
+  cursor: pointer;
+}
+.editorMove {
+  display: flex;
+  gap: 4px;
+}
+.editorMove button {
+  background: transparent;
+  border: 1px solid var(--line);
+  color: var(--text-soft);
+  border-radius: 6px;
+  width: 26px;
+  height: 24px;
+  cursor: pointer;
+}
+.editorMove button:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+.resetBtn {
+  margin-top: 10px;
+  background: transparent;
+  border: none;
+  color: var(--text-muted);
+  font-size: 13px;
+  cursor: pointer;
+  text-decoration: underline;
+}
+
+.grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+  gap: 16px;
+}
+.wide {
+  grid-column: 1 / -1;
+}
+
+.shortcuts {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+  gap: 12px;
+}
+.shortcut {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 16px;
+  border-radius: 14px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  text-decoration: none;
+  color: inherit;
+  transition:
+    transform 0.12s ease,
+    border-color 0.12s ease;
+}
+.shortcut:hover {
+  transform: translateY(-1px);
+  border-color: var(--line-strong);
+}
+.shortcutTitle {
+  font-weight: 700;
+  font-size: 15px;
+}
+.shortcutText {
+  font-size: 13px;
+  color: var(--text-muted);
+}

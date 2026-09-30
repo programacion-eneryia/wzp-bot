@@ -151,3 +151,83 @@
   opacity: 0.6;
   cursor: default;
 }
+
+/* --- Tarjetas de apps --- */
+.appGrid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+  gap: 14px;
+}
+.appCard {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  text-align: left;
+  padding: 18px;
+  border-radius: 16px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  color: inherit;
+  cursor: pointer;
+  font: inherit;
+  transition:
+    border-color 0.12s ease,
+    transform 0.12s ease;
+}
+.appCard:hover {
+  border-color: var(--line-strong);
+  transform: translateY(-1px);
+}
+.appCardOpen {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-glow);
+}
+.appHead {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+.appMark {
+  width: 44px;
+  height: 44px;
+  border-radius: 12px;
+  display: grid;
+  place-items: center;
+  font-weight: 800;
+  font-size: 13px;
+  letter-spacing: 0.02em;
+  background: var(--bg-panel-strong);
+  color: var(--text);
+}
+.appStatus {
+  font-size: 11px;
+  font-weight: 600;
+  padding: 3px 9px;
+  border-radius: 999px;
+  background: var(--bg-panel-strong);
+  color: var(--text-muted);
+}
+.appStatusOn {
+  background: rgba(34, 197, 94, 0.15);
+  color: #4ade80;
+}
+.appName {
+  font-weight: 700;
+  font-size: 16px;
+  margin-top: 4px;
+}
+.appText {
+  font-size: 13px;
+  color: var(--text-muted);
+  line-height: 1.5;
+  flex: 1;
+}
+.appCta {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--accent);
+}
+.subTitle {
+  font-size: 15px;
+  margin: 18px 0 6px;
+}

@@ -21,6 +21,7 @@ import { PlaygroundModule } from './playground/playground.module';
 import { SetterModule } from './setter/setter.module';
 import { StagesModule } from './stages/stages.module';
 import { AgentsModule } from './agents/agents.module';
+import { MeModule } from './me/me.module';
 import { StatsModule } from './stats/stats.module';
 import { SupabaseModule } from './supabase/supabase.module';
 import { TagsModule } from './tags/tags.module';
@@ -53,6 +54,7 @@ import { WorkflowsModule } from './workflows/workflows.module';
     CalendarModule,
     StagesModule,
     AgentsModule,
+    MeModule,
     SetterModule,
     StatsModule,
     TagsModule,

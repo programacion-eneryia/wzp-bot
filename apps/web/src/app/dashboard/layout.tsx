@@ -1,15 +1,12 @@
-import Link from "next/link";
 import { cookies } from "next/headers";
 import { redirect } from "next/navigation";
-import LogoutButton from "@/components/LogoutButton/LogoutButton";
+import Sidebar from "@/components/Sidebar/Sidebar";
 import OrgSwitcher from "@/components/OrgSwitcher/OrgSwitcher";
 import ImpersonationBanner from "@/components/ImpersonationBanner/ImpersonationBanner";
 import { createClient } from "@/lib/supabase/server";
 import styles from "./dashboard.module.css";
 
 type OrgInfo = { name: string; slug: string; plan: string } | null;
-
-type NavItem = { label: string; href?: string };
 
 export default async function DashboardLayout({
   children,
@@ -55,111 +52,30 @@ export default async function DashboardLayout({
   const role = active?.role ?? (isPlatformAdmin ? "platform" : "—");
   const org: OrgInfo = active ? { name: active.name, slug: active.slug, plan: active.plan } : null;
 
-  // Navegación dinámica según permisos.
-  //
-  // El platform admin (super-admin del SaaS) tiene un ÁREA PROPIA centrada en la
-  // gestión de subcuentas: NO ve el menú de setter/CRM de una subcuenta. Para
-  // trabajar dentro de una subcuenta concreta usa "Impersonar" desde Usuarios
-  // (al impersonar, la sesión pasa a ser la del cliente y aparece su menú normal).
-  const adminNav: { label: string; items: NavItem[] }[] = [
-    {
-      label: "Plataforma",
-      items: [
-        { label: "Subcuentas", href: "/dashboard/admin" },
-        { label: "Usuarios", href: "/dashboard/admin?tab=users" },
-        { label: "Pagos", href: "/dashboard/admin?tab=billing" },
-        { label: "Costes", href: "/dashboard/admin?tab=costs" },
-        { label: "Entrenamiento", href: "/dashboard/admin?tab=training" },
-        { label: "Logs de errores", href: "/dashboard/admin?tab=errors" },
-        { label: "Auditoría", href: "/dashboard/admin?tab=audit" },
-      ],
-    },
-  ];
+  // Onboarding: solo para organizaciones nuevas (las existentes ya lo tienen
+  // marcado como completado en la migración 0025).
+  let onboardingDone = true;
+  if (active && !isPlatformAdmin) {
+    const { data: orgRow } = await supabase
+      .from("organizations")
+      .select("onboarding_completed_at")
+      .eq("id", active.organization_id)
+      .maybeSingle();
+    onboardingDone = Boolean(orgRow?.onboarding_completed_at);
+  }
 
-  const subaccountNav: { label: string; items: NavItem[] }[] = [
-    {
-      label: "Mi negocio",
-      items: [
-        { label: "CRM", href: "/dashboard/crm" },
-        { label: "Chats", href: "/dashboard/inbox" },
-        { label: "Workflows", href: "/dashboard/workflows" },
-        { label: "Probar IA", href: "/dashboard/playground" },
-        { label: "Calendarios", href: "/dashboard/calendar" },
-      ],
-    },
-    {
-      label: "Gestión de agentes",
-      items: [
-        { label: "Agentes", href: "/dashboard/agents" },
-        { label: "Base de Conocimiento", href: "/dashboard/setter" },
-        { label: "Pipelines y Stages", href: "/dashboard/stages" },
-        { label: "Etiquetas", href: "/dashboard/tags" },
-      ],
-    },
-    {
-      label: "Gestión",
-      items: [
-        ...(role === "admin"
-          ? [{ label: "Equipo", href: "/dashboard/team" }]
-          : [{ label: "Equipo" }]),
-      ],
-    },
-    {
-      label: "Análisis",
-      items: [{ label: "Estadísticas", href: "/dashboard/stats" }],
-    },
-    {
-      label: "Sistema",
-      items: [
-        { label: "Canales", href: "/dashboard/channels" },
-        { label: "Integraciones", href: "/dashboard/integrations" },
-        { label: "Ajustes" },
-      ],
-    },
-  ];
-
-  const NAV = isPlatformAdmin ? adminNav : subaccountNav;
   const homeHref = isPlatformAdmin ? "/dashboard/admin" : "/dashboard";
 
   return (
-    <div className={styles.shell}>
-      <aside className={styles.sidebar}>
-        <div className={styles.brand}>
-          <span className={styles.brandName}>WZP</span>
-          <span className={styles.brandDot}>Setter IA</span>
-        </div>
-
-        <nav className={styles.nav}>
-          <Link href={homeHref} className={styles.navItem}>
-            Inicio
-          </Link>
-          {NAV.map((group) => (
-            <div key={group.label} className={styles.navGroup}>
-              <span className={styles.navLabel}>{group.label}</span>
-              {group.items.map((item) =>
-                item.href ? (
-                  <Link key={item.label} href={item.href} className={styles.navItem}>
-                    {item.label}
-                  </Link>
-                ) : (
-                  <div key={item.label} className={styles.navItem}>
-                    {item.label}
-                    <span className={styles.navSoon}>pronto</span>
-                  </div>
-                ),
-              )}
-            </div>
-          ))}
-        </nav>
-
-        <div className={styles.userBox}>
-          <div className={styles.userInfo}>
-            <span className={styles.userEmail}>{user.email}</span>
-            <span className={styles.userRole}>{role}</span>
-          </div>
-          <LogoutButton />
-        </div>
-      </aside>
+    <div className={styles.shell} data-app-shell>
+      <Sidebar
+        email={user.email ?? ""}
+        role={role}
+        isPlatformAdmin={isPlatformAdmin}
+        isAdmin={role === "admin"}
+        onboardingDone={onboardingDone}
+        homeHref={homeHref}
+      />
 
       <div className={styles.main}>
         <header className={styles.topbar}>

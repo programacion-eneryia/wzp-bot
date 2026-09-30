@@ -1,6 +1,8 @@
 import type { Metadata, Viewport } from "next";
 import { Archivo, Instrument_Serif, JetBrains_Mono } from "next/font/google";
+import { cookies } from "next/headers";
 import "./globals.css";
+import { THEME_BOOT_SCRIPT } from "@/lib/theme";
 
 const archivo = Archivo({
   variable: "--font-display",
@@ -31,22 +33,32 @@ export const viewport: Viewport = {
 };
 
 export const metadata: Metadata = {
-  title: "WZP — Bot Setter con IA",
+  title: {
+    default: "Eneryeter — Setter con IA",
+    template: "%s · Eneryeter",
+  },
   description:
-    "Settea, cualifica y agenda llamadas automáticamente en WhatsApp, Instagram y Messenger.",
+    "Eneryeter settea, cualifica y agenda llamadas automáticamente en WhatsApp, Instagram y Messenger.",
+  applicationName: "Eneryeter",
 };
 
-export default function RootLayout({
+export default async function RootLayout({
   children,
 }: Readonly<{
   children: React.ReactNode;
 }>) {
+  const themeCookie = (await cookies()).get("eneryeter-theme")?.value;
+  const theme = themeCookie === "light" ? "light" : "dark";
   return (
     <html
       lang="es"
       suppressHydrationWarning
+      data-theme={theme}
       className={`${archivo.variable} ${jetbrainsMono.variable} ${instrumentSerif.variable}`}
     >
+      <head>
+        <script dangerouslySetInnerHTML={{ __html: THEME_BOOT_SCRIPT }} />
+      </head>
       <body>{children}</body>
     </html>
   );
