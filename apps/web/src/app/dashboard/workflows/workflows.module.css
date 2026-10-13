@@ -203,10 +203,21 @@
 
 .canvasRow {
   display: grid;
-  grid-template-columns: 180px 1fr 280px;
+  grid-template-columns: 180px minmax(0, 1fr) 280px;
   gap: 12px;
   height: 68vh;
   min-height: 480px;
+}
+/* En pantallas estrechas el inspector pasa debajo para que el lienzo no se aplaste. */
+@media (max-width: 1280px) {
+  .canvasRow {
+    grid-template-columns: 170px minmax(0, 1fr);
+    grid-template-rows: 68vh auto;
+    height: auto;
+  }
+  .canvasRow > .inspector {
+    grid-column: 1 / -1;
+  }
 }
 .palette,
 .inspector {
