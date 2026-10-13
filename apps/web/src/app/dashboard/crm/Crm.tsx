@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { apiFetch, apiUpload } from "@/lib/api";
-import { useStages } from "@/lib/stages";
+import { useStages, type Pipeline } from "@/lib/stages";
 import styles from "./crm.module.css";
 
 type TagRef = { tag_id: string; name: string; color: string };
@@ -83,8 +83,8 @@ function fmtDate(iso: string | null): string {
 }
 
 export default function Crm() {
-  const { stages, label: STATUS_LABEL, color: stageColor } = useStages();
-  const STATUSES = stages.map((s) => ({ value: s.key, label: s.name }));
+  const { pipelines, stagesOf, label: STATUS_LABEL, color: stageColor } = useStages();
+  const [pipelineId, setPipelineId] = useState("");
   const [leads, setLeads] = useState<LeadRow[]>([]);
   const [stats, setStats] = useState<Stats | null>(null);
   const [loading, setLoading] = useState(true);
@@ -155,6 +155,9 @@ export default function Crm() {
   }
 
   const sources = stats ? Object.keys(stats.bySource) : [];
+  const pipelineKeys = pipelineId ? new Set(stagesOf(pipelineId).map((s) => s.key)) : null;
+  const visibleLeads = pipelineKeys ? leads.filter((l) => pipelineKeys.has(l.status)) : leads;
+  const statusGroups = pipelines.filter((p) => !pipelineId || p.id === pipelineId);
 
   return (
     <div className={styles.wrap}>
@@ -193,13 +196,26 @@ export default function Crm() {
           value={search}
           onChange={(e) => setSearch(e.target.value)}
         />
+        {pipelines.length > 1 && (
+          <select
+            className={styles.select}
+            value={pipelineId}
+            onChange={(e) => {
+              setPipelineId(e.target.value);
+              setStatus("");
+            }}
+          >
+            <option value="">Todos los pipelines</option>
+            {pipelines.map((p) => (
+              <option key={p.id} value={p.id}>
+                {p.name}
+              </option>
+            ))}
+          </select>
+        )}
         <select className={styles.select} value={status} onChange={(e) => setStatus(e.target.value)}>
           <option value="">Todos los estados</option>
-          {STATUSES.map((s) => (
-            <option key={s.value} value={s.value}>
-              {s.label}
-            </option>
-          ))}
+          <StageOptions groups={statusGroups} />
         </select>
         <select className={styles.select} value={source} onChange={(e) => setSource(e.target.value)}>
           <option value="">Todas las fuentes</option>
@@ -240,7 +256,7 @@ export default function Crm() {
 
       {loading ? (
         <p className={styles.muted}>Cargando…</p>
-      ) : leads.length === 0 ? (
+      ) : visibleLeads.length === 0 ? (
         <div className={styles.empty}>
           <p>Aún no hay leads.</p>
           <p className={styles.muted}>
@@ -262,7 +278,7 @@ export default function Crm() {
               </tr>
             </thead>
             <tbody>
-              {leads.map((l) => (
+              {visibleLeads.map((l) => (
                 <tr key={l.id} onClick={() => setSelected(l.id)} className={styles.row}>
                   <td className={styles.nameCell}>{l.name || "Lead"}</td>
                   <td className={styles.muted}>{l.phone || l.email || "—"}</td>
@@ -329,6 +345,34 @@ export default function Crm() {
         />
       )}
     </div>
+  );
+}
+
+/** Opciones de etapa agrupadas por pipeline (sin grupos si solo hay uno). */
+function StageOptions({ groups }: { groups: Pipeline[] }) {
+  if (groups.length === 1) {
+    return (
+      <>
+        {groups[0].stages.map((s) => (
+          <option key={s.key} value={s.key}>
+            {s.name}
+          </option>
+        ))}
+      </>
+    );
+  }
+  return (
+    <>
+      {groups.map((p) => (
+        <optgroup key={p.id} label={p.name}>
+          {p.stages.map((s) => (
+            <option key={s.key} value={s.key}>
+              {s.name}
+            </option>
+          ))}
+        </optgroup>
+      ))}
+    </>
   );
 }
 
@@ -453,8 +497,7 @@ function LeadDrawer({
   onSaved: () => void;
   onDeleted: () => void;
 }) {
-  const { stages, label: STATUS_LABEL } = useStages();
-  const STATUSES = stages.map((s) => ({ value: s.key, label: s.name }));
+  const { pipelines, label: STATUS_LABEL } = useStages();
   const [data, setData] = useState<{ lead: LeadDetail; conversation: ConversationSummary } | null>(
     null,
   );
@@ -555,11 +598,7 @@ function LeadDrawer({
                 onChange={(e) => patch({ status: e.target.value })}
                 disabled={saving}
               >
-                {STATUSES.map((s) => (
-                  <option key={s.value} value={s.value}>
-                    {s.label}
-                  </option>
-                ))}
+                <StageOptions groups={pipelines} />
               </select>
             </section>
 

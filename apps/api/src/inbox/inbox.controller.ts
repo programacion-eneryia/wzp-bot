@@ -10,10 +10,14 @@ import {
   UseGuards,
 } from '@nestjs/common';
 import {
+  ArrayMaxSize,
+  IsArray,
   IsBoolean,
   IsIn,
+  IsObject,
   IsOptional,
   IsString,
+  IsUUID,
   MaxLength,
   MinLength,
   ValidateIf,
@@ -41,6 +45,21 @@ class UpdateConversationDto {
   @IsOptional() @ValidateIf((_, v) => v !== null) @IsString() @MaxLength(64) agent_id?: string | null;
 }
 
+class BulkDto {
+  @IsOptional() @IsArray() @ArrayMaxSize(5000) @IsUUID('all', { each: true }) ids?: string[];
+  /** true = todas las conversaciones que cumplen `filters`. */
+  @IsOptional() @IsBoolean() all?: boolean;
+  @IsOptional() @IsObject() filters?: {
+    stage?: string;
+    provider?: string;
+    agent_id?: string;
+    pipeline_id?: string;
+  };
+  @IsOptional() @IsBoolean() ai_enabled?: boolean;
+  /** UUID = pasar a ese agente; cadena vacía = volver al agente del canal. */
+  @IsOptional() @ValidateIf((_, v) => v !== null) @IsString() @MaxLength(64) agent_id?: string | null;
+}
+
 class SendMessageDto {
   @IsString() @MinLength(1) @MaxLength(4000) content!: string;
 }
@@ -60,11 +79,32 @@ export class InboxController {
     @Query('archived') archived?: string,
     @Query('provider') provider?: string,
     @Query('agent_id') agentId?: string,
+    @Query('pipeline_id') pipelineId?: string,
   ) {
     const prov = (PROVIDERS as readonly string[]).includes(provider ?? '') ? provider : undefined;
     return this.inbox.list(user.organizationId, stage, archived === 'true' || archived === '1', {
       provider: prov,
       agentId: agentId || undefined,
+      pipelineId: pipelineId || undefined,
+    });
+  }
+
+  @Post('bulk')
+  bulk(@CurrentUser() user: AuthContext, @Body() dto: BulkDto) {
+    const f = dto.filters ?? {};
+    const str = (v: unknown) => (typeof v === 'string' && v.trim() ? v.trim().slice(0, 64) : undefined);
+    const prov = str(f.provider);
+    return this.inbox.bulk(user.organizationId, {
+      ids: dto.ids,
+      all: dto.all,
+      filters: {
+        stage: str(f.stage),
+        provider: prov && (PROVIDERS as readonly string[]).includes(prov) ? prov : undefined,
+        agentId: str(f.agent_id),
+        pipelineId: str(f.pipeline_id),
+      },
+      ai_enabled: dto.ai_enabled,
+      agent_id: dto.agent_id,
     });
   }
 

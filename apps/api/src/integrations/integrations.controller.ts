@@ -34,6 +34,10 @@ class UpdateIntegrationDto {
   @ValidateIf((o) => typeof o.ghl_webhook_url === 'string' && o.ghl_webhook_url.trim() !== '')
   @IsUrl({ protocols: ['https'], require_protocol: true }, { message: 'La URL del webhook debe usar https' })
   ghl_webhook_url?: string;
+  @IsOptional() @IsString() @MaxLength(500) ghl_api_token?: string;
+  @IsOptional() @IsString() @MaxLength(64) ghl_location_id?: string;
+  @IsOptional() @IsString() @MaxLength(120) ghl_setter_field?: string;
+  @IsOptional() @IsBoolean() ghl_sync_chat_leads?: boolean;
 }
 
 @Controller('integrations')

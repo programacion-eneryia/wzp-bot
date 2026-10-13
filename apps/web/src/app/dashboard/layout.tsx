@@ -3,6 +3,7 @@ import { redirect } from "next/navigation";
 import Sidebar from "@/components/Sidebar/Sidebar";
 import OrgSwitcher from "@/components/OrgSwitcher/OrgSwitcher";
 import ImpersonationBanner from "@/components/ImpersonationBanner/ImpersonationBanner";
+import MobileGate from "@/components/MobileGate/MobileGate";
 import { createClient } from "@/lib/supabase/server";
 import styles from "./dashboard.module.css";
 
@@ -94,7 +95,7 @@ export default async function DashboardLayout({
         </header>
         <div className={styles.content}>
           <ImpersonationBanner />
-          {children}
+          <MobileGate enabled={!isPlatformAdmin}>{children}</MobileGate>
         </div>
       </div>
     </div>

@@ -1,6 +1,7 @@
 import { Module } from '@nestjs/common';
 import { AuthGuard } from '../auth/auth.guard';
 import { MessagingModule } from '../messaging/messaging.module';
+import { AgentsModule } from '../agents/agents.module';
 import { WorkflowsController } from './workflows.controller';
 import { WorkflowsService } from './workflows.service';
 import { WorkflowEngineService } from './workflow-engine.service';
@@ -12,7 +13,7 @@ import { WorkflowEngineService } from './workflow-engine.service';
  * escribiendo directamente en `workflow_runs`.
  */
 @Module({
-  imports: [MessagingModule],
+  imports: [MessagingModule, AgentsModule],
   controllers: [WorkflowsController],
   providers: [WorkflowsService, WorkflowEngineService, AuthGuard],
   exports: [WorkflowsService, WorkflowEngineService],

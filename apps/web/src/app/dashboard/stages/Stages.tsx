@@ -1,14 +1,18 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { apiFetch } from "@/lib/api";
+import { useAgents } from "@/lib/agents";
 import { useStages, type PipelineStage } from "@/lib/stages";
 import styles from "../tags/tags.module.css";
+import own from "./stages.module.css";
 
 const PRESET_COLORS = ["#64748b", "#0ea5e9", "#6366f1", "#f59e0b", "#22c55e", "#16a34a", "#a1a1aa", "#ef4444", "#a855f7", "#14b8a6"];
 
 export default function Stages() {
-  const { stages, loading, reload } = useStages();
+  const { pipelines, loading, reload } = useStages();
+  const { agents } = useAgents();
+  const [pipelineId, setPipelineId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [newName, setNewName] = useState("");
@@ -16,6 +20,16 @@ export default function Stages() {
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editName, setEditName] = useState("");
   const [editColor, setEditColor] = useState("#6366f1");
+  const [newPipeline, setNewPipeline] = useState("");
+  const [renaming, setRenaming] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!pipelines.some((p) => p.id === pipelineId)) setPipelineId(pipelines[0]?.id ?? null);
+  }, [pipelines, pipelineId]);
+
+  const pipeline = pipelines.find((p) => p.id === pipelineId) ?? pipelines[0] ?? null;
+  const stages = pipeline?.stages ?? [];
+  const pipelineAgents = agents.filter((a) => a.pipeline_id && a.pipeline_id === pipeline?.id);
 
   async function run(fn: () => Promise<unknown>) {
     setBusy(true);
@@ -38,10 +52,47 @@ export default function Stages() {
     void run(async () => {
       await apiFetch("/api/stages", {
         method: "POST",
-        body: JSON.stringify({ name: newName.trim(), color: newColor }),
+        body: JSON.stringify({ name: newName.trim(), color: newColor, pipeline_id: pipeline?.id }),
       });
       setNewName("");
     });
+  }
+
+  function createPipeline() {
+    if (!newPipeline.trim()) {
+      setError("Ponle un nombre al pipeline");
+      return;
+    }
+    void run(async () => {
+      const p = await apiFetch<{ id: string }>("/api/stages/pipelines", {
+        method: "POST",
+        body: JSON.stringify({ name: newPipeline.trim() }),
+      });
+      setNewPipeline("");
+      setPipelineId(p.id);
+    });
+  }
+
+  function renamePipeline(name: string) {
+    if (!pipeline || !name.trim()) return;
+    void run(async () => {
+      await apiFetch(`/api/stages/pipelines/${pipeline.id}`, {
+        method: "PUT",
+        body: JSON.stringify({ name: name.trim() }),
+      });
+      setRenaming(null);
+    });
+  }
+
+  function removePipeline() {
+    if (!pipeline) return;
+    if (
+      !confirm(
+        `¿Eliminar el pipeline "${pipeline.name}" y sus etapas? Sus conversaciones pasarán a la primera etapa del pipeline principal y sus agentes pasarán a usar el principal.`,
+      )
+    )
+      return;
+    void run(() => apiFetch(`/api/stages/pipelines/${pipeline.id}`, { method: "DELETE" }));
   }
 
   function startEdit(s: PipelineStage) {
@@ -70,21 +121,109 @@ export default function Stages() {
   }
 
   function remove(s: PipelineStage) {
+    const fallback = stages.find((x) => x.id !== s.id);
     if (
       !confirm(
-        `¿Eliminar la etapa "${s.name}"? Las conversaciones que estén en ella pasarán a "Nuevo".`,
+        `¿Eliminar la etapa "${s.name}"? Las conversaciones que estén en ella pasarán a "${fallback?.name ?? "la primera etapa"}".`,
       )
     )
       return;
-    void run(() => apiFetch(`/api/stages/${s.id}?fallback=new`, { method: "DELETE" }));
+    void run(() =>
+      apiFetch(`/api/stages/${s.id}${fallback ? `?fallback=${encodeURIComponent(fallback.key)}` : ""}`, {
+        method: "DELETE",
+      }),
+    );
   }
 
   return (
     <div className={styles.wrap}>
       {error && <div className={styles.error}>{error}</div>}
 
+      <div className={own.tabs}>
+        {pipelines.map((p) => (
+          <button
+            key={p.id}
+            className={`${own.tab} ${p.id === pipeline?.id ? own.tabActive : ""}`}
+            onClick={() => {
+              setPipelineId(p.id);
+              setEditingId(null);
+              setRenaming(null);
+            }}
+          >
+            {p.name}
+            <span className={own.count}>{p.stages.length}</span>
+          </button>
+        ))}
+        <div className={own.newPipeline}>
+          <input
+            className={styles.input}
+            placeholder="Nuevo pipeline…"
+            value={newPipeline}
+            onChange={(e) => setNewPipeline(e.target.value)}
+            onKeyDown={(e) => e.key === "Enter" && createPipeline()}
+          />
+          <button className={styles.ghostBtn} onClick={createPipeline} disabled={busy}>
+            + Crear
+          </button>
+        </div>
+      </div>
+
+      {pipeline && (
+        <section className={styles.card}>
+          <div className={own.pipelineHead}>
+            {renaming !== null ? (
+              <div className={styles.formRow} style={{ flex: 1 }}>
+                <input
+                  className={styles.input}
+                  style={{ flex: 1 }}
+                  value={renaming}
+                  onChange={(e) => setRenaming(e.target.value)}
+                  onKeyDown={(e) => e.key === "Enter" && renamePipeline(renaming)}
+                  autoFocus
+                />
+                <button className={styles.primaryBtn} onClick={() => renamePipeline(renaming)} disabled={busy}>
+                  Guardar
+                </button>
+                <button className={styles.ghostBtn} onClick={() => setRenaming(null)} disabled={busy}>
+                  Cancelar
+                </button>
+              </div>
+            ) : (
+              <>
+                <h2 className={styles.cardTitle} style={{ margin: 0 }}>
+                  Pipeline {pipeline.name}
+                  {pipeline.is_default && (
+                    <span className={`${styles.chip} ${styles.chipStage}`} style={{ marginLeft: 8 }}>
+                      principal
+                    </span>
+                  )}
+                </h2>
+                <div className={styles.actions}>
+                  <button className={styles.ghostBtn} onClick={() => setRenaming(pipeline.name)} disabled={busy}>
+                    Renombrar
+                  </button>
+                  {!pipeline.is_default && (
+                    <button className={styles.dangerBtn} onClick={removePipeline} disabled={busy}>
+                      Eliminar pipeline
+                    </button>
+                  )}
+                </div>
+              </>
+            )}
+          </div>
+          <p className={styles.hint}>
+            {pipelineAgents.length > 0
+              ? `Lo usan: ${pipelineAgents.map((a) => a.name).join(", ")}. `
+              : "Ningún agente usa este pipeline todavía (se asigna en Agentes → Identidad). "}
+            {pipeline.is_default
+              ? "Es el embudo comercial: sus etapas de sistema las usan la IA, las estadísticas y las integraciones."
+              : "Al pasar una conversación a un agente de este pipeline, entra en su primera etapa."}
+          </p>
+        </section>
+      )}
+
       <section className={styles.card}>
-        <h2 className={styles.cardTitle}>Nueva etapa</h2>
+        <h2 className={styles.cardTitle}>Nueva etapa{pipeline ? ` en ${pipeline.name}` : ""}</h2>
         <div className={styles.formRow}>
           <label className={styles.field}>
             Color
@@ -111,9 +250,9 @@ export default function Stages() {
           </button>
         </div>
         <p className={styles.hint} style={{ marginTop: 10 }}>
-          Las etapas nuevas aparecen en Chats, CRM, Estadísticas, en los workflows (&quot;Al cambiar
-          de estado&quot;, &quot;Según estado&quot;) y en las etiquetas que mueven de etapa. La IA
-          también las conoce.
+          Las etapas aparecen en Chats, CRM, Estadísticas, en los workflows (&quot;Al cambiar de
+          estado&quot;, &quot;Según estado&quot;) y en las etiquetas que mueven de etapa. Cada
+          agente solo conoce las etapas de su pipeline.
         </p>
       </section>
 
@@ -178,7 +317,7 @@ export default function Stages() {
                   <button className={styles.ghostBtn} onClick={() => startEdit(s)} disabled={busy}>
                     Renombrar
                   </button>
-                  {!s.is_system && (
+                  {!s.is_system && stages.length > 1 && (
                     <button className={styles.dangerBtn} onClick={() => remove(s)} disabled={busy}>
                       Eliminar
                     </button>
@@ -202,4 +341,8 @@ const SYSTEM_HELP: Record<string, string> = {
   won: "Cliente cerrado.",
   not_qualified: "No encaja con los criterios.",
   lost: "Se perdió el interés o dijo que no.",
+  support_new: "Acaba de escribir; aún no se ha atendido.",
+  support_open: "El agente está resolviendo la consulta.",
+  support_waiting: "Le hemos respondido y esperamos su respuesta.",
+  support_resolved: "Consulta resuelta.",
 };

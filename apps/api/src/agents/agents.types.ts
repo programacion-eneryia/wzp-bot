@@ -29,14 +29,74 @@ export type Agent = {
 
   model: string | null;
   sort_order: number;
+
+  /** Pipeline cuyas etapas usa el agente (null = sin embudo). */
+  pipeline_id: string | null;
+  /** Se activa solo con los leads que entran (formulario, GHL, webhook). */
+  is_default_lead: boolean;
+  /** Se activa solo con las conversaciones nuevas que llegan por los canales. */
+  is_default_conversation: boolean;
+  /** Ajustes de IA propios; null = hereda los generales de la cuenta. */
+  behavior: AgentBehavior | null;
+
   created_at: string;
   updated_at: string;
 };
+
+/** Ajustes de comportamiento que un agente puede sobreescribir. */
+export type AgentBehavior = {
+  multi_bubble?: boolean;
+  first_reply_min_s?: number;
+  first_reply_max_s?: number;
+  min_delay_ms?: number;
+  max_delay_ms?: number;
+  active_hours_enabled?: boolean;
+  active_hours_start?: number;
+  active_hours_end?: number;
+  timezone?: string;
+};
+
+export const BEHAVIOR_KEYS: (keyof AgentBehavior)[] = [
+  'multi_bubble',
+  'first_reply_min_s',
+  'first_reply_max_s',
+  'min_delay_ms',
+  'max_delay_ms',
+  'active_hours_enabled',
+  'active_hours_start',
+  'active_hours_end',
+  'timezone',
+];
+
+/**
+ * Ajustes efectivos: los generales de la cuenta con los del agente encima.
+ * Genérico para no acoplar este módulo al tipo de setter_configs.
+ */
+export function effectiveBehavior<T extends object>(cfg: T, agent: Pick<Agent, 'behavior'> | null): T {
+  const b = agent?.behavior;
+  if (!b) return cfg;
+  const out = { ...cfg } as Record<string, unknown>;
+  for (const k of BEHAVIOR_KEYS) {
+    if (b[k] !== undefined && b[k] !== null) out[k] = b[k];
+  }
+  return out as T;
+}
 
 /** Campos editables por el cliente. */
 export type AgentInput = Partial<
   Omit<Agent, 'id' | 'organization_id' | 'created_at' | 'updated_at'>
 >;
+
+/** Quién atiende y cómo arranca una conversación/lead recién creado. */
+export type InitialAssignment = {
+  agent: Agent | null;
+  /** IA encendida solo si hay un agente predeterminado (o elegido) activo. */
+  ai_enabled: boolean;
+  /** Primera etapa del pipeline del agente (o 'new'). */
+  stage: string;
+  /** agent_id a guardar en la conversación (null = lo resuelve el canal). */
+  agent_id: string | null;
+};
 
 /** Agente con los canales que tiene asignados (para la lista del panel). */
 export type AgentWithChannels = Agent & {
@@ -57,7 +117,7 @@ export const AGENT_TEMPLATES: Record<AgentKind, AgentInput> = {
   support: {
     name: 'Soporte',
     kind: 'support',
-    uses_stages: false,
+    uses_stages: true,
     persona_name: 'Alex',
     identity_role: 'Atención al cliente',
     objective:

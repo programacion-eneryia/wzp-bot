@@ -27,13 +27,14 @@ export class StatsService {
   ) {}
 
   async overview(orgId: string, filters: StatsFilters = {}) {
-    const [funnel, crm, appointments, tags, messagesTotal, stageList] = await Promise.all([
+    const [funnel, crm, appointments, tags, messagesTotal, stageList, pipelines] = await Promise.all([
       this.funnelStats(orgId, filters),
       this.crmStats(orgId),
       this.appointmentStats(orgId),
       this.tagStats(orgId),
       this.messagesTotal(orgId),
       this.stages.list(orgId),
+      this.stages.pipelines(orgId),
     ]);
 
     const total = funnel.total;
@@ -66,7 +67,20 @@ export class StatsService {
       tags,
       messagesTotal,
       rates,
-      stages: stageList.map((s) => ({ key: s.key, name: s.name, color: s.color })),
+      stages: stageList.map((s) => ({
+        key: s.key,
+        name: s.name,
+        color: s.color,
+        pipeline_id: s.pipeline_id,
+      })),
+      // Embudo principal (KPIs) = pipeline por defecto; el resto, con su reparto.
+      pipelines: pipelines.map((p) => ({
+        id: p.id,
+        name: p.name,
+        is_default: p.is_default,
+        total: funnel.byPipeline[p.id]?.total ?? 0,
+        byStage: funnel.byPipeline[p.id]?.byStage ?? {},
+      })),
       agents: (await this.agents.list(orgId)).map((a) => ({
         id: a.id,
         name: a.name,
@@ -94,7 +108,14 @@ export class StatsService {
     // Agente efectivo por conversación (override → canal → setter por defecto).
     const agents = await this.agents.list(orgId);
     const agentById = new Map(agents.map((a) => [a.id, a]));
-    const defaultAgent = agents.find((a) => a.kind === 'setter' && a.is_active) ?? agents[0] ?? null;
+    const defaultAgent =
+      agents.find((a) => a.is_default_conversation && a.is_active) ??
+      agents.find((a) => a.kind === 'setter' && a.is_active) ??
+      agents[0] ??
+      null;
+    const stageList = await this.stages.list(orgId);
+    const stagePipeline = new Map(stageList.map((s) => [s.key, s.pipeline_id]));
+    const mainPipelineId = (await this.stages.defaultPipeline(orgId))?.id ?? null;
     const { data: channels } = await this.supabase.admin
       .from('channels')
       .select('id, agent_id')
@@ -107,6 +128,7 @@ export class StatsService {
     const byChannel: Record<string, number> = {};
     const byAgent: Record<string, { name: string; count: number }> = {};
     const byDay = new Map<string, number>();
+    const byPipeline: Record<string, { total: number; byStage: Record<string, number> }> = {};
     let total = 0;
     let supportTotal = 0;
 
@@ -124,8 +146,19 @@ export class StatsService {
         supportTotal++;
         continue;
       }
-      total++;
       const st = (r.stage as string) || 'new';
+      const pipelineId = stagePipeline.get(st) ?? mainPipelineId;
+      if (pipelineId) {
+        const bucket = (byPipeline[pipelineId] ??= { total: 0, byStage: {} });
+        bucket.total++;
+        bucket.byStage[st] = (bucket.byStage[st] ?? 0) + 1;
+      }
+      // Los KPIs del embudo solo cuentan el pipeline principal (Setter).
+      if (pipelineId && mainPipelineId && pipelineId !== mainPipelineId) {
+        supportTotal++;
+        continue;
+      }
+      total++;
       byStage[st] = (byStage[st] ?? 0) + 1;
       const sc = (r.source as string) || (r.provider as string) || 'otro';
       bySource[sc] = (bySource[sc] ?? 0) + 1;
@@ -149,7 +182,7 @@ export class StatsService {
       last30.push({ date: key, count: byDay.get(key) ?? 0 });
     }
 
-    return { total, byStage, bySource, byChannel, byAgent, last30, supportTotal };
+    return { total, byStage, bySource, byChannel, byAgent, last30, supportTotal, byPipeline };
   }
 
   /** Totales del CRM (todos los contactos, hablados o no). */

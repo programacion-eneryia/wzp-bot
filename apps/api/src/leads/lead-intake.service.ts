@@ -2,9 +2,10 @@ import { ForbiddenException, Injectable, Logger } from '@nestjs/common';
 import { SupabaseService } from '../supabase/supabase.service';
 import { SetterConfigService } from '../setter/setter-config.service';
 import { MessagingService } from '../messaging/messaging.service';
-import { GhlService } from '../ghl/ghl.service';
+import { GhlSyncService } from '../ghl/ghl-sync.service';
 import { newConversationsStartPaused } from '../common/flags';
 import { WorkflowEngineService } from '../workflows/workflow-engine.service';
+import { AgentsService } from '../agents/agents.service';
 import { LeadsService } from './leads.service';
 
 export type IntakeInput = {
@@ -29,7 +30,18 @@ export type IntakeInput = {
   proactive?: boolean;
   /** Payload original completo (para guardarlo íntegro en el CRM). */
   raw?: Record<string, unknown>;
+  /** Agente que atiende (id o nombre). Si falta, el predeterminado para leads. */
+  agent?: string;
 };
+
+type OrgIntake = {
+  organization_id: string;
+  default_channel_id: string | null;
+  proactive_enabled: boolean;
+};
+
+/** El lead entra desde el trigger "Recibe un webhook" de un workflow concreto. */
+type IntakeOptions = { workflowId?: string };
 
 export type IntakeResult = {
   conversationId: string | null;
@@ -47,8 +59,9 @@ export class LeadIntakeService {
     private readonly setterConfig: SetterConfigService,
     private readonly messaging: MessagingService,
     private readonly leads: LeadsService,
-    private readonly ghl: GhlService,
+    private readonly ghl: GhlSyncService,
     private readonly workflow: WorkflowEngineService,
+    private readonly agents: AgentsService,
   ) {}
 
   /** Resuelve la organización a partir del token de intake. */
@@ -60,11 +73,29 @@ export class LeadIntakeService {
       .eq('intake_token', token)
       .maybeSingle();
     if (!data) throw new ForbiddenException('Token de integración inválido');
-    return data as {
-      organization_id: string;
-      default_channel_id: string | null;
-      proactive_enabled: boolean;
-    };
+    return data as OrgIntake;
+  }
+
+  /** Datos de intake de una org ya conocida (trigger webhook de workflow). */
+  private async orgIntake(orgId: string): Promise<OrgIntake> {
+    const { data } = await this.supabase.admin
+      .from('integrations')
+      .select('organization_id, default_channel_id, proactive_enabled')
+      .eq('organization_id', orgId)
+      .maybeSingle();
+    return (
+      (data as OrgIntake | null) ?? {
+        organization_id: orgId,
+        default_channel_id: null,
+        proactive_enabled: false,
+      }
+    );
+  }
+
+  /** Lead recibido por el webhook de un workflow: se inscribe en ESE workflow. */
+  async intakeForWorkflow(orgId: string, workflowId: string, input: Omit<IntakeInput, 'token'>) {
+    const org = await this.orgIntake(orgId);
+    return this.intakeForOrg(org, { ...input, token: '' }, { workflowId });
   }
 
   /** Elige el canal a usar: el por defecto de la org, o el primero del proveedor. */
@@ -90,6 +121,14 @@ export class LeadIntakeService {
 
   async intake(input: IntakeInput): Promise<IntakeResult> {
     const org = await this.resolveOrg(input.token);
+    return this.intakeForOrg(org, input, {});
+  }
+
+  private async intakeForOrg(
+    org: OrgIntake,
+    input: IntakeInput,
+    opts: IntakeOptions,
+  ): Promise<IntakeResult> {
     const orgId = org.organization_id;
     const provider = input.channel ?? 'whatsapp';
     const phoneDigits = normalizePhone(input.phone);
@@ -167,6 +206,18 @@ export class LeadIntakeService {
       } catch (err) {
         this.logger.warn(`No se pudo guardar el contexto del lead: ${String(err)}`);
       }
+    }
+
+    // Trigger "Recibe un webhook": el lead entra en ESE workflow, que decide el
+    // primer mensaje y los pasos siguientes.
+    if (opts.workflowId) {
+      const started = await this.workflow.enrollInternal(orgId, opts.workflowId, conv.id);
+      return {
+        conversationId: conv.id,
+        leadId,
+        proactiveSent: false,
+        reason: started ? 'workflow iniciado' : 'ya estaba en este workflow',
+      };
     }
 
     // A partir de aquí necesitamos un canal conectado para escribir al lead. Si no
@@ -319,6 +370,7 @@ export class LeadIntakeService {
         .maybeSingle();
       if (data) {
         await this.attachChannelIfMissing(data, channel);
+        await this.applyExplicitAgent(orgId, data.id as string, input.agent);
         return data;
       }
     }
@@ -350,10 +402,14 @@ export class LeadIntakeService {
             mode: 'setter',
           })
           .eq('id', data.id);
+        await this.applyExplicitAgent(orgId, data.id as string, input.agent);
         return data;
       }
     }
 
+    // Atiende el agente indicado o el predeterminado para leads; sin ninguno,
+    // el lead queda registrado con la IA pausada.
+    const initial = await this.agents.initialForLead(orgId, input.agent);
     const { data: created, error } = await this.supabase.admin
       .from('conversations')
       .insert({
@@ -371,16 +427,27 @@ export class LeadIntakeService {
         // Origen de campaña/lead → siempre setter, y fijado (no reclasificar).
         mode: 'setter',
         mode_locked: true,
-        // Con NEW_CONVERSATIONS_START_PAUSED la IA arranca pausada y la activa
-        // el workflow (nodo "Pasar a IA"), el inbox o GHL.
-        ai_enabled: !newConversationsStartPaused(),
+        ai_enabled: initial.ai_enabled && !newConversationsStartPaused(),
+        agent_id: initial.agent_id,
         is_test: false,
-        stage: 'new',
+        stage: initial.stage,
       })
       .select('id, proactive_sent, unipile_chat_id, contact_external_id')
       .single();
     if (error) throw error;
     return created;
+  }
+
+  /** Lead que vuelve a entrar con un agente explícito: pasa a ese agente con la IA activa. */
+  private async applyExplicitAgent(orgId: string, conversationId: string, ref?: string) {
+    if (!ref) return;
+    const agent = await this.agents.findActiveByRef(orgId, ref);
+    if (!agent) return;
+    await this.agents.setConversationAgent(orgId, conversationId, agent.id);
+    await this.supabase.admin
+      .from('conversations')
+      .update({ ai_enabled: true })
+      .eq('id', conversationId);
   }
 }
 

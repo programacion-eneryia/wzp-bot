@@ -292,3 +292,26 @@
 .fileInput {
   display: none;
 }
+
+.collapseHead {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  background: transparent;
+  border: none;
+  color: var(--text, #e8e8e8);
+  padding: 0;
+  cursor: pointer;
+  text-align: left;
+  font-size: 15px;
+}
+.subTitle {
+  font-size: 14px;
+  margin: 8px 0 0;
+}
+.footerInline {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}

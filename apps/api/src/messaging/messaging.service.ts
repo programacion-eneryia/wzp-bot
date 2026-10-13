@@ -11,7 +11,9 @@ import { TransportService } from './transport.service';
 import { TagClassifierService } from '../tags/tag-classifier.service';
 import { WorkflowTriggerService } from '../workflows/workflow-trigger.service';
 import { AgentsService } from '../agents/agents.service';
+import { effectiveBehavior } from '../agents/agents.types';
 import { StagesService } from '../stages/stages.service';
+import { GhlSyncService } from '../ghl/ghl-sync.service';
 import { newConversationsStartPaused } from '../common/flags';
 import { DEBOUNCE_MS, type OutgoingJob, type RespondJob } from './queues';
 
@@ -53,6 +55,7 @@ export class MessagingService {
     private readonly workflowTrigger: WorkflowTriggerService,
     private readonly agents: AgentsService,
     private readonly stages: StagesService,
+    private readonly ghlSync: GhlSyncService,
   ) {}
 
   /**
@@ -218,6 +221,7 @@ export class MessagingService {
       if (existing) {
         convId = existing.id as string;
       } else {
+        const initial = await this.agents.initialForConversation(orgId, channel.id as string);
         const { data: created, error } = await this.supabase.admin
           .from('conversations')
           .insert({
@@ -231,10 +235,10 @@ export class MessagingService {
             source: params.referral ? 'ctwa' : 'whatsapp',
             mode: 'setter',
             mode_locked: true,
-            ai_enabled: !newConversationsStartPaused(),
+            ai_enabled: initial.ai_enabled && !newConversationsStartPaused(),
             consent_optin: true,
             is_test: false,
-            stage: 'new',
+            stage: initial.stage,
           })
           .select('id')
           .single();
@@ -678,17 +682,31 @@ export class MessagingService {
       }
     }
 
+    // Qué agente atiende: override de la conversación → modo soporte confirmado
+    // → agente del canal → predeterminado para conversaciones nuevas.
+    const agent = await this.agents.resolveForConversation(orgId, {
+      agent_id: conv.agent_id as string | null,
+      channel_id: conv.channel_id as string | null,
+      mode: conv.mode as string | null,
+    });
+    if (!agent) {
+      this.logger.warn(`Org ${orgId} sin agentes activos; no se responde (${conversationId})`);
+      return;
+    }
+    // Horario y tiempos: los del agente si tiene ajustes propios.
+    const behavior = effectiveBehavior(cfg, agent);
+
     const silenceCandidates = [conv.contact_external_id, conv.contact_handle].filter(
       Boolean,
     ) as string[];
-    if (await this.silenced.isAnySilenced(orgId, silenceCandidates)) {
+    if (await this.silenced.isAnySilenced(orgId, silenceCandidates, agent.id)) {
       this.logger.log(`Contacto silenciado (${silenceCandidates.join(', ')}); no se responde`);
       return;
     }
 
     if (
-      cfg.active_hours_enabled &&
-      !inActiveHours(cfg.active_hours_start, cfg.active_hours_end, cfg.timezone)
+      behavior.active_hours_enabled &&
+      !inActiveHours(behavior.active_hours_start, behavior.active_hours_end, behavior.timezone)
     ) {
       // El lock ya limpió respond_after; si no lo reprogramamos, este lead se
       // quedaría sin respuesta para siempre. Lo diferimos a la próxima franja
@@ -696,9 +714,9 @@ export class MessagingService {
       const resumeAt = nextActiveSlot(
         Date.now(),
         true,
-        cfg.active_hours_start,
-        cfg.active_hours_end,
-        cfg.timezone,
+        behavior.active_hours_start,
+        behavior.active_hours_end,
+        behavior.timezone,
       );
       await this.supabase.admin
         .from('conversations')
@@ -748,18 +766,6 @@ export class MessagingService {
     // envío entra uno más nuevo, abortamos.
     const watermark = conv.last_inbound_at ?? null;
 
-    // Qué agente atiende: override de la conversación → modo soporte confirmado
-    // → agente por defecto del canal → primer setter activo.
-    const agent = await this.agents.resolveForConversation(orgId, {
-      agent_id: conv.agent_id as string | null,
-      channel_id: conv.channel_id as string | null,
-      mode,
-    });
-    if (!agent) {
-      this.logger.warn(`Org ${orgId} sin agentes activos; no se responde (${conversationId})`);
-      return;
-    }
-
     const bubbles = await this.setter.respond(orgId, conversationId, {
       agent,
       contactName: conv.contact_name,
@@ -775,8 +781,13 @@ export class MessagingService {
         ? normalizeLink(agent.calendar_link)
         : null;
 
+    // Las etapas de agenda (calendario enviado, llamada agendada) son del
+    // pipeline principal: solo se mueven si el agente trabaja en él.
+    const mainPipelineId = (await this.stages.defaultPipeline(orgId))?.id ?? null;
+    const onMainPipeline = Boolean(agent.pipeline_id) && agent.pipeline_id === mainPipelineId;
+
     // Retardo inicial (simula "leer"). El cps/longitud da el ritmo entre burbujas.
-    await sleep(randomSeconds(cfg.first_reply_min_s, cfg.first_reply_max_s) * 1000);
+    await sleep(randomSeconds(behavior.first_reply_min_s, behavior.first_reply_max_s) * 1000);
 
     for (const b of bubbles) {
       if (await this.newerInboundExists(conversationId, watermark)) {
@@ -812,7 +823,7 @@ export class MessagingService {
         .update({ last_outbound_at: new Date().toISOString(), last_message_at: new Date().toISOString() })
         .eq('id', conversationId);
 
-      if (calendarLink && agent.uses_stages && normalizeLink(b.content).includes(calendarLink)) {
+      if (calendarLink && onMainPipeline && normalizeLink(b.content).includes(calendarLink)) {
         void this.stages.setConversationStage(orgId, conversationId, 'calendar_sent', {
           skipIfIn: ['calendar_sent', 'call_scheduled', 'won', 'lost', 'not_qualified'],
         });
@@ -825,7 +836,7 @@ export class MessagingService {
     // Tras responder, el bot comprueba si el lead ha agendado/confirmado una
     // llamada. Solo agentes con pipeline; y NO en modo enlace, donde el flujo es
     // "Calendario enviado" → la confirmación llega por el webhook de la cita.
-    if (agent.uses_stages && agent.calendar_mode !== 'link') {
+    if (onMainPipeline && agent.calendar_mode !== 'link') {
       void this.appointmentDetector.maybeDetect(orgId, conversationId);
     }
     // Auto-etiquetado IA: analiza la conversación y aplica las etiquetas que
@@ -889,6 +900,8 @@ export class MessagingService {
         status: 'new',
         consent_optin: true,
       });
+      // Lead nuevo por chat → contacto en GHL (si la cuenta lo tiene configurado).
+      void this.ghlSync.syncChatLead(orgId, conversationId);
     } catch (err) {
       this.logger.warn(
         `No se pudo registrar el lead del chat ${conversationId}: ${String(err)}`,
@@ -1198,6 +1211,9 @@ export class MessagingService {
 
     if (existing) return existing;
 
+    // La IA solo arranca encendida si hay un agente predeterminado para
+    // conversaciones nuevas; si no, se activa desde el inbox, un workflow o GHL.
+    const initial = await this.agents.initialForConversation(orgId, channel.id);
     const { data: created, error } = await this.supabase.admin
       .from('conversations')
       .insert({
@@ -1209,10 +1225,8 @@ export class MessagingService {
         contact_handle: evt.senderProviderId ?? null,
         contact_name: evt.senderName ?? 'Lead',
         is_test: false,
-        // Con el flag NEW_CONVERSATIONS_START_PAUSED la IA arranca pausada y se
-        // activa desde un workflow (nodo "Pasar a IA"), el inbox o GHL.
-        ai_enabled: !newConversationsStartPaused(),
-        stage: 'new',
+        ai_enabled: initial.ai_enabled && !newConversationsStartPaused(),
+        stage: initial.stage,
       })
       .select('id, ai_enabled, mode, mode_locked, contact_name, contact_external_id, contact_handle, unread_count')
       .single();

@@ -5,7 +5,7 @@ import { SupabaseService } from '../supabase/supabase.service';
 import { CalendarService } from '../calendar/calendar.service';
 import { PlatformSettingsService } from '../platform/platform-settings.service';
 import { AgentsService } from '../agents/agents.service';
-import type { Agent } from '../agents/agents.types';
+import { effectiveBehavior, type Agent } from '../agents/agents.types';
 import { StagesService } from '../stages/stages.service';
 import { SetterConfigService } from './setter-config.service';
 import {
@@ -100,8 +100,11 @@ export class SetterService {
       );
     }
 
-    const stageNames = agent.uses_stages
-      ? (await this.stages.list(orgId)).map((s) => s.name)
+    // Solo las etapas del pipeline del agente.
+    const stageNames = agent.pipeline_id
+      ? (await this.stages.list(orgId))
+          .filter((s) => s.pipeline_id === agent.pipeline_id)
+          .map((s) => s.name)
       : null;
 
     const { data: history } = await this.supabase.admin
@@ -140,14 +143,15 @@ export class SetterService {
       purpose: 'respond',
     });
 
-    const parts = cfg.multi_bubble
+    const behavior = effectiveBehavior(cfg, agent);
+    const parts = behavior.multi_bubble
       ? splitBubbles(raw)
       : [humanizePunctuation(stripEmojis(stripInternalDirectives(raw.trim())))].filter(
           (p) => p.length > 0,
         );
     const bubbles: Bubble[] = parts.map((content) => ({
       content,
-      delayMs: humanDelayMs(content, cfg.min_delay_ms, cfg.max_delay_ms),
+      delayMs: humanDelayMs(content, behavior.min_delay_ms, behavior.max_delay_ms),
     }));
 
     // Persistimos cada burbuja como un mensaje del asistente (salvo que el

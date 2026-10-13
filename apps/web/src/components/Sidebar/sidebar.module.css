@@ -134,6 +134,20 @@
   color: var(--text);
 }
 
+/* Equipo y Configuración: fijos abajo, justo encima del usuario. */
+.bottomNav {
+  flex: 0 0 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  border-top: 1px solid var(--line);
+  padding-top: 8px;
+}
+
+.mobileOnly {
+  display: none;
+}
+
 /* ---------- Usuario + engranaje ---------- */
 .userBox {
   position: relative;
@@ -263,8 +277,47 @@
 
 @media (max-width: 760px) {
   .sidebar {
-    position: relative;
+    position: sticky;
+    top: 0;
+    z-index: 30;
     height: auto;
+    flex-direction: row;
+    align-items: center;
+    gap: 6px;
+    padding: 8px 10px;
+    border-right: none;
+    border-bottom: 1px solid var(--line);
+  }
+  .brand {
+    padding: 0 4px 0 0;
+  }
+  .brandText {
+    display: none;
+  }
+  .desktopOnly {
+    display: none !important;
+  }
+  .mobileOnly {
+    display: block;
+  }
+  .bottomNav {
+    display: none;
+  }
+  .userBox {
+    border-top: none;
+    padding-top: 0;
+    margin-left: auto;
+  }
+  .userInfo {
+    display: none;
+  }
+  .menu {
+    left: auto;
+    right: 0;
+    min-width: 220px;
+  }
+  .group {
+    margin-top: 0;
   }
   .nav {
     flex-direction: row;

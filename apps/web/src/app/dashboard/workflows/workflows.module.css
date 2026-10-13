@@ -330,3 +330,110 @@
 .handleNo {
   left: 68%;
 }
+
+/* --- Insertar pasos con "+" --- */
+.nodePlus {
+  position: absolute;
+  bottom: -46px;
+  transform: translateX(-50%);
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  border: 1px solid var(--border, rgba(255, 255, 255, 0.3));
+  background: var(--surface-2, #1c1c1c);
+  color: var(--text, #e8e8e8);
+  font-size: 14px;
+  line-height: 1;
+  cursor: pointer;
+  display: grid;
+  place-items: center;
+  padding: 0;
+}
+.nodePlus:hover,
+.edgePlus:hover {
+  background: var(--accent, #3b82f6);
+  border-color: var(--accent, #3b82f6);
+  color: #111;
+}
+.edgeTools {
+  position: absolute;
+  pointer-events: all;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.edgeLabel {
+  font-size: 10px;
+  color: var(--muted, #9a9a9a);
+  background: #0d0d0d;
+  padding: 0 4px;
+  border-radius: 4px;
+}
+.edgePlus {
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  border: 1px solid var(--border, rgba(255, 255, 255, 0.3));
+  background: #0d0d0d;
+  color: var(--text, #e8e8e8);
+  font-size: 13px;
+  line-height: 1;
+  cursor: pointer;
+  display: grid;
+  place-items: center;
+  padding: 0;
+}
+.canvas {
+  position: relative;
+}
+.insertMenu {
+  position: absolute;
+  z-index: 10;
+  min-width: 190px;
+  background: var(--surface-2, #1c1c1c);
+  border: 1px solid var(--border, rgba(255, 255, 255, 0.18));
+  border-radius: 10px;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.45);
+  padding: 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.insertMenuTitle {
+  font-size: 11px;
+  color: var(--muted, #9a9a9a);
+  padding: 4px 8px;
+}
+.insertMenuItem {
+  text-align: left;
+  background: transparent;
+  border: none;
+  color: var(--text, #e8e8e8);
+  padding: 7px 8px;
+  border-radius: 7px;
+  font-size: 13px;
+  cursor: pointer;
+}
+.insertMenuItem:hover {
+  background: rgba(255, 255, 255, 0.08);
+}
+
+/* --- Trigger webhook --- */
+.webhookBar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 12px;
+  margin-bottom: 10px;
+  border: 1px solid var(--border, rgba(255, 255, 255, 0.12));
+  border-radius: 10px;
+  font-size: 13px;
+}
+.webhookUrl {
+  font-size: 12px;
+  padding: 4px 8px;
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.06);
+  word-break: break-all;
+}

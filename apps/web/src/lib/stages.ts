@@ -10,6 +10,16 @@ export type PipelineStage = {
   color: string;
   sort_order: number;
   is_system: boolean;
+  pipeline_id?: string | null;
+};
+
+export type Pipeline = {
+  id: string;
+  key: string;
+  name: string;
+  sort_order: number;
+  is_default: boolean;
+  stages: PipelineStage[];
 };
 
 /** Etapas de sistema (fallback mientras carga o si la API falla). */
@@ -24,19 +34,23 @@ export const DEFAULT_STAGES: PipelineStage[] = [
   { id: "lost", key: "lost", name: "Perdido", color: "#ef4444", sort_order: 80, is_system: true },
 ];
 
-// Cache en memoria compartida entre componentes (misma pestaña).
-let cache: PipelineStage[] | null = null;
-let inflight: Promise<PipelineStage[]> | null = null;
+const FALLBACK_PIPELINES: Pipeline[] = [
+  { id: "default", key: "setter", name: "Setter", sort_order: 10, is_default: true, stages: DEFAULT_STAGES },
+];
 
-async function fetchStages(): Promise<PipelineStage[]> {
+// Cache en memoria compartida entre componentes (misma pestaña).
+let cache: Pipeline[] | null = null;
+let inflight: Promise<Pipeline[]> | null = null;
+
+async function fetchPipelines(): Promise<Pipeline[]> {
   if (cache) return cache;
   if (!inflight) {
-    inflight = apiFetch<PipelineStage[]>("/api/stages")
+    inflight = apiFetch<Pipeline[]>("/api/stages/pipelines")
       .then((rows) => {
-        cache = rows.length > 0 ? rows : DEFAULT_STAGES;
+        cache = rows.length > 0 ? rows : FALLBACK_PIPELINES;
         return cache;
       })
-      .catch(() => DEFAULT_STAGES)
+      .catch(() => FALLBACK_PIPELINES)
       .finally(() => {
         inflight = null;
       });
@@ -44,32 +58,32 @@ async function fetchStages(): Promise<PipelineStage[]> {
   return inflight;
 }
 
-/** Invalida la cache (tras editar etapas). */
+/** Invalida la cache (tras editar pipelines o etapas). */
 export function invalidateStages() {
   cache = null;
 }
 
 /**
- * Etapas del pipeline de la organización, ordenadas, con helpers para pintar.
- * Devuelve las de sistema como fallback hasta que carga.
+ * Pipelines de la organización con sus etapas, y helpers para pintar.
+ * `stages` es la lista plana (pipeline por pipeline, en orden).
  */
 export function useStages() {
-  const [stages, setStages] = useState<PipelineStage[]>(cache ?? DEFAULT_STAGES);
+  const [pipelines, setPipelines] = useState<Pipeline[]>(cache ?? FALLBACK_PIPELINES);
   const [loading, setLoading] = useState(!cache);
 
   const reload = useCallback(async () => {
     invalidateStages();
     setLoading(true);
-    const rows = await fetchStages();
-    setStages(rows);
+    const rows = await fetchPipelines();
+    setPipelines(rows);
     setLoading(false);
   }, []);
 
   useEffect(() => {
     let cancelled = false;
-    fetchStages().then((rows) => {
+    fetchPipelines().then((rows) => {
       if (!cancelled) {
-        setStages(rows);
+        setPipelines(rows);
         setLoading(false);
       }
     });
@@ -78,7 +92,15 @@ export function useStages() {
     };
   }, []);
 
+  const stages = useMemo(
+    () => pipelines.flatMap((p) => p.stages.map((s) => ({ ...s, pipeline_id: p.id }))),
+    [pipelines],
+  );
   const byKey = useMemo(() => new Map(stages.map((s) => [s.key, s])), [stages]);
+  const defaultPipeline = useMemo(
+    () => pipelines.find((p) => p.is_default) ?? pipelines[0] ?? null,
+    [pipelines],
+  );
   const label = useCallback(
     (key: string | null | undefined) => (key ? byKey.get(key)?.name ?? key : "—"),
     [byKey],
@@ -87,6 +109,33 @@ export function useStages() {
     (key: string | null | undefined) => (key ? byKey.get(key)?.color ?? "#64748b" : "#64748b"),
     [byKey],
   );
+  /** Etapas de un pipeline (null = el por defecto). */
+  const stagesOf = useCallback(
+    (pipelineId: string | null | undefined) => {
+      const p = pipelines.find((x) => x.id === pipelineId) ?? defaultPipeline;
+      return p?.stages ?? [];
+    },
+    [pipelines, defaultPipeline],
+  );
+  /** Pipeline al que pertenece una etapa. */
+  const pipelineOf = useCallback(
+    (key: string | null | undefined) => {
+      const id = key ? byKey.get(key)?.pipeline_id : null;
+      return pipelines.find((p) => p.id === id) ?? defaultPipeline;
+    },
+    [byKey, pipelines, defaultPipeline],
+  );
 
-  return { stages, loading, label, color, byKey, reload };
+  return {
+    stages,
+    pipelines,
+    defaultPipeline,
+    loading,
+    label,
+    color,
+    byKey,
+    stagesOf,
+    pipelineOf,
+    reload,
+  };
 }

@@ -131,11 +131,18 @@ function dayLabel(iso: string): string {
 }
 
 export default function Inbox() {
-  const { stages, label: STAGE_LABEL } = useStages();
+  const { pipelines, defaultPipeline, stagesOf, pipelineOf, label: STAGE_LABEL } = useStages();
   const { agents } = useAgents();
   const [list, setList] = useState<Conversation[]>([]);
   const [filter, setFilter] = useState<Stage | "all">("all");
   const [providerFilter, setProviderFilter] = useState<string>("all");
+  const [pipelineFilter, setPipelineFilter] = useState<string>("all");
+  // Selección múltiple para acciones en bloque.
+  const [selecting, setSelecting] = useState(false);
+  const [picked, setPicked] = useState<Set<string>>(new Set());
+  const [allMatching, setAllMatching] = useState(false);
+  const [bulkAgent, setBulkAgent] = useState("");
+  const [bulkBusy, setBulkBusy] = useState(false);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [conv, setConv] = useState<Conversation | null>(null);
   const [messages, setMessages] = useState<Message[]>([]);
@@ -172,13 +179,16 @@ export default function Inbox() {
 
   const loadList = useCallback(async () => {
     try {
-      const qs = providerFilter !== "all" ? `?provider=${providerFilter}` : "";
+      const params = new URLSearchParams();
+      if (providerFilter !== "all") params.set("provider", providerFilter);
+      if (pipelineFilter !== "all") params.set("pipeline_id", pipelineFilter);
+      const qs = params.toString() ? `?${params.toString()}` : "";
       const data = await apiFetch<Conversation[]>(`/api/inbox/conversations${qs}`);
       setList(data);
     } catch (e) {
       setError(e instanceof Error ? e.message : "Error");
     }
-  }, [providerFilter]);
+  }, [providerFilter, pipelineFilter]);
 
   const loadConv = useCallback(async (id: string, refresh = false) => {
     try {
@@ -244,7 +254,60 @@ export default function Inbox() {
     }
   }, [messages]);
 
+  function togglePick(id: string) {
+    setAllMatching(false);
+    setPicked((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }
+
+  function stopSelecting() {
+    setSelecting(false);
+    setPicked(new Set());
+    setAllMatching(false);
+    setBulkAgent("");
+  }
+
+  async function runBulk(body: { ai_enabled?: boolean; agent_id?: string }) {
+    if (!allMatching && picked.size === 0) return;
+    setBulkBusy(true);
+    setError(null);
+    try {
+      const res = await apiFetch<{ updated: number }>("/api/inbox/bulk", {
+        method: "POST",
+        body: JSON.stringify({
+          ...(allMatching
+            ? {
+                all: true,
+                filters: {
+                  stage: filter !== "all" ? filter : undefined,
+                  provider: providerFilter !== "all" ? providerFilter : undefined,
+                  pipeline_id: pipelineFilter !== "all" ? pipelineFilter : undefined,
+                },
+              }
+            : { ids: [...picked] }),
+          ...body,
+        }),
+      });
+      setSyncInfo(`${res.updated} conversación(es) actualizadas`);
+      stopSelecting();
+      await loadList();
+      if (selectedId) await loadConv(selectedId, false);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Error en la acción en bloque");
+    } finally {
+      setBulkBusy(false);
+    }
+  }
+
   function selectConv(id: string) {
+    if (selecting) {
+      togglePick(id);
+      return;
+    }
     if (id === selectedId) return;
     forceBottomRef.current = true;
     atBottomRef.current = true;
@@ -329,18 +392,29 @@ export default function Inbox() {
     if (!conv) return;
     setConv({ ...conv, agent_id: agentId || null });
     await patch({ agent_id: agentId || null });
+    // Al cambiar de agente puede cambiar de pipeline (y de etapa).
+    await loadConv(conv.id, false);
     loadList();
   }
 
-  /** Agente que atiende este chat (override → agente del canal → setter). */
+  /** Agente que atiende este chat (override → soporte → canal → predeterminado). */
   const currentAgent = conv
     ? agents.find((a) => a.id === conv.agent_id) ??
-      agents.find((a) => (a.channels ?? []).some((ch) => ch.id === conv.channel_id)) ??
       (conv.mode === "support" ? agents.find((a) => a.kind === "support") : undefined) ??
+      agents.find((a) => (a.channels ?? []).some((ch) => ch.id === conv.channel_id)) ??
+      agents.find((a) => a.is_default_conversation && a.is_active) ??
       agents.find((a) => a.kind === "setter" && a.is_active) ??
       null
     : null;
-  const showStages = currentAgent ? currentAgent.uses_stages : true;
+  /** Pipeline del chat: el de su etapa actual (o el del agente si no tiene). */
+  const convPipeline = conv
+    ? pipelineOf(conv.stage) ??
+      pipelines.find((p) => p.id === currentAgent?.pipeline_id) ??
+      defaultPipeline
+    : null;
+  const convStages = convPipeline?.stages ?? [];
+  const showStages = currentAgent ? Boolean(currentAgent.pipeline_id) : true;
+  const chipStages = stagesOf(pipelineFilter !== "all" ? pipelineFilter : defaultPipeline?.id);
 
   async function changeMode(mode: "setter" | "support" | "ignored") {
     if (!conv) return;
@@ -494,17 +568,93 @@ export default function Inbox() {
   }
 
   const filtered = filter === "all" ? list : list.filter((c) => c.stage === filter);
+  const pickedCount = allMatching ? null : picked.size;
 
   return (
-    <div className={styles.inbox}>
+    <div className={`${styles.inbox} ${conv ? styles.inboxWithConv : ""}`}>
       {/* ---------- Lista ---------- */}
       <div className={styles.listPane}>
         <div className={styles.listHeader}>
           <span className={styles.listTitle}>Chats</span>
-          <button className={styles.syncBtn} onClick={sync} disabled={syncing}>
-            {syncing ? "Sincronizando…" : "Sincronizar"}
-          </button>
+          <div className={styles.listHeaderActions}>
+            <button
+              className={`${styles.syncBtn} ${selecting ? styles.syncBtnActive : ""}`}
+              onClick={() => (selecting ? stopSelecting() : setSelecting(true))}
+            >
+              {selecting ? "Cancelar" : "Seleccionar"}
+            </button>
+            {!selecting && (
+              <button className={styles.syncBtn} onClick={sync} disabled={syncing}>
+                {syncing ? "Sincronizando…" : "Sincronizar"}
+              </button>
+            )}
+          </div>
         </div>
+        {selecting && (
+          <div className={styles.bulkBar}>
+            <div className={styles.bulkRow}>
+              <span className={styles.bulkCount}>
+                {allMatching
+                  ? "Todas las del filtro"
+                  : `${pickedCount} seleccionada${pickedCount === 1 ? "" : "s"}`}
+              </span>
+              <button
+                className={styles.bulkLink}
+                onClick={() => {
+                  setAllMatching(false);
+                  setPicked(new Set(filtered.map((c) => c.id)));
+                }}
+              >
+                Visibles ({filtered.length})
+              </button>
+              <button className={styles.bulkLink} onClick={() => setAllMatching(true)}>
+                Todas
+              </button>
+            </div>
+            <div className={styles.bulkRow}>
+              <button
+                className={styles.bulkBtn}
+                disabled={bulkBusy || (!allMatching && picked.size === 0)}
+                onClick={() => void runBulk({ ai_enabled: true })}
+              >
+                Activar IA
+              </button>
+              <button
+                className={styles.bulkBtn}
+                disabled={bulkBusy || (!allMatching && picked.size === 0)}
+                onClick={() => void runBulk({ ai_enabled: false })}
+              >
+                Pausar IA
+              </button>
+            </div>
+            {agents.length > 0 && (
+              <div className={styles.bulkRow}>
+                <select
+                  className={styles.moveSelect}
+                  value={bulkAgent}
+                  onChange={(e) => setBulkAgent(e.target.value)}
+                >
+                  <option value="">Elegir agente…</option>
+                  {agents
+                    .filter((a) => a.is_active)
+                    .map((a) => (
+                      <option key={a.id} value={a.id}>
+                        {a.name}
+                      </option>
+                    ))}
+                </select>
+                <button
+                  className={styles.bulkBtn}
+                  disabled={bulkBusy || !bulkAgent || (!allMatching && picked.size === 0)}
+                  onClick={() => void runBulk({ agent_id: bulkAgent, ai_enabled: true })}
+                  title="Pasa los chats a este agente y activa la IA"
+                >
+                  Pasar a agente
+                </button>
+              </div>
+            )}
+          </div>
+        )}
         {syncInfo && <div className={styles.syncInfo}>{syncInfo}</div>}
         <div className={styles.filters}>
           <select
@@ -520,13 +670,31 @@ export default function Inbox() {
               </option>
             ))}
           </select>
+          {pipelines.length > 1 && (
+            <select
+              className={styles.moveSelect}
+              value={pipelineFilter}
+              onChange={(e) => {
+                setPipelineFilter(e.target.value);
+                setFilter("all");
+              }}
+              title="Filtrar por pipeline"
+            >
+              <option value="all">Todos los pipelines</option>
+              {pipelines.map((p) => (
+                <option key={p.id} value={p.id}>
+                  {p.name}
+                </option>
+              ))}
+            </select>
+          )}
           <button
             className={`${styles.filter} ${filter === "all" ? styles.filterActive : ""}`}
             onClick={() => setFilter("all")}
           >
             Todos
           </button>
-          {stages.map((s) => (
+          {chipStages.map((s) => (
             <button
               key={s.key}
               className={`${styles.filter} ${filter === s.key ? styles.filterActive : ""}`}
@@ -547,9 +715,21 @@ export default function Inbox() {
             filtered.map((c) => (
               <button
                 key={c.id}
-                className={`${styles.convItem} ${selectedId === c.id ? styles.convActive : ""}`}
+                className={`${styles.convItem} ${
+                  (selecting ? allMatching || picked.has(c.id) : selectedId === c.id)
+                    ? styles.convActive
+                    : ""
+                }`}
                 onClick={() => selectConv(c.id)}
               >
+                {selecting && (
+                  <span
+                    className={`${styles.pickBox} ${allMatching || picked.has(c.id) ? styles.pickBoxOn : ""}`}
+                    aria-hidden="true"
+                  >
+                    {allMatching || picked.has(c.id) ? "✓" : ""}
+                  </span>
+                )}
                 <div className={styles.avatar}>{initials(c.contact_name)}</div>
                 <div className={styles.convBody}>
                   <div className={styles.convTop}>
@@ -598,6 +778,17 @@ export default function Inbox() {
         ) : (
           <>
             <div className={styles.chatHeader}>
+              <button
+                className={styles.backBtn}
+                onClick={() => {
+                  setSelectedId(null);
+                  setConv(null);
+                  setMessages([]);
+                }}
+                aria-label="Volver a la lista"
+              >
+                ←
+              </button>
               <div className={styles.chatPerson}>
                 <div className={styles.avatarLg}>{initials(conv.contact_name)}</div>
                 <div>
@@ -669,9 +860,12 @@ export default function Inbox() {
                   className={styles.moveSelect}
                   value={conv.stage}
                   onChange={(e) => changeStage(e.target.value as Stage)}
-                  title="Mover de fase"
+                  title={`Mover de fase (pipeline ${convPipeline?.name ?? ""})`}
                 >
-                  {stages.map((s) => (
+                  {!convStages.some((s) => s.key === conv.stage) && (
+                    <option value={conv.stage}>{STAGE_LABEL(conv.stage)}</option>
+                  )}
+                  {convStages.map((s) => (
                     <option key={s.key} value={s.key}>
                       {s.name}
                     </option>
@@ -915,7 +1109,9 @@ export default function Inbox() {
           </div>
 
           <div className={styles.panelSection}>
-            <div className={styles.panelTitle}>{showStages ? "Etapa" : "Agente"}</div>
+            <div className={styles.panelTitle}>
+              {showStages ? `Etapa · ${convPipeline?.name ?? ""}` : "Agente"}
+            </div>
             <div className={styles.stageBadge}>
               {showStages ? STAGE_LABEL(conv.stage) : currentAgent?.name ?? "Soporte"}
             </div>

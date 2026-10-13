@@ -1,9 +1,11 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import { SupabaseService } from '../supabase/supabase.service';
+import { CryptoService } from '../common/crypto.service';
 import type { WorkflowDefinition, WorkflowTrigger } from './workflows.types';
 
 const COLS =
-  'id, organization_id, name, trigger, trigger_config, is_active, resume_after_hours, agent_id, definition, created_at, updated_at';
+  'id, organization_id, name, trigger, trigger_config, is_active, resume_after_hours, agent_id, webhook_token, definition, created_at, updated_at';
 
 export type WorkflowRow = {
   id: string;
@@ -15,6 +17,10 @@ export type WorkflowRow = {
   resume_after_hours: number | null;
   /** Agente al que pertenece el workflow (null = cualquiera). */
   agent_id: string | null;
+  /** Token de la URL pública del trigger "Recibe un webhook". */
+  webhook_token: string | null;
+  /** URL lista para pegar en el CRM (solo con trigger "webhook"). */
+  webhook_url?: string | null;
   definition: WorkflowDefinition;
   created_at: string;
   updated_at: string;
@@ -22,7 +28,34 @@ export type WorkflowRow = {
 
 @Injectable()
 export class WorkflowsService {
-  constructor(private readonly supabase: SupabaseService) {}
+  constructor(
+    private readonly supabase: SupabaseService,
+    private readonly crypto: CryptoService,
+    private readonly config: ConfigService,
+  ) {}
+
+  /** Workflow por token de su webhook de entrada (endpoint público). */
+  async findByWebhookToken(token: string): Promise<WorkflowRow | null> {
+    if (!token || token.length < 20) return null;
+    const { data } = await this.supabase.admin
+      .from('workflows')
+      .select(COLS)
+      .eq('webhook_token', token)
+      .eq('trigger', 'webhook')
+      .maybeSingle();
+    return (data as WorkflowRow | null) ?? null;
+  }
+
+  private withUrl(row: WorkflowRow): WorkflowRow {
+    const base = (this.config.get<string>('WEBHOOK_BASE_URL') ?? 'https://TU-DOMINIO').replace(/\/$/, '');
+    return {
+      ...row,
+      webhook_url:
+        row.trigger === 'webhook' && row.webhook_token
+          ? `${base}/api/leads/workflow/${row.webhook_token}`
+          : null,
+    };
+  }
 
   async list(orgId: string): Promise<WorkflowRow[]> {
     const { data, error } = await this.supabase.admin
@@ -31,7 +64,7 @@ export class WorkflowsService {
       .eq('organization_id', orgId)
       .order('created_at', { ascending: false });
     if (error) throw error;
-    return (data ?? []) as WorkflowRow[];
+    return ((data ?? []) as WorkflowRow[]).map((r) => this.withUrl(r));
   }
 
   async get(orgId: string, id: string): Promise<WorkflowRow> {
@@ -43,7 +76,7 @@ export class WorkflowsService {
       .maybeSingle();
     if (error) throw error;
     if (!data) throw new NotFoundException('Workflow no encontrado');
-    return data as WorkflowRow;
+    return this.withUrl(data as WorkflowRow);
   }
 
   async create(
@@ -67,13 +100,14 @@ export class WorkflowsService {
         trigger_config: dto.trigger_config ?? {},
         resume_after_hours: dto.resume_after_hours ?? null,
         agent_id: dto.agent_id ?? null,
+        webhook_token: dto.trigger === 'webhook' ? this.crypto.token(24) : null,
         definition: dto.definition ?? { nodes: [], edges: [] },
         created_by: userId,
       })
       .select(COLS)
       .single();
     if (error) throw error;
-    return data as WorkflowRow;
+    return this.withUrl(data as WorkflowRow);
   }
 
   async update(
@@ -97,6 +131,10 @@ export class WorkflowsService {
     if (patch.resume_after_hours !== undefined) update.resume_after_hours = patch.resume_after_hours;
     if (patch.agent_id !== undefined) update.agent_id = patch.agent_id || null;
     if (patch.definition !== undefined) update.definition = patch.definition;
+    if (patch.trigger === 'webhook') {
+      const current = await this.get(orgId, id);
+      if (!current.webhook_token) update.webhook_token = this.crypto.token(24);
+    }
 
     const { data, error } = await this.supabase.admin
       .from('workflows')
@@ -107,7 +145,21 @@ export class WorkflowsService {
       .maybeSingle();
     if (error) throw error;
     if (!data) throw new NotFoundException('Workflow no encontrado');
-    return data as WorkflowRow;
+    return this.withUrl(data as WorkflowRow);
+  }
+
+  /** Nueva URL de webhook (la anterior deja de funcionar). */
+  async rotateWebhookToken(orgId: string, id: string): Promise<WorkflowRow> {
+    await this.get(orgId, id);
+    const { data, error } = await this.supabase.admin
+      .from('workflows')
+      .update({ webhook_token: this.crypto.token(24), updated_at: new Date().toISOString() })
+      .eq('organization_id', orgId)
+      .eq('id', id)
+      .select(COLS)
+      .single();
+    if (error) throw error;
+    return this.withUrl(data as WorkflowRow);
   }
 
   async remove(orgId: string, id: string): Promise<{ ok: true }> {

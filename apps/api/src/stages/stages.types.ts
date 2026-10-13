@@ -37,6 +37,22 @@ export type PipelineStage = {
   color: string;
   sort_order: number;
   is_system: boolean;
+  pipeline_id: string | null;
   created_at: string;
   updated_at: string;
 };
+
+/** Pipeline: conjunto de etapas propio (Setter, Soporte, los que cree el cliente). */
+export type Pipeline = {
+  id: string;
+  organization_id: string;
+  key: string;
+  name: string;
+  sort_order: number;
+  /** El pipeline por defecto contiene las etapas de sistema y no se borra. */
+  is_default: boolean;
+  created_at: string;
+  updated_at: string;
+};
+
+export type PipelineWithStages = Pipeline & { stages: PipelineStage[] };

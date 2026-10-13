@@ -17,7 +17,8 @@ type Overview = {
   byAgent: Record<string, { name: string; count: number }>;
   supportConversations: number;
   crm: { total: number; byStatus: Record<string, number>; bySource: Record<string, number> };
-  stages: { key: string; name: string; color: string }[];
+  stages: { key: string; name: string; color: string; pipeline_id?: string | null }[];
+  pipelines?: { id: string; is_default: boolean }[];
   agents: { id: string; name: string; kind: string; uses_stages: boolean }[];
   conversations: { total: number; byStage: Record<string, number> };
   appointments: {
@@ -177,7 +178,9 @@ export default function Dashboard({ firstName }: { firstName: string | null }) {
     const calendarSent = (by.calendar_sent ?? 0) + (by.call_scheduled ?? 0) + (by.won ?? 0);
     const callScheduled = (by.call_scheduled ?? 0) + (by.won ?? 0);
     const qualified = (by.qualified ?? 0) + calendarSent;
+    const mainPipelineId = data.pipelines?.find((p) => p.is_default)?.id;
     const stageEntries = data.stages
+      .filter((s) => !mainPipelineId || !s.pipeline_id || s.pipeline_id === mainPipelineId)
       .filter((s) => (by[s.key] ?? 0) > 0)
       .map((s) => ({ key: s.key, label: s.name, color: s.color, count: by[s.key] }));
     const channelEntries = Object.entries(data.byChannel ?? {})

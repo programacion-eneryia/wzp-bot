@@ -4,9 +4,20 @@ import { useEffect, useRef, useState } from "react";
 import { apiFetch, apiUpload } from "@/lib/api";
 import styles from "./setter.module.css";
 
-type Silenced = { id: string; identifier: string; created_at: string };
+type Silenced = { id: string; identifier: string; agent_id?: string | null; created_at: string };
 
-export default function SilencedContacts() {
+/**
+ * Lista de silenciados. `agentId` = los de un agente concreto; sin él, los
+ * globales (ningún agente responde a esos contactos).
+ */
+export default function SilencedContacts({
+  agentId,
+  agentName,
+}: {
+  agentId?: string;
+  agentName?: string;
+} = {}) {
+  const scope = agentId ?? "global";
   const [items, setItems] = useState<Silenced[]>([]);
   const [value, setValue] = useState("");
   const [error, setError] = useState<string | null>(null);
@@ -16,7 +27,7 @@ export default function SilencedContacts() {
 
   async function load() {
     try {
-      setItems(await apiFetch<Silenced[]>("/api/setter/silenced"));
+      setItems(await apiFetch<Silenced[]>(`/api/setter/silenced?agent_id=${encodeURIComponent(scope)}`));
     } catch (e) {
       setError(e instanceof Error ? e.message : "Error");
     }
@@ -24,7 +35,8 @@ export default function SilencedContacts() {
 
   useEffect(() => {
     void load();
-  }, []);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [scope]);
 
   async function importCsv(file: File) {
     setBusy(true);
@@ -33,6 +45,7 @@ export default function SilencedContacts() {
     try {
       const form = new FormData();
       form.append("file", file);
+      if (agentId) form.append("agent_id", agentId);
       const r = await apiUpload<{ total: number; imported: number; skipped: number }>(
         "/api/setter/silenced/import",
         form,
@@ -67,7 +80,7 @@ export default function SilencedContacts() {
     try {
       const created = await apiFetch<Silenced>("/api/setter/silenced", {
         method: "POST",
-        body: JSON.stringify({ identifier: value.trim() }),
+        body: JSON.stringify({ identifier: value.trim(), agent_id: agentId ?? null }),
       });
       setItems((prev) => [created, ...prev.filter((i) => i.id !== created.id)]);
       setValue("");
@@ -89,8 +102,14 @@ export default function SilencedContacts() {
 
   return (
     <section className={styles.card}>
-      <h2 className={styles.cardTitle}>Contactos silenciados</h2>
-      <p className={styles.aiText}>La IA nunca responderá a estos contactos (teléfono o @usuario).</p>
+      <h2 className={styles.cardTitle}>
+        {agentId ? "Silenciados para este agente" : "Contactos silenciados (todos los agentes)"}
+      </h2>
+      <p className={styles.aiText}>
+        {agentId
+          ? `${agentName ?? "Este agente"} nunca responderá a estos contactos (teléfono o @usuario). Los silenciados generales también se respetan.`
+          : "Ningún agente responderá a estos contactos (teléfono o @usuario)."}
+      </p>
       {error && <div className={styles.error}>{error}</div>}
       <div className={styles.row}>
         <input

@@ -5,24 +5,30 @@ import { SupabaseService } from '../supabase/supabase.service';
 export class SilencedContactsService {
   constructor(private readonly supabase: SupabaseService) {}
 
-  async list(orgId: string) {
-    const { data, error } = await this.supabase.admin
+  /**
+   * Silenciados de la cuenta. Con `agentId` devuelve solo los de ese agente;
+   * con `null`, solo los globales (no responde ningún agente); sin indicar, todos.
+   */
+  async list(orgId: string, agentId?: string | null) {
+    let q = this.supabase.admin
       .from('silenced_contacts')
-      .select('id, identifier, created_at')
-      .eq('organization_id', orgId)
-      .order('created_at', { ascending: false });
+      .select('id, identifier, agent_id, created_at')
+      .eq('organization_id', orgId);
+    if (agentId) q = q.eq('agent_id', agentId);
+    else if (agentId === null) q = q.is('agent_id', null);
+    const { data, error } = await q.order('created_at', { ascending: false });
     if (error) throw error;
     return data ?? [];
   }
 
-  async add(orgId: string, identifier: string) {
+  async add(orgId: string, identifier: string, agentId: string | null = null) {
     const { data, error } = await this.supabase.admin
       .from('silenced_contacts')
       .upsert(
-        { organization_id: orgId, identifier: identifier.trim() },
-        { onConflict: 'organization_id,identifier' },
+        { organization_id: orgId, identifier: identifier.trim(), agent_id: agentId },
+        { onConflict: 'organization_id,scope,identifier' },
       )
-      .select('id, identifier, created_at')
+      .select('id, identifier, agent_id, created_at')
       .single();
     if (error) throw error;
     return data;
@@ -36,6 +42,7 @@ export class SilencedContactsService {
   async importCsv(
     orgId: string,
     text: string,
+    agentId: string | null = null,
   ): Promise<{ total: number; imported: number; skipped: number }> {
     const lines = text
       .replace(/^\uFEFF/, '')
@@ -57,19 +64,16 @@ export class SilencedContactsService {
     }
     if (ids.size === 0) return { total, imported: 0, skipped: total };
 
-    const { data: existing } = await this.supabase.admin
-      .from('silenced_contacts')
-      .select('identifier')
-      .eq('organization_id', orgId);
+    const existing = await this.list(orgId, agentId);
     const have = new Set((existing ?? []).map((r) => normalizeIdentifier(String(r.identifier))));
 
     const rows = [...ids]
       .filter((id) => !have.has(normalizeIdentifier(id)))
-      .map((identifier) => ({ organization_id: orgId, identifier }));
+      .map((identifier) => ({ organization_id: orgId, identifier, agent_id: agentId }));
     if (rows.length > 0) {
       const { error } = await this.supabase.admin
         .from('silenced_contacts')
-        .upsert(rows, { onConflict: 'organization_id,identifier', ignoreDuplicates: true });
+        .upsert(rows, { onConflict: 'organization_id,scope,identifier', ignoreDuplicates: true });
       if (error) throw error;
     }
     return { total, imported: rows.length, skipped: total - rows.length };
@@ -92,15 +96,19 @@ export class SilencedContactsService {
    * mientras que la conversación trae ids crudos del proveedor (chat id de
    * Unipile, "34607196457@s.whatsapp.net", "+34607196457"…). Comparar por
    * igualdad exacta no coincidía nunca, así que normalizamos ambos lados.
+   *
+   * Cuenta tanto los silenciados globales como los del agente que atiende.
    */
-  async isAnySilenced(orgId: string, candidates: string[]): Promise<boolean> {
+  async isAnySilenced(orgId: string, candidates: string[], agentId?: string | null): Promise<boolean> {
     const cands = candidates.map(normalizeIdentifier).filter(Boolean);
     if (cands.length === 0) return false;
 
-    const { data } = await this.supabase.admin
+    let q = this.supabase.admin
       .from('silenced_contacts')
       .select('identifier')
       .eq('organization_id', orgId);
+    q = agentId ? q.or(`agent_id.is.null,agent_id.eq.${agentId}`) : q.is('agent_id', null);
+    const { data } = await q;
     const silenced = (data ?? [])
       .map((r) => normalizeIdentifier(String(r.identifier ?? '')))
       .filter(Boolean);

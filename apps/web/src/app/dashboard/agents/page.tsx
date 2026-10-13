@@ -24,9 +24,10 @@ export default async function AgentsPage() {
         Tus <span className="serif">agentes</span> de IA
       </h1>
       <p className={styles.lead}>
-        Cada agente tiene su propia personalidad, objetivo y reglas, y atiende los canales que le
-        asignes. Todos comparten la Base de Conocimiento de tu negocio. El <strong>Setter</strong>{" "}
-        cualifica y agenda; <strong>Soporte</strong> atiende a clientes sin pasar por el embudo.
+        Cada agente tiene su propia personalidad, objetivo, reglas, pipeline y ajustes, y atiende
+        los canales que le asignes. Todos comparten la Base de Conocimiento de tu negocio. El{" "}
+        <strong>Setter</strong> cualifica y agenda; <strong>Soporte</strong> atiende a clientes en su
+        propio pipeline.
       </p>
       <Agents isAdmin={isAdmin} />
     </div>

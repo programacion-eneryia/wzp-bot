@@ -3,7 +3,13 @@
  * La definición se guarda como JSON en `workflows.definition`.
  */
 
-export type WorkflowTrigger = 'lead_created' | 'conversation_created' | 'manual' | 'stage';
+export type WorkflowTrigger =
+  | 'lead_created'
+  | 'conversation_created'
+  | 'manual'
+  | 'stage'
+  /** Un CRM externo empuja el lead a la URL única del workflow. */
+  | 'webhook';
 
 export type NodeType =
   | 'start'
@@ -40,6 +46,8 @@ export type WorkflowNodeData = {
   headers?: string;
   /** webhook: si se define, se envía como `Authorization: Bearer <token>`. */
   auth_token?: string;
+  /** ai_handoff: agente que retoma la conversación (vacío = el del workflow / el actual). */
+  agent_id?: string;
   label?: string;
 };
 

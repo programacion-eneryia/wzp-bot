@@ -1,8 +1,10 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 import { apiFetch } from "@/lib/api";
+import { useAgents } from "@/lib/agents";
 import styles from "./calendar.module.css";
 
 type AvailabilityRules = {
@@ -26,13 +28,6 @@ type Calendar = {
   connected_at: string | null;
 };
 
-type SetterConfig = {
-  calendar_mode: "off" | "slots" | "link";
-  calendar_link: string | null;
-  call_duration_min: number;
-  default_calendar_id: string | null;
-};
-
 type Appointment = {
   id: string;
   start_at: string | null;
@@ -54,22 +49,18 @@ const STATUS_LABEL: Record<Calendar["status"], string> = {
 export default function CalendarManager() {
   const search = useSearchParams();
   const [calendars, setCalendars] = useState<Calendar[]>([]);
-  const [cfg, setCfg] = useState<SetterConfig | null>(null);
+  const { agents } = useAgents();
   const [appts, setAppts] = useState<Appointment[]>([]);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [link, setLink] = useState("");
 
   async function load() {
-    const [cals, config, appointments] = await Promise.all([
+    const [cals, appointments] = await Promise.all([
       apiFetch<Calendar[]>("/api/calendar").catch(() => [] as Calendar[]),
-      apiFetch<SetterConfig>("/api/setter/config"),
       apiFetch<Appointment[]>("/api/calendar/appointments").catch(() => [] as Appointment[]),
     ]);
     setCalendars(Array.isArray(cals) ? cals : []);
-    setCfg(config);
-    setLink(config.calendar_link ?? "");
     setAppts(Array.isArray(appointments) ? appointments : []);
   }
 
@@ -117,21 +108,6 @@ export default function CalendarManager() {
       await load();
     } catch (e) {
       setError(e instanceof Error ? e.message : "Error");
-    } finally {
-      setBusy(null);
-    }
-  }
-
-  async function patchCfg(body: Partial<SetterConfig>) {
-    setBusy("cfg");
-    try {
-      const updated = await apiFetch<SetterConfig>("/api/setter/config", {
-        method: "PUT",
-        body: JSON.stringify(body),
-      });
-      setCfg(updated);
-    } catch (e) {
-      setError(e instanceof Error ? e.message : "Error al guardar");
     } finally {
       setBusy(null);
     }
@@ -220,73 +196,41 @@ export default function CalendarManager() {
       </section>
 
       <section className={styles.card}>
-        <h2 className={styles.cardTitle}>Cómo agenda el bot</h2>
-        <label className={styles.field}>
-          <span className={styles.label}>Modo de agenda</span>
-          <select
-            className={styles.select}
-            value={cfg?.calendar_mode ?? "off"}
-            onChange={(e) => patchCfg({ calendar_mode: e.target.value as SetterConfig["calendar_mode"] })}
-            disabled={busy !== null}
-          >
-            <option value="off">Desactivado (el bot no agenda)</option>
-            <option value="slots">Ofrecer huecos reales de mi calendario</option>
-            <option value="link">Compartir mi enlace de agenda</option>
-          </select>
-        </label>
-
-        {cfg?.calendar_mode === "link" && (
-          <label className={styles.field}>
-            <span className={styles.label}>Enlace de agenda (Calendly, Cal.com, etc.)</span>
-            <div className={styles.row}>
-              <input
-                className={styles.input}
-                value={link}
-                placeholder="https://cal.com/tu-usuario/30min"
-                onChange={(e) => setLink(e.target.value)}
-                style={{ flex: 1, minWidth: 280 }}
-              />
-              <button className={styles.saveBtn} disabled={busy !== null} onClick={() => patchCfg({ calendar_link: link })}>
-                Guardar
-              </button>
-            </div>
-          </label>
+        <h2 className={styles.cardTitle}>Cómo agenda cada agente</h2>
+        <p className={styles.muted}>
+          La forma de agendar se configura en cada agente (pestaña “Agenda”): ofrecer huecos de
+          uno de estos calendarios, compartir un enlace o no agendar.
+        </p>
+        {agents.length > 0 && (
+          <ul className={styles.list}>
+            {agents.map((a) => {
+              const cal = calendars.find((c) => c.id === a.default_calendar_id);
+              const how =
+                a.kind === "support" || a.calendar_mode === "off"
+                  ? "No agenda"
+                  : a.calendar_mode === "link"
+                    ? a.calendar_link
+                      ? `Comparte su enlace (${a.calendar_link})`
+                      : "Enlace sin configurar"
+                    : cal
+                      ? `Ofrece huecos de ${cal.name ?? cal.provider}`
+                      : "Huecos: falta elegir calendario";
+              return (
+                <li key={a.id} className={styles.item}>
+                  <div className={styles.itemInfo}>
+                    <span className={styles.itemName}>{a.name}</span>
+                    <span className={styles.hint}>{how}</span>
+                  </div>
+                </li>
+              );
+            })}
+          </ul>
         )}
-
-        {cfg?.calendar_mode === "slots" && (
-          <>
-            <label className={styles.field}>
-              <span className={styles.label}>Calendario para comprobar disponibilidad</span>
-              <select
-                className={styles.select}
-                value={cfg?.default_calendar_id ?? ""}
-                onChange={(e) => patchCfg({ default_calendar_id: e.target.value || undefined })}
-                disabled={busy !== null}
-              >
-                <option value="">Selecciona un calendario…</option>
-                {connected
-                  .filter((c) => c.status === "connected")
-                  .map((c) => (
-                    <option key={c.id} value={c.id}>
-                      {c.name ?? c.provider}
-                    </option>
-                  ))}
-              </select>
-            </label>
-            <label className={styles.field}>
-              <span className={styles.label}>Duración de la llamada (min)</span>
-              <input
-                className={styles.input}
-                type="number"
-                min={5}
-                max={240}
-                defaultValue={cfg?.call_duration_min ?? 30}
-                onBlur={(e) => patchCfg({ call_duration_min: Number(e.target.value) })}
-                style={{ width: 120 }}
-              />
-            </label>
-          </>
-        )}
+        <div className={styles.row}>
+          <Link href="/dashboard/agents" className={styles.ghostBtn}>
+            Configurar en Agentes →
+          </Link>
+        </div>
       </section>
 
       <section className={styles.card}>

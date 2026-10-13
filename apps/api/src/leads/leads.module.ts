@@ -1,6 +1,7 @@
 import { Module } from '@nestjs/common';
 import { AuthGuard } from '../auth/auth.guard';
-import { GhlModule } from '../ghl/ghl.module';
+import { AgentsModule } from '../agents/agents.module';
+import { GhlSyncModule } from '../ghl/ghl-sync.module';
 import { MessagingModule } from '../messaging/messaging.module';
 import { SetterModule } from '../setter/setter.module';
 import { WorkflowsModule } from '../workflows/workflows.module';
@@ -10,7 +11,7 @@ import { LeadsController } from './leads.controller';
 import { LeadsService } from './leads.service';
 
 @Module({
-  imports: [SetterModule, MessagingModule, GhlModule, WorkflowsModule],
+  imports: [SetterModule, MessagingModule, GhlSyncModule, WorkflowsModule, AgentsModule],
   controllers: [LeadsController, CrmController],
   providers: [LeadIntakeService, LeadsService, AuthGuard],
   exports: [LeadIntakeService, LeadsService],

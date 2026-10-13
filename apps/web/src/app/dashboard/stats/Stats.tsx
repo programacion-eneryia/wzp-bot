@@ -15,7 +15,14 @@ type Overview = {
   byAgent: Record<string, { name: string; count: number }>;
   supportConversations: number;
   crm: { total: number; byStatus: Record<string, number>; bySource: Record<string, number> };
-  stages: { key: string; name: string; color: string }[];
+  stages: { key: string; name: string; color: string; pipeline_id?: string | null }[];
+  pipelines?: {
+    id: string;
+    name: string;
+    is_default: boolean;
+    total: number;
+    byStage: Record<string, number>;
+  }[];
   agents: { id: string; name: string; kind: string; uses_stages: boolean }[];
   conversations: { total: number; byStage: Record<string, number> };
   appointments: {
@@ -98,7 +105,9 @@ export default function Stats() {
   if (error) return <div className={styles.error}>{error}</div>;
   if (!data) return null;
 
+  const mainPipelineId = data.pipelines?.find((p) => p.is_default)?.id;
   const statusEntries = data.stages
+    .filter((s) => !mainPipelineId || !s.pipeline_id || s.pipeline_id === mainPipelineId)
     .filter((s) => (data.leads.byStatus[s.key] ?? 0) > 0)
     .map((s) => ({ key: s.key, label: s.name, color: s.color, count: data.leads.byStatus[s.key] }));
   const maxStatus = Math.max(1, ...statusEntries.map((e) => e.count));
@@ -189,6 +198,37 @@ export default function Stats() {
             </div>
           )}
         </section>
+
+        {(data.pipelines ?? [])
+          .filter((p) => !p.is_default)
+          .map((p) => {
+            const rows = data.stages
+              .filter((s) => s.pipeline_id === p.id)
+              .map((s) => ({ ...s, count: p.byStage[s.key] ?? 0 }));
+            const max = Math.max(1, ...rows.map((r) => r.count));
+            return (
+              <section key={p.id} className={styles.card}>
+                <h2 className={styles.cardTitle}>
+                  Pipeline {p.name} · {p.total} conversación{p.total === 1 ? "" : "es"}
+                </h2>
+                {p.total === 0 ? (
+                  <p className={styles.muted}>Sin conversaciones en este pipeline.</p>
+                ) : (
+                  <div className={styles.bars}>
+                    {rows.map((r) => (
+                      <BarRow
+                        key={r.key}
+                        label={r.name}
+                        value={r.count}
+                        pct={(r.count / max) * 100}
+                        color={r.color || "#14b8a6"}
+                      />
+                    ))}
+                  </div>
+                )}
+              </section>
+            );
+          })}
 
         <section className={styles.card}>
           <h2 className={styles.cardTitle}>Leads por canal</h2>

@@ -71,7 +71,6 @@ export class BriefApplyService {
           ...supportPatch,
           kind: 'support',
           name: 'Soporte',
-          uses_stages: false,
         });
 
     // 4) Etiquetas sugeridas (solo las que no existan).

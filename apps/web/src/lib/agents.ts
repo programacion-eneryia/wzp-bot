@@ -31,9 +31,24 @@ export type Agent = {
   default_calendar_id: string | null;
   model: string | null;
   sort_order: number;
+  pipeline_id: string | null;
+  is_default_lead: boolean;
+  is_default_conversation: boolean;
+  /** Ajustes de IA propios; null = usa los generales. */
+  behavior: AgentBehavior | null;
   created_at: string;
   updated_at: string;
   channels?: Array<{ id: string; provider: string; display_name: string | null }>;
+};
+
+export type AgentBehavior = {
+  multi_bubble?: boolean;
+  first_reply_min_s?: number;
+  first_reply_max_s?: number;
+  active_hours_enabled?: boolean;
+  active_hours_start?: number;
+  active_hours_end?: number;
+  timezone?: string;
 };
 
 export const AGENT_KIND_LABEL: Record<AgentKind, string> = {

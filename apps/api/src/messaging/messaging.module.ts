@@ -5,6 +5,7 @@ import { TagsModule } from '../tags/tags.module';
 import { WorkflowTriggerModule } from '../workflows/workflow-trigger.module';
 import { AgentsModule } from '../agents/agents.module';
 import { StagesModule } from '../stages/stages.module';
+import { GhlSyncModule } from '../ghl/ghl-sync.module';
 import { MessagingService } from './messaging.service';
 import { TransportService } from './transport.service';
 
@@ -22,6 +23,7 @@ import { TransportService } from './transport.service';
     WorkflowTriggerModule,
     AgentsModule,
     StagesModule,
+    GhlSyncModule,
   ],
   providers: [MessagingService, TransportService],
   exports: [MessagingService, TransportService],

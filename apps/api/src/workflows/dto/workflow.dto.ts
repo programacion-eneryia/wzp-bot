@@ -14,7 +14,7 @@ import {
   ValidateIf,
 } from 'class-validator';
 
-const TRIGGERS = ['lead_created', 'conversation_created', 'manual', 'stage'] as const;
+const TRIGGERS = ['lead_created', 'conversation_created', 'manual', 'stage', 'webhook'] as const;
 
 export class CreateWorkflowDto {
   @IsString() @MinLength(2) @MaxLength(120) name!: string;

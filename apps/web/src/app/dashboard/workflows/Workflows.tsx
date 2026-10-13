@@ -115,6 +115,7 @@ export default function Workflows() {
             <option value="conversation_created">Cuando entra una conversación nueva</option>
             <option value="manual">Manual</option>
             <option value="stage">Al cambiar de estado</option>
+            <option value="webhook">Recibe un webhook</option>
           </select>
           <button className={styles.primaryBtn} onClick={create} disabled={busy}>
             Crear y editar

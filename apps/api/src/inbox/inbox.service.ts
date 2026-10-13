@@ -42,7 +42,7 @@ export class InboxService {
     orgId: string,
     stage?: string,
     archived = false,
-    opts: { provider?: string; agentId?: string } = {},
+    opts: { provider?: string; agentId?: string; pipelineId?: string } = {},
   ) {
     let query = this.supabase.admin
       .from('conversations')
@@ -63,6 +63,12 @@ export class InboxService {
     if (stage) query = query.eq('stage', stage);
     if (opts.provider) query = query.eq('provider', opts.provider);
     if (opts.agentId) query = query.eq('agent_id', opts.agentId);
+    if (opts.pipelineId && !stage) {
+      const keys = (await this.stages.list(orgId))
+        .filter((s) => s.pipeline_id === opts.pipelineId)
+        .map((s) => s.key);
+      query = query.in('stage', keys.length > 0 ? keys : ['__none__']);
+    }
 
     const { data, error } = await query;
     if (error) throw error;
@@ -163,6 +169,97 @@ export class InboxService {
     return { conversation: { ...conv, unread_count: 0, tags }, messages };
   }
 
+  /**
+   * Acciones en bloque sobre varias conversaciones (o todas las que cumplen los
+   * filtros con `all`): activar/pausar la IA y/o cambiar el agente que atiende.
+   */
+  async bulk(
+    orgId: string,
+    input: {
+      ids?: string[];
+      all?: boolean;
+      filters?: { stage?: string; provider?: string; agentId?: string; pipelineId?: string };
+      ai_enabled?: boolean;
+      agent_id?: string | null;
+    },
+  ): Promise<{ updated: number }> {
+    let ids = [...new Set(input.ids ?? [])];
+    if (input.all) {
+      let q = this.supabase.admin
+        .from('conversations')
+        .select('id')
+        .eq('organization_id', orgId)
+        .eq('is_test', false)
+        .is('archived_at', null)
+        .limit(5000);
+      const f = input.filters ?? {};
+      if (f.stage) q = q.eq('stage', f.stage);
+      if (f.provider) q = q.eq('provider', f.provider);
+      if (f.agentId) q = q.eq('agent_id', f.agentId);
+      if (f.pipelineId && !f.stage) {
+        const keys = (await this.stages.list(orgId))
+          .filter((s) => s.pipeline_id === f.pipelineId)
+          .map((s) => s.key);
+        q = q.in('stage', keys.length > 0 ? keys : ['__none__']);
+      }
+      const { data } = await q;
+      ids = (data ?? []).map((r) => r.id as string);
+    }
+    if (ids.length === 0) return { updated: 0 };
+
+    // Solo conversaciones de esta organización.
+    const { data: owned } = await this.supabase.admin
+      .from('conversations')
+      .select('id, stage, blocked')
+      .eq('organization_id', orgId)
+      .in('id', ids.slice(0, 5000));
+    const rows = owned ?? [];
+    if (rows.length === 0) return { updated: 0 };
+
+    if (input.agent_id !== undefined) {
+      const agent = input.agent_id ? await this.agents.get(orgId, input.agent_id) : null;
+      // Agrupamos por etapa destino para no hacer una escritura por chat.
+      const byStage = new Map<string | null, string[]>();
+      for (const r of rows) {
+        const next = agent
+          ? await this.agents.stageForAgent(orgId, agent, (r.stage as string) ?? null)
+          : null;
+        const list = byStage.get(next) ?? [];
+        list.push(r.id as string);
+        byStage.set(next, list);
+      }
+      for (const [stage, group] of byStage) {
+        await this.supabase.admin
+          .from('conversations')
+          .update({ agent_id: agent?.id ?? null, ...(stage ? { stage } : {}) })
+          .eq('organization_id', orgId)
+          .in('id', group);
+        if (stage) {
+          await this.supabase.admin
+            .from('leads')
+            .update({ status: stage })
+            .eq('organization_id', orgId)
+            .in('conversation_id', group);
+        }
+      }
+    }
+    if (typeof input.ai_enabled === 'boolean') {
+      // A un contacto bloqueado nunca se le activa la IA.
+      const target = input.ai_enabled ? rows.filter((r) => !r.blocked) : rows;
+      if (target.length > 0) {
+        await this.supabase.admin
+          .from('conversations')
+          .update({ ai_enabled: input.ai_enabled })
+          .eq('organization_id', orgId)
+          .in(
+            'id',
+            target.map((r) => r.id as string),
+          );
+      }
+    }
+    return { updated: rows.length };
+  }
+
   async update(
     orgId: string,
     id: string,
@@ -185,9 +282,21 @@ export class InboxService {
       update.stage = patch.stage;
     }
     // Cambiar el agente que atiende este chat (cadena vacía / null = el del canal).
+    // Si su etapa no es del pipeline del nuevo agente, pasa a la primera de ese.
     if (patch.agent_id !== undefined) {
-      if (patch.agent_id) await this.agents.get(orgId, patch.agent_id);
       update.agent_id = patch.agent_id ? patch.agent_id : null;
+      if (patch.agent_id && !patch.stage) {
+        const agent = await this.agents.get(orgId, patch.agent_id);
+        const { data: cur } = await this.supabase.admin
+          .from('conversations')
+          .select('stage')
+          .eq('id', id)
+          .maybeSingle();
+        const next = await this.agents.stageForAgent(orgId, agent, (cur?.stage as string) ?? null);
+        if (next) update.stage = next;
+      } else if (patch.agent_id) {
+        await this.agents.get(orgId, patch.agent_id);
+      }
     }
     if (patch.mode) {
       // Si el usuario fija el modo a mano, lo bloqueamos (no reclasificar) y
@@ -218,14 +327,15 @@ export class InboxService {
     if (error) throw error;
 
     // Mantenemos el CRM sincronizado: si cambia la etapa, actualizamos el lead.
-    if (patch.stage) {
+    const newStage = (update.stage as string | undefined) ?? undefined;
+    if (newStage) {
       await this.supabase.admin
         .from('leads')
-        .update({ status: patch.stage })
+        .update({ status: newStage })
         .eq('organization_id', orgId)
         .eq('conversation_id', id);
       // Workflows con trigger "Al cambiar de estado".
-      void this.stages.fireStageWorkflows(orgId, id, patch.stage);
+      void this.stages.fireStageWorkflows(orgId, id, newStage);
     }
 
     // Atribución a Meta: al CUALIFICAR (o GANAR) un lead que vino de un anuncio

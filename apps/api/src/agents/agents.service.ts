@@ -8,10 +8,13 @@ import { SupabaseService } from '../supabase/supabase.service';
 import { isAllowedModel } from '../setter/model-options';
 import {
   AGENT_TEMPLATES,
+  BEHAVIOR_KEYS,
   type Agent,
+  type AgentBehavior,
   type AgentInput,
   type AgentKind,
   type AgentWithChannels,
+  type InitialAssignment,
 } from './agents.types';
 
 const EDITABLE: (keyof AgentInput)[] = [
@@ -38,6 +41,10 @@ const EDITABLE: (keyof AgentInput)[] = [
   'default_calendar_id',
   'model',
   'sort_order',
+  'pipeline_id',
+  'is_default_lead',
+  'is_default_conversation',
+  'behavior',
 ];
 
 /** Cache corto por instancia: el agente se resuelve en cada mensaje. */
@@ -111,8 +118,8 @@ export class AgentsService {
    *   1. override de la conversación (`conversations.agent_id`)
    *   2. modo soporte confirmado por un humano → agente de soporte
    *   3. agente por defecto del canal (`channels.agent_id`)
-   *   4. primer agente setter activo
-   *   5. cualquier agente activo
+   *   4. agente predeterminado para conversaciones nuevas
+   *   5. primer agente setter activo / cualquier agente activo
    */
   async resolveForConversation(
     orgId: string,
@@ -139,7 +146,82 @@ export class AgentsService {
       const a = ch?.agent_id ? active.find((x) => x.id === ch.agent_id) : null;
       if (a) return a;
     }
-    return active.find((x) => x.kind === 'setter') ?? active[0];
+    return (
+      active.find((x) => x.is_default_conversation) ??
+      active.find((x) => x.kind === 'setter') ??
+      active[0]
+    );
+  }
+
+  /** Agente activo por id o por nombre (sin distinguir mayúsculas). */
+  async findActiveByRef(orgId: string, ref: string | null | undefined): Promise<Agent | null> {
+    const r = (ref ?? '').trim();
+    if (!r) return null;
+    const active = (await this.list(orgId)).filter((a) => a.is_active);
+    return (
+      active.find((a) => a.id === r) ??
+      active.find((a) => a.name.trim().toLowerCase() === r.toLowerCase()) ??
+      null
+    );
+  }
+
+  /**
+   * Arranque de una conversación nueva que llega por un canal: la IA solo se
+   * enciende si hay un agente predeterminado para conversaciones nuevas. Si el
+   * canal tiene un agente asignado, atiende ese (es más específico).
+   * No fija `agent_id`: se resuelve en cada mensaje (canal → predeterminado).
+   */
+  async initialForConversation(orgId: string, channelId: string | null): Promise<InitialAssignment> {
+    const active = (await this.list(orgId)).filter((a) => a.is_active);
+    const def = active.find((a) => a.is_default_conversation) ?? null;
+    if (!def) {
+      return { agent: null, ai_enabled: false, stage: await this.firstStageOf(orgId, null), agent_id: null };
+    }
+    let agent = def;
+    if (channelId) {
+      const { data: ch } = await this.supabase.admin
+        .from('channels')
+        .select('agent_id')
+        .eq('id', channelId)
+        .maybeSingle();
+      agent = (ch?.agent_id && active.find((a) => a.id === ch.agent_id)) || def;
+    }
+    return { agent, ai_enabled: true, stage: await this.firstStageOf(orgId, agent), agent_id: null };
+  }
+
+  /**
+   * Arranque de un lead que entra por formulario/GHL/webhook: atiende el agente
+   * indicado (id o nombre) o, si no, el predeterminado para leads. Sin ninguno,
+   * el lead queda registrado con la IA pausada.
+   */
+  async initialForLead(orgId: string, agentRef?: string | null): Promise<InitialAssignment> {
+    const active = (await this.list(orgId)).filter((a) => a.is_active);
+    const agent =
+      (await this.findActiveByRef(orgId, agentRef)) ??
+      active.find((a) => a.is_default_lead) ??
+      null;
+    return {
+      agent,
+      ai_enabled: Boolean(agent),
+      stage: await this.firstStageOf(orgId, agent),
+      agent_id: agent?.id ?? null,
+    };
+  }
+
+  /** Primera etapa del pipeline del agente (o del pipeline por defecto). */
+  async firstStageOf(orgId: string, agent: Pick<Agent, 'pipeline_id'> | null): Promise<string> {
+    let pipelineId = agent?.pipeline_id ?? null;
+    if (!pipelineId) pipelineId = await this.pipelineIdByKey(orgId, null);
+    if (!pipelineId) return 'new';
+    const { data } = await this.supabase.admin
+      .from('pipeline_stages')
+      .select('key')
+      .eq('organization_id', orgId)
+      .eq('pipeline_id', pipelineId)
+      .order('sort_order', { ascending: true })
+      .limit(1)
+      .maybeSingle();
+    return (data?.key as string | undefined) ?? 'new';
   }
 
   // ---------------------------------------------------------------------------
@@ -152,7 +234,7 @@ export class AgentsService {
     const agents = await this.list(orgId);
     const maxOrder = agents.reduce((m, a) => Math.max(m, a.sort_order), 0);
 
-    const row = {
+    const row: Record<string, unknown> = {
       ...base,
       ...this.clean(input),
       organization_id: orgId,
@@ -162,6 +244,12 @@ export class AgentsService {
     if (!row.name || !String(row.name).trim()) {
       throw new BadRequestException('El nombre del agente es obligatorio');
     }
+    if (input.pipeline_id === undefined && row.uses_stages !== false) {
+      row.pipeline_id = await this.pipelineIdByKey(orgId, kind === 'support' ? 'support' : null);
+      row.uses_stages = Boolean(row.pipeline_id);
+    }
+    if (row.pipeline_id) await this.assertPipeline(orgId, row.pipeline_id as string);
+    await this.releaseDefaults(orgId, null, row);
 
     const { data, error } = await this.supabase.admin
       .from('agents')
@@ -176,6 +264,8 @@ export class AgentsService {
   async update(orgId: string, id: string, input: AgentInput): Promise<Agent> {
     const patch = this.clean(input);
     if (Object.keys(patch).length === 0) return this.get(orgId, id);
+    if (patch.pipeline_id) await this.assertPipeline(orgId, patch.pipeline_id as string);
+    await this.releaseDefaults(orgId, id, patch);
 
     const { data, error } = await this.supabase.admin
       .from('agents')
@@ -201,6 +291,8 @@ export class AgentsService {
       ...rest,
       name: `${src.name} (copia)`,
       is_active: false,
+      is_default_lead: false,
+      is_default_conversation: false,
     });
   }
 
@@ -243,18 +335,40 @@ export class AgentsService {
     }
   }
 
-  /** Cambia (o quita, con null) el agente de una conversación concreta. */
+  /**
+   * Cambia (o quita, con null) el agente de una conversación. Si la etapa
+   * actual no pertenece al pipeline del nuevo agente, pasa a la primera etapa
+   * de ese pipeline (un chat de soporte no se queda en "Cualificando").
+   */
   async setConversationAgent(orgId: string, conversationId: string, agentId: string | null) {
-    if (agentId) await this.get(orgId, agentId);
-    const { data } = await this.supabase.admin
+    const agent = agentId ? await this.get(orgId, agentId) : null;
+    const { data: conv } = await this.supabase.admin
       .from('conversations')
-      .update({ agent_id: agentId })
+      .select('id, stage')
       .eq('id', conversationId)
       .eq('organization_id', orgId)
-      .select('id')
       .maybeSingle();
-    if (!data) throw new NotFoundException('Conversación no encontrada');
-    return { ok: true };
+    if (!conv) throw new NotFoundException('Conversación no encontrada');
+    const patch: Record<string, unknown> = { agent_id: agentId };
+    const nextStage = agent ? await this.stageForAgent(orgId, agent, conv.stage as string | null) : null;
+    if (nextStage && nextStage !== conv.stage) patch.stage = nextStage;
+    await this.supabase.admin.from('conversations').update(patch).eq('id', conversationId);
+    return { ok: true, stage: (patch.stage as string | undefined) ?? (conv.stage as string | null) };
+  }
+
+  /** Etapa que debe tener un chat al pasar a `agent` (null = no cambia). */
+  async stageForAgent(orgId: string, agent: Agent, current: string | null): Promise<string | null> {
+    if (!agent.pipeline_id) return null;
+    if (current) {
+      const { data } = await this.supabase.admin
+        .from('pipeline_stages')
+        .select('pipeline_id')
+        .eq('organization_id', orgId)
+        .eq('key', current)
+        .maybeSingle();
+      if (data?.pipeline_id === agent.pipeline_id) return null;
+    }
+    return this.firstStageOf(orgId, agent);
   }
 
   // ---------------------------------------------------------------------------
@@ -316,11 +430,25 @@ export class AgentsService {
       sort_order: 20,
     };
 
+    const setterPipeline = await this.pipelineIdByKey(orgId, null);
+    const supportPipeline = await this.pipelineIdByKey(orgId, 'support');
     const { data: created } = await this.supabase.admin
       .from('agents')
       .insert([
-        { ...setter, organization_id: orgId },
-        { ...support, organization_id: orgId },
+        {
+          ...setter,
+          organization_id: orgId,
+          pipeline_id: setterPipeline,
+          uses_stages: Boolean(setterPipeline),
+          is_default_lead: true,
+          is_default_conversation: true,
+        },
+        {
+          ...support,
+          organization_id: orgId,
+          pipeline_id: supportPipeline,
+          uses_stages: Boolean(supportPipeline),
+        },
       ])
       .select('id, kind');
     const setterId = (created ?? []).find((a) => a.kind === 'setter')?.id as string | undefined;
@@ -332,6 +460,48 @@ export class AgentsService {
         .is('agent_id', null);
     }
     this.logger.log(`Agentes por defecto creados para la org ${orgId}`);
+  }
+
+  /** Id del pipeline por clave ('support'…) o el por defecto (null). */
+  private async pipelineIdByKey(orgId: string, key: string | null): Promise<string | null> {
+    let q = this.supabase.admin.from('pipelines').select('id').eq('organization_id', orgId);
+    q = key ? q.eq('key', key) : q.eq('is_default', true);
+    const { data } = await q.limit(1).maybeSingle();
+    if (data?.id) return data.id as string;
+    if (key) return this.pipelineIdByKey(orgId, null);
+    // Cuenta sin pipelines todavía: los sembramos.
+    await this.supabase.admin.rpc('seed_default_stages', { p_org: orgId });
+    const { data: again } = await this.supabase.admin
+      .from('pipelines')
+      .select('id')
+      .eq('organization_id', orgId)
+      .eq('is_default', true)
+      .maybeSingle();
+    return (again?.id as string | undefined) ?? null;
+  }
+
+  private async assertPipeline(orgId: string, pipelineId: string) {
+    const { data } = await this.supabase.admin
+      .from('pipelines')
+      .select('id')
+      .eq('id', pipelineId)
+      .eq('organization_id', orgId)
+      .maybeSingle();
+    if (!data) throw new BadRequestException('Pipeline no encontrado');
+  }
+
+  /** Solo un agente por cuenta puede ser predeterminado de cada tipo. */
+  private async releaseDefaults(orgId: string, exceptId: string | null, patch: Record<string, unknown>) {
+    for (const col of ['is_default_lead', 'is_default_conversation'] as const) {
+      if (patch[col] !== true) continue;
+      let q = this.supabase.admin
+        .from('agents')
+        .update({ [col]: false })
+        .eq('organization_id', orgId)
+        .eq(col, true);
+      if (exceptId) q = q.neq('id', exceptId);
+      await q;
+    }
   }
 
   /** Deja solo campos editables y sanea los delicados (modelo, agenda). */
@@ -356,6 +526,45 @@ export class AgentsService {
       out.call_duration_min = Number.isFinite(n) && n > 0 ? Math.min(240, Math.round(n)) : 30;
     }
     if ('default_calendar_id' in out && !out.default_calendar_id) out.default_calendar_id = null;
+    if ('pipeline_id' in out) {
+      out.pipeline_id = out.pipeline_id ? String(out.pipeline_id) : null;
+      out.uses_stages = Boolean(out.pipeline_id);
+    }
+    if ('behavior' in out) out.behavior = cleanBehavior(out.behavior);
     return out;
   }
+}
+
+function cleanBehavior(raw: unknown): AgentBehavior | null {
+  if (!raw || typeof raw !== 'object') return null;
+  const src = raw as Record<string, unknown>;
+  const out: Record<string, unknown> = {};
+  const int = (v: unknown, min: number, max: number) => {
+    const n = Math.round(Number(v));
+    return Number.isFinite(n) ? Math.min(max, Math.max(min, n)) : undefined;
+  };
+  for (const k of BEHAVIOR_KEYS) {
+    const v = src[k];
+    if (v === undefined || v === null || v === '') continue;
+    switch (k) {
+      case 'multi_bubble':
+      case 'active_hours_enabled':
+        out[k] = Boolean(v);
+        break;
+      case 'timezone':
+        if (typeof v === 'string' && v.length <= 64) out[k] = v;
+        break;
+      case 'active_hours_start':
+      case 'active_hours_end':
+        out[k] = int(v, 0, 23);
+        break;
+      case 'first_reply_min_s':
+      case 'first_reply_max_s':
+        out[k] = int(v, 0, 3600);
+        break;
+      default:
+        out[k] = int(v, 0, 60000);
+    }
+  }
+  return Object.keys(out).length > 0 ? (out as AgentBehavior) : null;
 }

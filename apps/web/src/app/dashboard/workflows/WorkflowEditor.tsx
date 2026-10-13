@@ -1,9 +1,11 @@
 "use client";
 
-import { useCallback, useMemo, useRef, useState } from "react";
+import { createContext, useContext, useEffect, useMemo, useRef, useState } from "react";
 import {
-  addEdge,
   Background,
+  BaseEdge,
+  EdgeLabelRenderer,
+  getSmoothStepPath,
   Handle,
   MarkerType,
   Position,
@@ -11,14 +13,14 @@ import {
   ReactFlowProvider,
   useEdgesState,
   useNodesState,
-  type Connection,
   type Edge,
+  type EdgeProps,
   type Node,
   type NodeProps,
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
 import { apiFetch } from "@/lib/api";
-import { useStages } from "@/lib/stages";
+import { useStages, type Pipeline } from "@/lib/stages";
 import { useAgents } from "@/lib/agents";
 import { type NodeKind, type Workflow } from "./types";
 import styles from "./workflows.module.css";
@@ -36,6 +38,7 @@ type NodeData = {
   method?: "POST" | "GET" | "PUT" | "PATCH";
   headers?: string;
   auth_token?: string;
+  agent_id?: string;
 };
 
 const META: Record<NodeKind, { label: string; branch?: boolean; terminal?: boolean }> = {
@@ -50,11 +53,11 @@ const META: Record<NodeKind, { label: string; branch?: boolean; terminal?: boole
   webhook: { label: "Enviar webhook" },
 };
 
+/** "¿Respondió?" ya no se ofrece: "Esperar respuesta" hace lo mismo con tiempo máximo. */
 const PALETTE: NodeKind[] = [
   "message",
   "wait",
   "wait_reply",
-  "if_replied",
   "if_stage",
   "webhook",
   "stop",
@@ -110,30 +113,169 @@ function summarize(d: NodeData, stageLabel: (k: string) => string = (k) => k): s
   }
 }
 
-function WfNode({ data, selected }: NodeProps) {
+type MenuAnchor = { source: string; handle: string | null; x: number; y: number; between: boolean };
+
+/** Acciones del lienzo accesibles desde nodos y flechas personalizados. */
+const FlowCtx = createContext<{
+  edges: Edge[];
+  openMenu: (anchor: MenuAnchor) => void;
+} | null>(null);
+
+function PlusButton({
+  nodeId,
+  handle,
+  left,
+}: {
+  nodeId: string;
+  handle: string | null;
+  left: string;
+}) {
+  const ctx = useContext(FlowCtx);
+  return (
+    <button
+      type="button"
+      className={`${styles.nodePlus} nodrag nopan`}
+      style={{ left }}
+      title="Añadir un paso aquí"
+      onClick={(e) => {
+        e.stopPropagation();
+        ctx?.openMenu({ source: nodeId, handle, x: e.clientX, y: e.clientY, between: false });
+      }}
+    >
+      +
+    </button>
+  );
+}
+
+function WfNode({ id, data, selected }: NodeProps) {
   const d = data as NodeData;
   const meta = META[d.kind];
   const { label: stageLabel } = useStages();
+  const { agents } = useAgents();
+  const ctx = useContext(FlowCtx);
+  const free = (h: string | null) =>
+    !(ctx?.edges ?? []).some((e) => e.source === id && (e.sourceHandle ?? null) === h);
+  const agentName =
+    d.kind === "ai_handoff" && d.agent_id ? agents.find((a) => a.id === d.agent_id)?.name : null;
   return (
     <div className={`${styles.node} ${selected ? styles.nodeSel : ""}`} data-kind={d.kind}>
       {d.kind !== "start" && <Handle type="target" position={Position.Top} />}
       <div className={styles.nodeTitle}>{meta.label}</div>
-      <div className={styles.nodeBody}>{summarize(d, stageLabel)}</div>
+      <div className={styles.nodeBody}>
+        {agentName ? `responde ${agentName}` : summarize(d, stageLabel)}
+      </div>
       {meta.branch ? (
         <>
           <Handle id="yes" type="source" position={Position.Bottom} style={{ left: "28%" }} />
           <Handle id="no" type="source" position={Position.Bottom} style={{ left: "72%" }} />
           <span className={styles.handleYes}>sí</span>
           <span className={styles.handleNo}>no</span>
+          {free("yes") && <PlusButton nodeId={id} handle="yes" left="28%" />}
+          {free("no") && <PlusButton nodeId={id} handle="no" left="72%" />}
         </>
       ) : (
-        !meta.terminal && <Handle type="source" position={Position.Bottom} />
+        !meta.terminal && (
+          <>
+            <Handle type="source" position={Position.Bottom} />
+            {free(null) && <PlusButton nodeId={id} handle={null} left="50%" />}
+          </>
+        )
       )}
     </div>
   );
 }
 
+/** Flecha con un "+" en medio para insertar un paso entre dos nodos. */
+function PlusEdge({
+  id,
+  source,
+  sourceHandleId,
+  sourceX,
+  sourceY,
+  targetX,
+  targetY,
+  sourcePosition,
+  targetPosition,
+  markerEnd,
+  label,
+}: EdgeProps) {
+  const ctx = useContext(FlowCtx);
+  const [path, lx, ly] = getSmoothStepPath({
+    sourceX,
+    sourceY,
+    targetX,
+    targetY,
+    sourcePosition,
+    targetPosition,
+  });
+  return (
+    <>
+      <BaseEdge id={id} path={path} markerEnd={markerEnd} />
+      <EdgeLabelRenderer>
+        <div
+          className={`${styles.edgeTools} nodrag nopan`}
+          style={{ transform: `translate(-50%, -50%) translate(${lx}px, ${ly}px)` }}
+        >
+          {label && <span className={styles.edgeLabel}>{label}</span>}
+          <button
+            type="button"
+            className={styles.edgePlus}
+            title="Insertar un paso aquí"
+            onClick={(e) => {
+              e.stopPropagation();
+              ctx?.openMenu({
+                source,
+                handle: sourceHandleId ?? null,
+                x: e.clientX,
+                y: e.clientY,
+                between: true,
+              });
+            }}
+          >
+            +
+          </button>
+        </div>
+      </EdgeLabelRenderer>
+    </>
+  );
+}
+
 const nodeTypes = { wf: WfNode };
+const edgeTypes = { plus: PlusEdge };
+
+function mkEdge(source: string, target: string, handle: string | null): Edge {
+  return {
+    id: `e-${source}-${handle ?? "out"}-${target}`,
+    source,
+    target,
+    sourceHandle: handle ?? undefined,
+    type: "plus",
+    markerEnd: { type: MarkerType.ArrowClosed },
+    label: handle === "yes" ? "sí" : handle === "no" ? "no" : undefined,
+  };
+}
+
+function defaultsFor(kind: NodeKind): NodeData {
+  if (kind === "wait") return { kind, amount: 1, unit: "hours" };
+  if (kind === "wait_reply") return { kind, amount: 24, unit: "hours" };
+  if (kind === "message") return { kind, text: "" };
+  if (kind === "webhook") return { kind, url: "", body: "" };
+  return { kind };
+}
+
+/** Nodos alcanzables desde `fromId` (incluido) siguiendo las flechas. */
+function reachable(fromId: string | undefined, edges: Edge[]): Set<string> {
+  const seen = new Set<string>();
+  if (!fromId) return seen;
+  const stack = [fromId];
+  while (stack.length) {
+    const cur = stack.pop()!;
+    if (seen.has(cur)) continue;
+    seen.add(cur);
+    for (const e of edges) if (e.source === cur) stack.push(e.target);
+  }
+  return seen;
+}
 
 /** Nodo más abajo del lienzo (para encadenar nuevos nodos si no hay selección). */
 function lowestNode(nodes: Node[]): Node | undefined {
@@ -159,6 +301,33 @@ function freeHandle(anchor: Node, edges: Edge[]): string | null | undefined {
   return has(null) ? undefined : null;
 }
 
+function StageOptions({ pipelines }: { pipelines: Pipeline[] }) {
+  if (pipelines.length <= 1) {
+    return (
+      <>
+        {(pipelines[0]?.stages ?? []).map((s) => (
+          <option key={s.key} value={s.key}>
+            {s.name}
+          </option>
+        ))}
+      </>
+    );
+  }
+  return (
+    <>
+      {pipelines.map((p) => (
+        <optgroup key={p.id} label={p.name}>
+          {p.stages.map((s) => (
+            <option key={s.key} value={s.key}>
+              {s.name}
+            </option>
+          ))}
+        </optgroup>
+      ))}
+    </>
+  );
+}
+
 function defToFlow(wf: Workflow): { nodes: Node[]; edges: Edge[] } {
   const nodes: Node[] = (wf.definition?.nodes ?? []).map((n, i) => ({
     id: n.id,
@@ -167,17 +336,14 @@ function defToFlow(wf: Workflow): { nodes: Node[]; edges: Edge[] } {
     data: { ...(n.data ?? {}), kind: n.type } as NodeData,
   }));
   const edges: Edge[] = (wf.definition?.edges ?? []).map((e) => ({
+    ...mkEdge(e.source, e.target, e.sourceHandle ?? null),
     id: e.id,
-    source: e.source,
-    target: e.target,
-    sourceHandle: e.sourceHandle ?? undefined,
-    label: e.sourceHandle === "yes" ? "sí" : e.sourceHandle === "no" ? "no" : undefined,
   }));
   return { nodes, edges };
 }
 
 function Editor({ workflow, onBack }: { workflow: Workflow; onBack: () => void }) {
-  const { stages } = useStages();
+  const { pipelines } = useStages();
   const { agents } = useAgents();
   const initial = useMemo(() => defToFlow(workflow), [workflow]);
   const [nodes, setNodes, onNodesChange] = useNodesState(initial.nodes);
@@ -193,81 +359,79 @@ function Editor({ workflow, onBack }: { workflow: Workflow; onBack: () => void }
   const [triggerStage, setTriggerStage] = useState<string>(
     (workflow.trigger_config?.stage as string) ?? "qualified",
   );
+  const [webhookUrl, setWebhookUrl] = useState<string | null>(workflow.webhook_url ?? null);
   const [saving, setSaving] = useState(false);
   const [msg, setMsg] = useState<string | null>(null);
+  const [menu, setMenu] = useState<MenuAnchor | null>(null);
   const textRef = useRef<HTMLTextAreaElement>(null);
+  const canvasRef = useRef<HTMLDivElement>(null);
 
-  const onConnect = useCallback(
-    (conn: Connection) => {
-      if (conn.source === conn.target) return; // sin auto-bucles
-      setEdges((eds) => {
-        // Una sola salida por handle: reemplaza la que hubiera en ese mismo punto.
-        const filtered = eds.filter(
-          (e) =>
-            !(e.source === conn.source && (e.sourceHandle ?? null) === (conn.sourceHandle ?? null)),
-        );
-        return addEdge(
-          {
-            ...conn,
-            label:
-              conn.sourceHandle === "yes" ? "sí" : conn.sourceHandle === "no" ? "no" : undefined,
-          },
-          filtered,
-        );
-      });
-    },
-    [setEdges],
-  );
+  useEffect(() => {
+    if (!menu) return;
+    const onKey = (e: KeyboardEvent) => e.key === "Escape" && setMenu(null);
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [menu]);
 
-  function addNode(kind: NodeKind) {
+  /**
+   * Añade un paso tras la salida `handle` de `sourceId`. Si esa salida ya
+   * apuntaba a otro paso, el nuevo se inserta en medio y lo de abajo baja.
+   */
+  function insertAfter(sourceId: string, handle: string | null, kind: NodeKind) {
+    const src = nodes.find((n) => n.id === sourceId);
+    if (!src) return;
+    const existing = edges.find(
+      (e) => e.source === sourceId && (e.sourceHandle ?? null) === handle,
+    );
+    if (existing && isTerminal(kind)) {
+      setMsg(`"${META[kind].label}" termina el flujo: solo puede ir al final de una rama.`);
+      return;
+    }
     const id = crypto.randomUUID();
-    const defaults: NodeData =
-      kind === "wait"
-        ? { kind, amount: 1, unit: "hours" }
-        : kind === "wait_reply"
-          ? { kind, amount: 24, unit: "hours" }
-        : kind === "message"
-          ? { kind, text: "" }
-          : kind === "webhook"
-            ? { kind, url: "", body: "" }
-            : { kind };
+    const target = existing ? nodes.find((n) => n.id === existing.target) : undefined;
+    const dx = handle === "no" ? V_GAP_X : handle === "yes" ? -V_GAP_X : 0;
+    const position = target
+      ? { x: target.position.x, y: target.position.y }
+      : { x: src.position.x + dx, y: src.position.y + V_GAP_Y };
+    const shift = target ? reachable(target.id, edges) : new Set<string>();
 
-    // Nodo de anclaje: el seleccionado o, si no hay, el último de la cadena.
-    const anchor = nodes.find((n) => n.id === selected) ?? lowestNode(nodes);
-
-    // Handle libre del anclaje para auto-conectar (null=directo, 'yes'/'no' en ramas).
-    let handle: string | null | undefined;
-    if (anchor && !isTerminal((anchor.data as NodeData).kind)) {
-      handle = freeHandle(anchor, edges);
-    }
-
-    // Posición determinista: justo debajo del anclaje (desplazada según la rama).
-    const base = anchor?.position ?? { x: 250, y: 40 };
-    // Rama 'no' a la derecha, 'yes' a la izquierda; si no se pudo conectar
-    // (salida ocupada), lo desplazamos a un lado para que no se solape.
-    const dx =
-      handle === "no" ? V_GAP_X : handle === "yes" ? -V_GAP_X : handle === undefined ? V_GAP_X : 0;
-    const position = anchor
-      ? { x: base.x + dx, y: base.y + V_GAP_Y }
-      : { x: 250, y: 40 };
-
-    setNodes((nds) => [...nds, { id, type: "wf", position, data: defaults }]);
-
-    if (anchor && handle !== undefined) {
-      setEdges((eds) =>
-        addEdge(
-          {
-            id: `e-${anchor.id}-${id}`,
-            source: anchor.id,
-            target: id,
-            sourceHandle: handle ?? undefined,
-            label: handle === "yes" ? "sí" : handle === "no" ? "no" : undefined,
-          },
-          eds,
-        ),
-      );
-    }
+    setNodes((nds) => [
+      ...nds.map((n) =>
+        shift.has(n.id) ? { ...n, position: { ...n.position, y: n.position.y + V_GAP_Y } } : n,
+      ),
+      { id, type: "wf", position, data: defaultsFor(kind) },
+    ]);
+    setEdges((eds) => {
+      const next = eds.filter((e) => e !== existing);
+      next.push(mkEdge(sourceId, id, handle));
+      if (existing) next.push(mkEdge(id, existing.target, isBranch(kind) ? "yes" : null));
+      return next;
+    });
     setSelected(id);
+    setMenu(null);
+  }
+
+  /** Paleta lateral: añade tras el paso seleccionado (o el último de la cadena). */
+  function addNode(kind: NodeKind) {
+    const anchor = nodes.find((n) => n.id === selected) ?? lowestNode(nodes);
+    if (!anchor) {
+      const id = crypto.randomUUID();
+      setNodes((nds) => [...nds, { id, type: "wf", position: { x: 250, y: 40 }, data: defaultsFor(kind) }]);
+      setSelected(id);
+      return;
+    }
+    const anchorKind = (anchor.data as NodeData).kind;
+    if (isTerminal(anchorKind)) {
+      setMsg(`"${META[anchorKind].label}" termina el flujo. Selecciona otro paso o usa el + de una flecha.`);
+      return;
+    }
+    const free = freeHandle(anchor, edges);
+    insertAfter(anchor.id, free === undefined ? (isBranch(anchorKind) ? "yes" : null) : free, kind);
+  }
+
+  function openMenu(anchor: MenuAnchor) {
+    const rect = canvasRef.current?.getBoundingClientRect();
+    setMenu(rect ? { ...anchor, x: anchor.x - rect.left, y: anchor.y - rect.top } : anchor);
   }
 
   /** Inserta una variable en el textarea del mensaje (en la posición del cursor). */
@@ -294,11 +458,50 @@ function Editor({ workflow, onBack }: { workflow: Workflow; onBack: () => void }
     );
   }
 
+  /** Elimina el paso y vuelve a unir lo de arriba con lo de abajo. */
   function deleteSelected() {
-    if (!selected) return;
-    setNodes((nds) => nds.filter((n) => n.id !== selected));
-    setEdges((eds) => eds.filter((e) => e.source !== selected && e.target !== selected));
+    const node = nodes.find((n) => n.id === selected);
+    if (!node || (node.data as NodeData).kind === "start") return;
+    const incoming = edges.filter((e) => e.target === node.id);
+    const outgoing = edges.filter((e) => e.source === node.id);
+    const keep =
+      outgoing.find((e) => (e.sourceHandle ?? null) === null) ??
+      outgoing.find((e) => e.sourceHandle === "yes") ??
+      outgoing[0];
+    let nextEdges = edges.filter((e) => e.source !== node.id && e.target !== node.id);
+    if (keep) {
+      for (const inc of incoming) nextEdges.push(mkEdge(inc.source, keep.target, inc.sourceHandle ?? null));
+    }
+    let nextNodes = nodes.filter((n) => n.id !== node.id);
+
+    // Si era una bifurcación, la otra rama queda colgando: se elimina con él.
+    const startId = nodes.find((n) => (n.data as NodeData).kind === "start")?.id;
+    const before = reachable(startId, edges);
+    const after = reachable(startId, nextEdges);
+    const lost = new Set(nextNodes.filter((n) => before.has(n.id) && !after.has(n.id)).map((n) => n.id));
+    if (
+      lost.size > 0 &&
+      !confirm(`También se eliminará la otra rama de este paso (${lost.size} paso(s)). ¿Continuar?`)
+    ) {
+      return;
+    }
+    nextNodes = nextNodes.filter((n) => !lost.has(n.id));
+    nextEdges = nextEdges.filter((e) => !lost.has(e.source) && !lost.has(e.target));
+    setNodes(nextNodes);
+    setEdges(nextEdges);
     setSelected(null);
+  }
+
+  async function rotateWebhook() {
+    if (!confirm("Se generará una URL nueva y la anterior dejará de funcionar. ¿Continuar?")) return;
+    try {
+      const res = await apiFetch<Workflow>(`/api/workflows/${workflow.id}/webhook-token`, {
+        method: "POST",
+      });
+      setWebhookUrl(res.webhook_url ?? null);
+    } catch (e) {
+      setMsg(e instanceof Error ? e.message : "No se pudo regenerar la URL");
+    }
   }
 
   function validate(): string | null {
@@ -333,7 +536,7 @@ function Editor({ workflow, onBack }: { workflow: Workflow; onBack: () => void }
           sourceHandle: e.sourceHandle ?? null,
         })),
       };
-      await apiFetch(`/api/workflows/${workflow.id}`, {
+      const saved = await apiFetch<Workflow>(`/api/workflows/${workflow.id}`, {
         method: "PATCH",
         body: JSON.stringify({
           name,
@@ -345,6 +548,7 @@ function Editor({ workflow, onBack }: { workflow: Workflow; onBack: () => void }
           definition,
         }),
       });
+      setWebhookUrl(saved?.webhook_url ?? null);
       setMsg("Guardado");
     } catch (e) {
       setMsg(e instanceof Error ? e.message : "Error al guardar");
@@ -376,6 +580,7 @@ function Editor({ workflow, onBack }: { workflow: Workflow; onBack: () => void }
           <option value="conversation_created">Cuando entra una conversación nueva</option>
           <option value="manual">Manual</option>
           <option value="stage">Al cambiar de estado</option>
+          <option value="webhook">Recibe un webhook</option>
         </select>
         {trigger === "stage" && (
           <select
@@ -383,11 +588,7 @@ function Editor({ workflow, onBack }: { workflow: Workflow; onBack: () => void }
             value={triggerStage}
             onChange={(e) => setTriggerStage(e.target.value)}
           >
-            {stages.map((s) => (
-              <option key={s.key} value={s.key}>
-                {s.name}
-              </option>
-            ))}
+            <StageOptions pipelines={pipelines} />
           </select>
         )}
         {agents.length > 1 && (
@@ -433,6 +634,36 @@ function Editor({ workflow, onBack }: { workflow: Workflow; onBack: () => void }
         {msg && <span className={styles.saveMsg}>{msg}</span>}
       </div>
 
+      {trigger === "webhook" && (
+        <div className={styles.webhookBar}>
+          <strong>URL del webhook</strong>
+          {webhookUrl && workflow.trigger === "webhook" ? (
+            <>
+              <code className={styles.webhookUrl}>{webhookUrl}</code>
+              <button
+                className={styles.ghostBtn}
+                onClick={() => {
+                  void navigator.clipboard.writeText(webhookUrl);
+                  setMsg("URL copiada");
+                }}
+              >
+                Copiar
+              </button>
+              <button className={styles.ghostBtn} onClick={rotateWebhook}>
+                Regenerar
+              </button>
+            </>
+          ) : (
+            <span className={styles.hint}>Guarda el workflow para generar la URL.</span>
+          )}
+          <span className={styles.hint}>
+            Envía un POST con JSON (name, phone, email y los campos que quieras). El contacto se
+            crea o actualiza y entra en este workflow. Añade <code>?agent=ID</code> para elegir el
+            agente que atenderá.
+          </span>
+        </div>
+      )}
+
       <div className={styles.canvasRow}>
         <aside className={styles.palette}>
           <span className={styles.paletteTitle}>Añadir nodo</span>
@@ -442,33 +673,60 @@ function Editor({ workflow, onBack }: { workflow: Workflow; onBack: () => void }
             </button>
           ))}
           <p className={styles.paletteHint}>
+            Se añade tras el paso seleccionado. También puedes pulsar <strong>+</strong> en una
+            flecha o bajo un paso para insertarlo ahí.
+          </p>
+          <p className={styles.paletteHint}>
             Variables: {"{name}"}, {"{first_name}"}, {"{email}"}, {"{phone}"}, {"{source}"} y campos
             del formulario.
           </p>
         </aside>
 
-        <div className={styles.canvas}>
-          <ReactFlow
-            nodes={nodes}
-            edges={edges}
-            onNodesChange={onNodesChange}
-            onEdgesChange={onEdgesChange}
-            onConnect={onConnect}
-            onNodeClick={(_e, n) => setSelected(n.id)}
-            onPaneClick={() => setSelected(null)}
-            nodeTypes={nodeTypes}
-            fitView
-            snapToGrid
-            snapGrid={[16, 16]}
-            deleteKeyCode={["Backspace", "Delete"]}
-            defaultEdgeOptions={{
-              type: "smoothstep",
-              markerEnd: { type: MarkerType.ArrowClosed },
-            }}
-            proOptions={{ hideAttribution: true }}
-          >
-            <Background gap={16} />
-          </ReactFlow>
+        <div className={styles.canvas} ref={canvasRef}>
+          <FlowCtx.Provider value={{ edges, openMenu }}>
+            <ReactFlow
+              nodes={nodes}
+              edges={edges}
+              onNodesChange={onNodesChange}
+              onEdgesChange={onEdgesChange}
+              onNodeClick={(_e, n) => {
+                setSelected(n.id);
+                setMenu(null);
+              }}
+              onPaneClick={() => {
+                setSelected(null);
+                setMenu(null);
+              }}
+              onMoveStart={() => setMenu(null)}
+              nodeTypes={nodeTypes}
+              edgeTypes={edgeTypes}
+              nodesConnectable={false}
+              edgesFocusable={false}
+              fitView
+              snapToGrid
+              snapGrid={[16, 16]}
+              deleteKeyCode={null}
+              proOptions={{ hideAttribution: true }}
+            >
+              <Background gap={16} />
+            </ReactFlow>
+          </FlowCtx.Provider>
+          {menu && (
+            <div className={styles.insertMenu} style={{ left: menu.x, top: menu.y }}>
+              <span className={styles.insertMenuTitle}>
+                {menu.between ? "Insertar paso" : "Añadir paso"}
+              </span>
+              {PALETTE.filter((k) => !(menu.between && isTerminal(k))).map((k) => (
+                <button
+                  key={k}
+                  className={styles.insertMenuItem}
+                  onClick={() => insertAfter(menu.source, menu.handle, k)}
+                >
+                  {META[k].label}
+                </button>
+              ))}
+            </div>
+          )}
         </div>
 
         <aside className={styles.inspector}>
@@ -557,18 +815,16 @@ function Editor({ workflow, onBack }: { workflow: Workflow; onBack: () => void }
                     value={selData.stage ?? "qualified"}
                     onChange={(e) => patchSelected({ stage: e.target.value })}
                   >
-                    {stages.map((s) => (
-                      <option key={s.key} value={s.key}>
-                        {s.name}
-                      </option>
-                    ))}
+                    <StageOptions pipelines={pipelines} />
                   </select>
                 </label>
               )}
 
               {selData.kind === "if_replied" && (
                 <p className={styles.hint}>
-                  Rama <strong>sí</strong> si el lead respondió, <strong>no</strong> si no.
+                  Rama <strong>sí</strong> si el lead respondió, <strong>no</strong> si no. Paso
+                  antiguo: para nuevos flujos usa <strong>Esperar respuesta</strong>, que hace lo
+                  mismo con un tiempo máximo.
                 </p>
               )}
 
@@ -590,21 +846,39 @@ function Editor({ workflow, onBack }: { workflow: Workflow; onBack: () => void }
                       onChange={(e) => patchSelected({ set_stage: e.target.value })}
                     >
                       <option value="">— sin cambio —</option>
-                      {stages.map((s) => (
-                        <option key={s.key} value={s.key}>
-                          {s.name}
-                        </option>
-                      ))}
+                      <StageOptions pipelines={pipelines} />
                     </select>
                   </label>
                 </>
               )}
 
               {selData.kind === "ai_handoff" && (
-                <p className={styles.hint}>
-                  Activa la IA para que responda a partir de aquí
-                  {agentId ? " con el agente elegido en este workflow." : "."}
-                </p>
+                <>
+                  <label className={styles.field}>
+                    Agente que responde
+                    <select
+                      className={styles.input}
+                      value={selData.agent_id ?? ""}
+                      onChange={(e) => patchSelected({ agent_id: e.target.value || undefined })}
+                    >
+                      <option value="">
+                        {agentId
+                          ? `El del workflow (${agents.find((a) => a.id === agentId)?.name ?? "agente"})`
+                          : "El que ya atiende el chat"}
+                      </option>
+                      {agents
+                        .filter((a) => a.is_active)
+                        .map((a) => (
+                          <option key={a.id} value={a.id}>
+                            {a.name}
+                          </option>
+                        ))}
+                    </select>
+                  </label>
+                  <p className={styles.hint}>
+                    Activa la IA para que responda a partir de aquí con el agente elegido.
+                  </p>
+                </>
               )}
 
               {selData.kind === "webhook" && (
@@ -672,9 +946,11 @@ function Editor({ workflow, onBack }: { workflow: Workflow; onBack: () => void }
                 </>
               )}
 
-              <button className={styles.dangerBtn} onClick={deleteSelected}>
-                Eliminar nodo
-              </button>
+              {selData.kind !== "start" && (
+                <button className={styles.dangerBtn} onClick={deleteSelected}>
+                  Eliminar nodo
+                </button>
+              )}
             </>
           )}
         </aside>

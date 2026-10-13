@@ -15,8 +15,10 @@ import {
   IsBoolean,
   IsIn,
   IsInt,
+  IsObject,
   IsOptional,
   IsString,
+  IsUUID,
   MaxLength,
   Min,
   MinLength,
@@ -26,6 +28,7 @@ import { AuthGuard } from '../auth/auth.guard';
 import { CurrentUser } from '../auth/current-user.decorator';
 import type { AuthContext } from '../auth/auth.types';
 import { AgentsService } from './agents.service';
+import type { AgentBehavior } from './agents.types';
 
 const LONG = 60_000;
 
@@ -56,6 +59,11 @@ class AgentDto {
 
   @IsOptional() @ValidateIf((_, v) => v !== null) @IsString() @MaxLength(120) model?: string | null;
   @IsOptional() @IsInt() sort_order?: number;
+
+  @IsOptional() @ValidateIf((_, v) => v !== null) @IsUUID() pipeline_id?: string | null;
+  @IsOptional() @IsBoolean() is_default_lead?: boolean;
+  @IsOptional() @IsBoolean() is_default_conversation?: boolean;
+  @IsOptional() @ValidateIf((_, v) => v !== null) @IsObject() behavior?: AgentBehavior | null;
 }
 
 class AssignChannelsDto {

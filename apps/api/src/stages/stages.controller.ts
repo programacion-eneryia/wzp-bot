@@ -16,6 +16,7 @@ import {
   IsInt,
   IsOptional,
   IsString,
+  IsUUID,
   Matches,
   MaxLength,
   MinLength,
@@ -30,6 +31,11 @@ const COLOR = /^#[0-9a-fA-F]{6}$/;
 class CreateStageDto {
   @IsString() @MinLength(1) @MaxLength(60) name!: string;
   @IsOptional() @IsString() @Matches(COLOR) color?: string;
+  @IsOptional() @IsUUID() pipeline_id?: string;
+}
+
+class PipelineDto {
+  @IsString() @MinLength(1) @MaxLength(60) name!: string;
 }
 
 class UpdateStageDto {
@@ -50,6 +56,29 @@ export class StagesController {
   @Get()
   list(@CurrentUser() user: AuthContext) {
     return this.stages.list(user.organizationId);
+  }
+
+  @Get('pipelines')
+  pipelines(@CurrentUser() user: AuthContext) {
+    return this.stages.pipelinesWithStages(user.organizationId);
+  }
+
+  @Post('pipelines')
+  createPipeline(@CurrentUser() user: AuthContext, @Body() dto: PipelineDto) {
+    this.assertAdmin(user);
+    return this.stages.createPipeline(user.organizationId, dto.name);
+  }
+
+  @Put('pipelines/:id')
+  renamePipeline(@CurrentUser() user: AuthContext, @Param('id') id: string, @Body() dto: PipelineDto) {
+    this.assertAdmin(user);
+    return this.stages.renamePipeline(user.organizationId, id, dto.name);
+  }
+
+  @Delete('pipelines/:id')
+  removePipeline(@CurrentUser() user: AuthContext, @Param('id') id: string) {
+    this.assertAdmin(user);
+    return this.stages.removePipeline(user.organizationId, id);
   }
 
   @Post()
@@ -77,7 +106,7 @@ export class StagesController {
     @Query('fallback') fallback?: string,
   ) {
     this.assertAdmin(user);
-    return this.stages.remove(user.organizationId, id, fallback || 'new');
+    return this.stages.remove(user.organizationId, id, fallback || undefined);
   }
 
   private assertAdmin(user: AuthContext) {

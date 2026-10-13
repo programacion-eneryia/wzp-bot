@@ -2,18 +2,7 @@ import { BadRequestException, ForbiddenException, Injectable, Logger } from '@ne
 import { SupabaseService } from '../supabase/supabase.service';
 import { MessagingService } from '../messaging/messaging.service';
 import { StagesService } from '../stages/stages.service';
-import { safeWebhookUrlOrNull } from '../common/url-safety';
-
-/** Datos para el webhook de salida "lead registrado" hacia GHL (paso 2). */
-export type PushLeadInput = {
-  orgId: string;
-  conversationId: string;
-  contactId?: string | null;
-  name?: string | null;
-  phone?: string | null;
-  email?: string | null;
-  source?: string | null;
-};
+import { AgentsService } from '../agents/agents.service';
 
 type MatchKeys = {
   setterId?: string;
@@ -25,10 +14,7 @@ type MatchKeys = {
 /**
  * Sincronización con GoHighLevel (GHL).
  *
- *   - SALIDA (paso 2): tras registrar el lead, hacemos POST al "Inbound Webhook"
- *     que el cliente configura en GHL, enviando el `setter_id` (UUID de la
- *     conversación) para que GHL lo guarde en un campo del contacto. Así ambos
- *     sistemas quedan enlazados.
+ *   - SALIDA: ver GhlSyncService (webhook "lead registrado" y contactos por API).
  *   - ENTRADA (paso 4): cuando el lead agenda (o cancela) en GHL, GHL nos avisa;
  *     registramos la cita y pausamos/reanudamos los seguimientos.
  */
@@ -40,6 +26,7 @@ export class GhlService {
     private readonly supabase: SupabaseService,
     private readonly messaging: MessagingService,
     private readonly stages: StagesService,
+    private readonly agents: AgentsService,
   ) {}
 
   /** Resuelve la organización a partir del intake_token (endpoints públicos). */
@@ -52,94 +39,6 @@ export class GhlService {
       .maybeSingle();
     if (!data) throw new ForbiddenException('Token de integración inválido');
     return data.organization_id as string;
-  }
-
-  // --- SALIDA: paso 2 ---------------------------------------------------------
-
-  /**
-   * Envía a GHL el webhook "lead registrado" con el setter_id. Idempotente:
-   * solo se envía una vez por conversación (si el anterior falló, se reintenta).
-   * Best-effort: nunca lanza (se llama en fire-and-forget desde el intake).
-   */
-  async pushLeadRegistered(input: PushLeadInput): Promise<void> {
-    try {
-      const { data: integ } = await this.supabase.admin
-        .from('integrations')
-        .select('ghl_webhook_url')
-        .eq('organization_id', input.orgId)
-        .maybeSingle();
-      // Revalidamos anti-SSRF antes de hacer la petición (defensa en profundidad:
-      // el valor pudo guardarse antes de añadir la validación o corromperse).
-      const url = safeWebhookUrlOrNull((integ?.ghl_webhook_url as string | null)?.trim());
-      if (!url) return; // sin salida configurada o URL no permitida
-
-      const { data: existing } = await this.supabase.admin
-        .from('outbound_events')
-        .select('id, status')
-        .eq('conversation_id', input.conversationId)
-        .eq('kind', 'ghl_lead_registered')
-        .maybeSingle();
-      if (existing?.status === 'sent') return; // ya enlazado, no reenviar
-
-      const payload = {
-        event: 'lead_registered',
-        setter_id: input.conversationId,
-        ghl_contact_id: input.contactId ?? null,
-        name: input.name ?? null,
-        phone: input.phone ?? null,
-        email: input.email ?? null,
-        source: input.source ?? null,
-        status: 'new',
-        sent_at: new Date().toISOString(),
-      };
-
-      let status = 'sent';
-      const response: Record<string, unknown> = {};
-      try {
-        const res = await fetch(url, {
-          method: 'POST',
-          headers: { 'content-type': 'application/json' },
-          body: JSON.stringify(payload),
-          // No seguir redirecciones: evita saltarse la validación anti-SSRF con
-          // un 30x que apunte a un host interno.
-          redirect: 'error',
-          signal: AbortSignal.timeout(10_000),
-        });
-        response.http_status = res.status;
-        if (!res.ok) {
-          status = 'failed';
-          response.body = (await res.text().catch(() => '')).slice(0, 500);
-        }
-      } catch (err) {
-        status = 'failed';
-        response.error = String(err);
-      }
-
-      const row = {
-        organization_id: input.orgId,
-        conversation_id: input.conversationId,
-        kind: 'ghl_lead_registered',
-        target_url: url,
-        status,
-        request: payload,
-        response,
-      };
-      if (existing) {
-        await this.supabase.admin.from('outbound_events').update(row).eq('id', existing.id);
-      } else {
-        await this.supabase.admin.from('outbound_events').insert(row);
-      }
-
-      if (status === 'failed') {
-        this.logger.warn(
-          `Webhook de salida a GHL falló (conv ${input.conversationId}): ${JSON.stringify(response)}`,
-        );
-      } else {
-        this.logger.log(`Enlazado con GHL: setter_id enviado (conv ${input.conversationId})`);
-      }
-    } catch (err) {
-      this.logger.warn(`pushLeadRegistered error: ${String(err)}`);
-    }
   }
 
   // --- ENTRADA: paso 4 --------------------------------------------------------
@@ -262,7 +161,7 @@ export class GhlService {
   async handleBotControlWebhook(
     orgId: string,
     body: Record<string, unknown>,
-  ): Promise<{ ok: boolean; matched: boolean; action: string }> {
+  ): Promise<{ ok: boolean; matched: boolean; action: string; agent?: string }> {
     const keys = extractMatchKeys(body);
     const rawAction = (
       str(body.action ?? body.event ?? body.type ?? body.bot ?? body.status) ?? ''
@@ -279,6 +178,19 @@ export class GhlService {
       return { ok: true, matched: false, action };
     }
 
+    // Opcional: `agent` (id o nombre) → la conversación pasa a ese agente.
+    const agentRef = extractAgentRef(body);
+    let agentName: string | null = null;
+    if (agentRef) {
+      const agent = await this.agents.findActiveByRef(orgId, agentRef);
+      if (agent) {
+        await this.agents.setConversationAgent(orgId, conv.id, agent.id);
+        agentName = agent.name;
+      } else {
+        this.logger.warn(`GHL pidió el agente "${agentRef}", que no existe o está inactivo (org ${orgId})`);
+      }
+    }
+
     await this.supabase.admin
       .from('conversations')
       .update(
@@ -288,8 +200,10 @@ export class GhlService {
       )
       .eq('id', conv.id)
       .eq('organization_id', orgId);
-    this.logger.log(`GHL → bot ${action === 'resume' ? 'REACTIVADO' : 'PAUSADO'} (conv ${conv.id})`);
-    return { ok: true, matched: true, action };
+    this.logger.log(
+      `GHL → bot ${action === 'resume' ? 'REACTIVADO' : 'PAUSADO'} (conv ${conv.id}${agentName ? `, agente ${agentName}` : ''})`,
+    );
+    return { ok: true, matched: true, action, ...(agentName ? { agent: agentName } : {}) };
   }
 
   /**
@@ -503,6 +417,11 @@ function extractMatchKeys(body: Record<string, unknown>): MatchKeys {
     phone: digits(str(body.phone ?? contact.phone ?? customData.phone)),
     email: (str(body.email ?? contact.email) || '').toLowerCase() || undefined,
   };
+}
+
+function extractAgentRef(body: Record<string, unknown>): string | undefined {
+  const customData = (body.customData ?? {}) as Record<string, unknown>;
+  return str(body.agent ?? body.agent_id ?? body.agent_name ?? customData.agent ?? customData.agent_id);
 }
 
 function str(v: unknown): string | undefined {

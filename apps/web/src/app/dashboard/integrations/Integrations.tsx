@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { apiFetch } from "@/lib/api";
+import { useAgents } from "@/lib/agents";
 import styles from "./integrations.module.css";
 
 type Urls = {
@@ -19,6 +20,10 @@ type Integration = {
   default_channel_id: string | null;
   proactive_enabled: boolean;
   ghl_webhook_url: string | null;
+  ghl_api_token_set?: boolean;
+  ghl_location_id?: string | null;
+  ghl_setter_field?: string | null;
+  ghl_sync_chat_leads?: boolean;
   urls: Urls;
 };
 
@@ -41,6 +46,12 @@ export default function Integrations({ isAdmin = true }: { isAdmin?: boolean }) 
   const [copied, setCopied] = useState<string | null>(null);
   const [manychatKey, setManychatKey] = useState("");
   const [ghlWebhookUrl, setGhlWebhookUrl] = useState("");
+  const { agents } = useAgents();
+  const [intakeAgent, setIntakeAgent] = useState("");
+  const [ghlToken, setGhlToken] = useState("");
+  const [ghlLocation, setGhlLocation] = useState("");
+  const [ghlSetterField, setGhlSetterField] = useState("");
+  const [ghlSync, setGhlSync] = useState(true);
 
   useEffect(() => {
     Promise.all([
@@ -51,6 +62,9 @@ export default function Integrations({ isAdmin = true }: { isAdmin?: boolean }) 
         setData(integ);
         setManychatKey(integ.manychat_api_key ?? "");
         setGhlWebhookUrl(integ.ghl_webhook_url ?? "");
+        setGhlLocation(integ.ghl_location_id ?? "");
+        setGhlSetterField(integ.ghl_setter_field ?? "");
+        setGhlSync(integ.ghl_sync_chat_leads ?? true);
         setChannels(Array.isArray(chs) ? chs : []);
       })
       .catch((e) => setError(e instanceof Error ? e.message : "Error al cargar"))
@@ -98,14 +112,18 @@ export default function Integrations({ isAdmin = true }: { isAdmin?: boolean }) 
   if (!data) return <p className={styles.error}>{error ?? "No se pudo cargar"}</p>;
 
   const waChannels = channels.filter((c) => c.provider === "whatsapp");
+  const activeAgents = agents.filter((a) => a.is_active);
+  const intakeUrl = intakeAgent
+    ? `${data.urls.lead_intake}&agent=${encodeURIComponent(intakeAgent)}`
+    : data.urls.lead_intake;
 
   const apps: { id: AppId; name: string; text: string; status: string; ok: boolean; mark: string }[] = [
     {
       id: "ghl",
       name: "GoHighLevel",
       text: "Registra leads en el CRM, recibe citas agendadas y controla el bot desde tus workflows de GHL.",
-      status: data.ghl_webhook_url ? "Conectado" : "Disponible",
-      ok: Boolean(data.ghl_webhook_url),
+      status: data.ghl_webhook_url || data.ghl_api_token_set ? "Conectado" : "Disponible",
+      ok: Boolean(data.ghl_webhook_url || data.ghl_api_token_set),
       mark: "GHL",
     },
     {
@@ -170,12 +188,29 @@ export default function Integrations({ isAdmin = true }: { isAdmin?: boolean }) 
                 Pega estas URLs en tus workflows de GHL como acción “Webhook (Outbound)” (POST).
                 Llevan tu token secreto; trátalas como una contraseña.
               </p>
+              {activeAgents.length > 1 && (
+                <label className={styles.field}>
+                  <span className={styles.label}>Agente que atiende los leads de esta URL</span>
+                  <select
+                    className={styles.input}
+                    value={intakeAgent}
+                    onChange={(e) => setIntakeAgent(e.target.value)}
+                  >
+                    <option value="">El predeterminado para leads</option>
+                    {activeAgents.map((a) => (
+                      <option key={a.id} value={a.id}>
+                        {a.name}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              )}
               <UrlRow
                 label="① Registrar leads en el CRM"
-                hint="ESTA es la URL para que un lead ENTRE al CRM. Workflow (trigger de nuevo lead) → “Webhook (Outbound)” (POST) a esta URL."
-                url={data.urls.lead_intake}
+                hint="ESTA es la URL para que un lead ENTRE al CRM. Workflow (trigger de nuevo lead) → “Webhook (Outbound)” (POST) a esta URL. Cada agente tiene su propia URL (elígelo arriba); también puedes mandar el campo agent con el id o el nombre del agente."
+                url={intakeUrl}
                 copied={copied === "generic"}
-                onCopy={() => copy(data.urls.lead_intake, "generic")}
+                onCopy={() => copy(intakeUrl, "generic")}
               />
               <UrlRow
                 label="② Cita agendada/cancelada (NO usar para registrar leads)"
@@ -186,7 +221,7 @@ export default function Integrations({ isAdmin = true }: { isAdmin?: boolean }) 
               />
               <UrlRow
                 label="③ Pausar / reactivar el bot"
-                hint='POST con JSON: {"action": "pause"} o {"action": "resume"}, más setter_id (o phone/contact_id).'
+                hint='POST con JSON: {"action": "pause"} o {"action": "resume"}, más setter_id (o phone/contact_id). Opcional: "agent" con el id o el nombre del agente para pasarle la conversación.'
                 url={data.urls.ghl_bot}
                 copied={copied === "ghl_bot"}
                 onCopy={() => copy(data.urls.ghl_bot, "ghl_bot")}
@@ -206,7 +241,11 @@ export default function Integrations({ isAdmin = true }: { isAdmin?: boolean }) 
                 <code className={styles.code}>ghl_contact_id</code>. Crea en GHL un Workflow con
                 trigger <strong>“Inbound Webhook”</strong>, pega aquí su URL y añade una acción{" "}
                 <strong>“Update Contact Field”</strong> guardando{" "}
-                <code className={styles.code}>setter_id</code> en un campo personalizado.
+                <code className={styles.code}>setter_id</code> en un campo personalizado. El
+                webhook incluye también <code className={styles.code}>agent_id</code> y{" "}
+                <code className={styles.code}>agent_name</code>, y{" "}
+                <code className={styles.code}>source</code> (<code className={styles.code}>ghl</code>{" "}
+                o <code className={styles.code}>chat</code>).
               </p>
               <label className={styles.field}>
                 <span className={styles.label}>URL del Inbound Webhook de GHL</span>
@@ -225,6 +264,82 @@ export default function Integrations({ isAdmin = true }: { isAdmin?: boolean }) 
               >
                 {saving ? "Guardando…" : "Guardar URL de salida"}
               </button>
+
+              <h3 className={styles.subTitle}>Leads que entran por chat → GHL</h3>
+              <p className={styles.muted}>
+                Cuando alguien escribe directamente por WhatsApp o Instagram, creamos o actualizamos
+                el contacto en GHL (buscándolo por teléfono o email) y guardamos el{" "}
+                <code className={styles.code}>setter_id</code> en el campo que indiques. Necesitas
+                un token de <strong>Private Integration</strong> de la subcuenta (Ajustes →
+                Private Integrations, con permisos de contactos) y el Location ID.
+              </p>
+              <label className={styles.field}>
+                <span className={styles.label}>Token de Private Integration</span>
+                <input
+                  className={styles.input}
+                  type="password"
+                  value={ghlToken}
+                  onChange={(e) => setGhlToken(e.target.value)}
+                  placeholder={data.ghl_api_token_set ? "•••••••• (guardado)" : "pit-…"}
+                  autoComplete="off"
+                />
+              </label>
+              <label className={styles.field}>
+                <span className={styles.label}>Location ID (subcuenta)</span>
+                <input
+                  className={styles.input}
+                  value={ghlLocation}
+                  onChange={(e) => setGhlLocation(e.target.value)}
+                  placeholder="p.ej. ve9EPM428h8vShlRW1KT"
+                />
+              </label>
+              <label className={styles.field}>
+                <span className={styles.label}>Campo personalizado para el setter_id (id o clave)</span>
+                <input
+                  className={styles.input}
+                  value={ghlSetterField}
+                  onChange={(e) => setGhlSetterField(e.target.value)}
+                  placeholder="p.ej. contact.setter_id"
+                />
+              </label>
+              <label className={styles.checkRow}>
+                <input
+                  type="checkbox"
+                  checked={ghlSync}
+                  onChange={(e) => setGhlSync(e.target.checked)}
+                />
+                Crear/actualizar en GHL los leads que entran por chat
+              </label>
+              <div className={styles.btnRow}>
+                <button
+                  className={styles.saveBtn}
+                  disabled={saving}
+                  onClick={async () => {
+                    await patch({
+                      ...(ghlToken.trim() ? { ghl_api_token: ghlToken.trim() } : {}),
+                      ghl_location_id: ghlLocation.trim(),
+                      ghl_setter_field: ghlSetterField.trim(),
+                      ghl_sync_chat_leads: ghlSync,
+                    });
+                    setGhlToken("");
+                  }}
+                >
+                  {saving ? "Guardando…" : "Guardar conexión con GHL"}
+                </button>
+                {data.ghl_api_token_set && (
+                  <button
+                    className={styles.ghostBtn}
+                    disabled={saving}
+                    onClick={() => {
+                      if (confirm("¿Quitar el token de GHL? Dejaremos de crear contactos desde el chat.")) {
+                        void patch({ ghl_api_token: "" });
+                      }
+                    }}
+                  >
+                    Quitar token
+                  </button>
+                )}
+              </div>
             </>
           )}
         </section>

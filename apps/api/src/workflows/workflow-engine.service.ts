@@ -2,6 +2,7 @@ import { Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { SupabaseService } from '../supabase/supabase.service';
 import { MessagingService } from '../messaging/messaging.service';
 import { WorkflowsService, type WorkflowRow } from './workflows.service';
+import { AgentsService } from '../agents/agents.service';
 import { renderMessage, resolveVariables } from './variables';
 import { safeWebhookUrlOrNull } from '../common/url-safety';
 import type {
@@ -35,6 +36,7 @@ export class WorkflowEngineService {
     private readonly supabase: SupabaseService,
     private readonly workflows: WorkflowsService,
     private readonly messaging: MessagingService,
+    private readonly agents: AgentsService,
   ) {}
 
   // ===========================================================================
@@ -73,6 +75,12 @@ export class WorkflowEngineService {
     if (!conv) {
       throw new NotFoundException('Conversación no encontrada');
     }
+    return this.enroll(wf, conversationId);
+  }
+
+  /** Inscripción interna (trigger webhook): conversación ya validada por el servidor. */
+  async enrollInternal(orgId: string, workflowId: string, conversationId: string): Promise<boolean> {
+    const wf = await this.workflows.get(orgId, workflowId);
     return this.enroll(wf, conversationId);
   }
 
@@ -295,12 +303,19 @@ export class WorkflowEngineService {
           return;
         }
         case 'ai_handoff': {
-          // Si el workflow pertenece a un agente, es ese agente el que retoma.
-          const update: Record<string, unknown> = { ai_enabled: true };
-          if (wf.agent_id) update.agent_id = wf.agent_id;
+          // Retoma el agente elegido en el nodo; si no, el del workflow; si
+          // tampoco, el que ya atendía la conversación.
+          const agentId = (node.data?.agent_id || wf.agent_id || null) as string | null;
+          if (agentId) {
+            try {
+              await this.agents.setConversationAgent(run.organization_id, run.conversation_id, agentId);
+            } catch (err) {
+              this.logger.warn(`Pasar a IA: agente ${agentId} no válido (${String(err)})`);
+            }
+          }
           await this.supabase.admin
             .from('conversations')
-            .update(update)
+            .update({ ai_enabled: true })
             .eq('id', run.conversation_id);
           await this.finish(run.id, 'completed');
           return;

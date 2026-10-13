@@ -8,7 +8,14 @@ import { createClient } from "@/lib/supabase/client";
 import { getTheme, toggleTheme, type Theme } from "@/lib/theme";
 import styles from "./sidebar.module.css";
 
-export type NavItem = { label: string; href: string; icon?: string; badge?: string };
+export type NavItem = {
+  label: string;
+  href: string;
+  icon?: string;
+  badge?: string;
+  /** Visible también en móvil (en móvil solo se usan Chats y CRM). */
+  mobile?: boolean;
+};
 export type NavGroup = { label?: string; items: NavItem[] };
 
 type Props = {
@@ -56,7 +63,14 @@ const ADMIN_NAV: NavGroup[] = [
   },
 ];
 
-function mainNav(isAdmin: boolean, onboardingDone: boolean): NavGroup[] {
+function bottomNav(isAdmin: boolean): NavItem[] {
+  const items: NavItem[] = [];
+  if (isAdmin) items.push({ label: "Equipo", href: "/dashboard/team", icon: "☺" });
+  items.push({ label: "Configuración", href: "/dashboard/channels", icon: "⚙" });
+  return items;
+}
+
+function mainNav(onboardingDone: boolean): NavGroup[] {
   const top: NavItem[] = [];
   if (!onboardingDone) {
     top.push({ label: "Onboarding", href: "/dashboard/onboarding", icon: "✦", badge: "nuevo" });
@@ -67,8 +81,8 @@ function mainNav(isAdmin: boolean, onboardingDone: boolean): NavGroup[] {
     {
       label: "Zona de trabajo",
       items: [
-        { label: "CRM", href: "/dashboard/crm", icon: "▤" },
-        { label: "Chats", href: "/dashboard/inbox", icon: "◌" },
+        { label: "CRM", href: "/dashboard/crm", icon: "▤", mobile: true },
+        { label: "Chats", href: "/dashboard/inbox", icon: "◌", mobile: true },
       ],
     },
     {
@@ -85,10 +99,6 @@ function mainNav(isAdmin: boolean, onboardingDone: boolean): NavGroup[] {
       items: [{ label: "Estadísticas", href: "/dashboard/stats", icon: "▥" }],
     },
   ];
-  const bottom: NavItem[] = [];
-  if (isAdmin) bottom.push({ label: "Equipo", href: "/dashboard/team", icon: "☺" });
-  bottom.push({ label: "Configuración", href: "/dashboard/channels", icon: "⚙" });
-  groups.push({ items: bottom });
   return groups;
 }
 
@@ -129,7 +139,8 @@ export default function Sidebar({
     router.refresh();
   }
 
-  const groups = isPlatformAdmin ? ADMIN_NAV : inSettings ? SETTINGS_NAV : mainNav(isAdmin, onboardingDone);
+  const groups = isPlatformAdmin ? ADMIN_NAV : inSettings ? SETTINGS_NAV : mainNav(onboardingDone);
+  const bottom = isPlatformAdmin || inSettings ? [] : bottomNav(isAdmin);
 
   const isActive = (href: string) => {
     const [path, query] = href.split("?");
@@ -140,6 +151,20 @@ export default function Sidebar({
     }
     return true;
   };
+
+  const renderItem = (item: NavItem) => (
+    <Link
+      key={item.href + item.label}
+      href={item.href}
+      className={`${styles.item} ${isActive(item.href) ? styles.itemActive : ""} ${
+        item.mobile || isPlatformAdmin ? "" : styles.desktopOnly
+      }`}
+    >
+      {item.icon && <span className={styles.icon}>{item.icon}</span>}
+      <span className={styles.itemLabel}>{item.label}</span>
+      {item.badge && <span className={styles.badge}>{item.badge}</span>}
+    </Link>
+  );
 
   return (
     <aside className={styles.sidebar}>
@@ -154,30 +179,25 @@ export default function Sidebar({
       <nav className={styles.nav}>
         {inSettings && (
           <>
-            <Link href="/dashboard" className={styles.backLink}>
+            <Link href="/dashboard/inbox" className={`${styles.backLink} ${styles.mobileOnly}`}>
+              ← Volver a Chats
+            </Link>
+            <Link href="/dashboard" className={`${styles.backLink} ${styles.desktopOnly}`}>
               ← Volver al panel
             </Link>
-            <span className={styles.sectionTitle}>Configuración</span>
+            <span className={`${styles.sectionTitle} ${styles.desktopOnly}`}>Configuración</span>
           </>
         )}
         {groups.map((group, gi) => (
           <div key={group.label ?? gi} className={styles.group}>
             {group.label && <span className={styles.groupLabel}>{group.label}</span>}
-            {group.items.map((item) => (
-              <Link
-                key={item.href + item.label}
-                href={item.href}
-                className={`${styles.item} ${isActive(item.href) ? styles.itemActive : ""}`}
-              >
-                {item.icon && <span className={styles.icon}>{item.icon}</span>}
-                <span className={styles.itemLabel}>{item.label}</span>
-                {item.badge && <span className={styles.badge}>{item.badge}</span>}
-              </Link>
-            ))}
+            {group.items.map(renderItem)}
             {!isPlatformAdmin && !inSettings && gi === 0 && <hr className={styles.divider} />}
           </div>
         ))}
       </nav>
+
+      {bottom.length > 0 && <div className={styles.bottomNav}>{bottom.map(renderItem)}</div>}
 
       <div className={styles.userBox} ref={menuRef}>
         {menuOpen && (
@@ -189,7 +209,7 @@ export default function Sidebar({
             {!isPlatformAdmin && (
               <Link
                 href="/dashboard/channels"
-                className={styles.menuItem}
+                className={`${styles.menuItem} ${styles.desktopOnly}`}
                 onClick={() => setMenuOpen(false)}
               >
                 <span className={styles.icon}>⚙</span> Configuración

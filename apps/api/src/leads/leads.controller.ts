@@ -1,5 +1,15 @@
-import { Body, Controller, HttpCode, Logger, Post, Query } from '@nestjs/common';
+import {
+  Body,
+  Controller,
+  ForbiddenException,
+  HttpCode,
+  Logger,
+  Param,
+  Post,
+  Query,
+} from '@nestjs/common';
 import { Throttle } from '@nestjs/throttler';
+import { WorkflowsService } from '../workflows/workflows.service';
 import { LeadIntakeService, type IntakeInput } from './lead-intake.service';
 
 /**
@@ -8,6 +18,10 @@ import { LeadIntakeService, type IntakeInput } from './lead-intake.service';
  *
  *   - /api/leads/intake → formato genérico (Zapier, Make, tu propio form…).
  *   - /api/leads/ghl    → payload de un webhook de GoHighLevel (Meta Lead Ads).
+ *   - /api/leads/workflow/:token → trigger "Recibe un webhook" de un workflow.
+ *
+ * `?agent=<id o nombre>` (o `agent` en el cuerpo) elige el agente que atiende;
+ * si no se indica, atiende el agente predeterminado para leads.
  */
 @Controller('leads')
 // Endpoints públicos protegidos por token de org: límite estricto por IP para
@@ -16,47 +30,88 @@ import { LeadIntakeService, type IntakeInput } from './lead-intake.service';
 export class LeadsController {
   private readonly logger = new Logger(LeadsController.name);
 
-  constructor(private readonly intake: LeadIntakeService) {}
+  constructor(
+    private readonly intake: LeadIntakeService,
+    private readonly workflows: WorkflowsService,
+  ) {}
 
   @Post('intake')
   @HttpCode(200)
   async generic(
     @Query('token') token: string,
+    @Query('agent') agent: string | undefined,
     @Body() body: Record<string, unknown>,
   ) {
-    // Endpoint genérico (Zapier, Make, formularios propios). Extraemos los campos
-    // de forma tolerante: si el que integra manda `name`/`phone` los usamos, pero
-    // también entendemos `first_name`/`full_name` y payloads anidados (GHL suele
-    // apuntar aquí por error). Si el payload parece de GHL, marcamos la fuente.
-    const f = extractLeadFields(body);
-    const explicitSource = str(body.source);
-    const ghlContactId = extractGhlContactId(body);
-    return this.intake.intake({
-      token,
-      name: f.name,
-      phone: f.phone,
-      email: f.email,
-      channel: str(body.channel) as IntakeInput['channel'],
-      source: explicitSource ?? (looksLikeGhl(body) ? 'ghl' : 'webhook'),
-      source_detail:
-        str(body.source_detail) ?? str(body.form_name) ?? str(body.page_name),
-      campaign: str(body.campaign) ?? str(body.utm_campaign) ?? str(body.ad_id),
-      message: f.message,
-      external_id: str(body.external_id) ?? str(body.subscriber_id) ?? ghlContactId,
-      ghl_contact_id: ghlContactId,
-      proactive: typeof body.proactive === 'boolean' ? body.proactive : undefined,
-      raw: body,
-    });
+    return this.intake.intake({ ...mapGeneric(body), token, agent: agent || extractAgent(body) });
   }
 
   @Post('ghl')
   @HttpCode(200)
   async ghl(
     @Query('token') token: string,
+    @Query('agent') agent: string | undefined,
     @Body() body: Record<string, unknown>,
   ) {
-    return this.intake.intake(mapGhl(body, token));
+    return this.intake.intake({ ...mapGhl(body, token), agent: agent || extractAgent(body) });
   }
+
+  /** URL única por workflow: cualquier CRM puede empujar leads a ese flujo. */
+  @Post('workflow/:token')
+  @HttpCode(200)
+  async workflow(
+    @Param('token') token: string,
+    @Query('agent') agent: string | undefined,
+    @Body() body: Record<string, unknown>,
+  ) {
+    const wf = await this.workflows.findByWebhookToken(token);
+    if (!wf) throw new ForbiddenException('Webhook de workflow inválido');
+    if (!wf.is_active) return { ok: false, reason: 'el workflow está desactivado' };
+    const { token: _t, ...input } = mapGeneric(body);
+    void _t;
+    const result = await this.intake.intakeForWorkflow(wf.organization_id, wf.id, {
+      ...input,
+      agent: agent || extractAgent(body),
+    });
+    return { ok: true, ...result };
+  }
+}
+
+/** Formato genérico (Zapier, Make, formularios propios, otros CRMs). */
+function mapGeneric(body: Record<string, unknown>): IntakeInput {
+  // Extraemos los campos de forma tolerante: si el que integra manda
+  // `name`/`phone` los usamos, pero también entendemos `first_name`/`full_name`
+  // y payloads anidados (GHL suele apuntar aquí por error). Si el payload
+  // parece de GHL, marcamos la fuente.
+  const f = extractLeadFields(body);
+  const explicitSource = str(body.source);
+  const ghlContactId = extractGhlContactId(body);
+  return {
+    token: '',
+    name: f.name,
+    phone: f.phone,
+    email: f.email,
+    channel: str(body.channel) as IntakeInput['channel'],
+    source: explicitSource ?? (looksLikeGhl(body) ? 'ghl' : 'webhook'),
+    source_detail: str(body.source_detail) ?? str(body.form_name) ?? str(body.page_name),
+    campaign: str(body.campaign) ?? str(body.utm_campaign) ?? str(body.ad_id),
+    message: f.message,
+    external_id: str(body.external_id) ?? str(body.subscriber_id) ?? ghlContactId,
+    ghl_contact_id: ghlContactId,
+    proactive: typeof body.proactive === 'boolean' ? body.proactive : undefined,
+    raw: body,
+  };
+}
+
+/** Agente pedido en el cuerpo (`agent`, `agent_id` o dentro de `customData`). */
+function extractAgent(body: Record<string, unknown>): string | undefined {
+  const customData = (body.customData ?? {}) as Record<string, unknown>;
+  return (
+    str(body.agent) ??
+    str(body.agent_id) ??
+    str(body.agent_name) ??
+    str(customData.agent) ??
+    str(customData.agent_id)
+  );
 }
 
 /**

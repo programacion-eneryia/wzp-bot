@@ -9,10 +9,11 @@ export default function StagesPage() {
         Pipelines y <span className="serif">Stages</span>
       </h1>
       <p className={styles.lead}>
-        Las etapas por las que pasa cada lead. Puedes renombrarlas, cambiarles el color,
-        reordenarlas y añadir las tuyas. Las etapas de sistema (Nuevo, Llamada agendada,
-        Ganado…) las usa la IA y las integraciones, así que se pueden renombrar pero no borrar.
-        Los agentes de soporte no usan etapas.
+        Cada pipeline tiene sus propias etapas y cada agente trabaja en uno: el Setter en el
+        embudo comercial y Soporte en el suyo. Puedes crear más pipelines, renombrar, recolorear,
+        reordenar y añadir etapas. Las etapas de sistema del pipeline principal (Nuevo, Llamada
+        agendada, Ganado…) las usan la IA y las integraciones, así que se pueden renombrar pero no
+        borrar.
       </p>
       <Stages />
     </div>

@@ -1,22 +1,8 @@
-import { createClient } from "@/lib/supabase/server";
+import Link from "next/link";
 import SetterForm from "./SetterForm";
 import styles from "./setter.module.css";
 
-export default async function SetterPage() {
-  const supabase = await createClient();
-
-  // Solo los admins ven/gestionan el modelo LLM y el control de tokens.
-  const { data: membership } = await supabase
-    .from("memberships")
-    .select("role")
-    .limit(1)
-    .maybeSingle();
-  const { data: profile } = await supabase
-    .from("profiles")
-    .select("is_platform_admin")
-    .maybeSingle();
-  const isAdmin = membership?.role === "admin" || Boolean(profile?.is_platform_admin);
-
+export default function SetterPage() {
   return (
     <div>
       <span className={styles.eyebrow}>Gestión de agentes · Base de Conocimiento</span>
@@ -25,11 +11,16 @@ export default async function SetterPage() {
       </h1>
       <p className={styles.lead}>
         Todo lo que tus agentes saben de tu negocio: oferta, producto, precios, pruebas
-        sociales y el brief completo. Lo comparten todos los agentes; cuanto mejor esté, más
-        natural y eficaz conversan.
+        sociales y el brief completo. Lo comparten todos los agentes; cuanto más detallado esté,
+        más natural y eficaz conversan. Los ajustes de la IA (horario, tiempos, silenciados) están
+        en{" "}
+        <Link href="/dashboard/agents" style={{ color: "inherit" }}>
+          Agentes
+        </Link>
+        .
       </p>
 
-      <SetterForm isAdmin={isAdmin} />
+      <SetterForm />
     </div>
   );
 }

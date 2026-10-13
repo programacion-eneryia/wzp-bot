@@ -8,13 +8,14 @@ import {
   Param,
   Post,
   Put,
+  Query,
   UploadedFile,
   UploadedFiles,
   UseGuards,
   UseInterceptors,
 } from '@nestjs/common';
 import { FileInterceptor, FilesInterceptor } from '@nestjs/platform-express';
-import { IsOptional, IsString, MaxLength, MinLength } from 'class-validator';
+import { IsOptional, IsString, IsUUID, MaxLength, MinLength, ValidateIf } from 'class-validator';
 import { AuthGuard } from '../auth/auth.guard';
 import { CurrentUser } from '../auth/current-user.decorator';
 import type { AuthContext } from '../auth/auth.types';
@@ -28,10 +29,13 @@ import { GenerateSetterDto, UpdateSetterConfigDto } from './dto/update-setter-co
 
 class AddSilencedDto {
   @IsString() @MinLength(2) @MaxLength(120) identifier!: string;
+  /** null/ausente = silenciado para todos los agentes. */
+  @IsOptional() @ValidateIf((_, v) => v !== null && v !== '') @IsUUID() agent_id?: string | null;
 }
 
 class ImportSilencedDto {
   @IsOptional() @IsString() @MaxLength(2_000_000) csv?: string;
+  @IsOptional() @IsString() @MaxLength(64) agent_id?: string;
 }
 
 @Controller('setter')
@@ -186,15 +190,23 @@ export class SetterController {
   }
 
   // --- Contactos silenciados ---
+  /** `?agent_id=<id>` → los de ese agente; `?agent_id=global` → los de todos. */
   @Get('silenced')
-  listSilenced(@CurrentUser() user: AuthContext) {
+  async listSilenced(@CurrentUser() user: AuthContext, @Query('agent_id') agentId?: string) {
+    if (agentId === 'global') return this.silenced.list(user.organizationId, null);
+    if (agentId) {
+      await this.agents.get(user.organizationId, agentId);
+      return this.silenced.list(user.organizationId, agentId);
+    }
     return this.silenced.list(user.organizationId);
   }
 
   @Post('silenced')
-  addSilenced(@CurrentUser() user: AuthContext, @Body() dto: AddSilencedDto) {
+  async addSilenced(@CurrentUser() user: AuthContext, @Body() dto: AddSilencedDto) {
     this.assertAdmin(user);
-    return this.silenced.add(user.organizationId, dto.identifier);
+    const agentId = dto.agent_id || null;
+    if (agentId) await this.agents.get(user.organizationId, agentId);
+    return this.silenced.add(user.organizationId, dto.identifier, agentId);
   }
 
   /**
@@ -203,7 +215,7 @@ export class SetterController {
    */
   @Post('silenced/import')
   @UseInterceptors(FileInterceptor('file', { limits: { fileSize: 5 * 1024 * 1024 } }))
-  importSilenced(
+  async importSilenced(
     @CurrentUser() user: AuthContext,
     @UploadedFile() file: { buffer: Buffer } | undefined,
     @Body() dto: ImportSilencedDto,
@@ -211,7 +223,50 @@ export class SetterController {
     this.assertAdmin(user);
     const text = file?.buffer ? file.buffer.toString('utf8') : (dto.csv ?? '');
     if (!text.trim()) throw new BadRequestException('CSV vacío');
-    return this.silenced.importCsv(user.organizationId, text);
+    const agentId = dto.agent_id && dto.agent_id !== 'global' ? dto.agent_id : null;
+    if (agentId) await this.agents.get(user.organizationId, agentId);
+    return this.silenced.importCsv(user.organizationId, text, agentId);
+  }
+
+  /**
+   * Rellena con IA los campos de UN agente a partir de un texto y/o documentos
+   * (guion, manual, SOP…). Devuelve la propuesta sin guardar: el editor la
+   * muestra y el usuario decide.
+   */
+  @Post('agent-brief')
+  @UseInterceptors(
+    FilesInterceptor('files', 10, { limits: { fileSize: 15 * 1024 * 1024 } }),
+  )
+  async agentBrief(
+    @CurrentUser() user: AuthContext,
+    @UploadedFiles()
+    files: { originalname?: string; mimetype?: string; buffer: Buffer }[] | undefined,
+    @Body('brief') brief?: string,
+    @Body('agent_id') agentId?: string,
+    @Body('kind') kind?: string,
+    @Body('name') name?: string,
+  ) {
+    this.assertAdmin(user);
+    const parts: string[] = [];
+    if (typeof brief === 'string' && brief.trim()) parts.push(brief.trim().slice(0, 60000));
+    for (const file of files ?? []) {
+      if (!file?.buffer) continue;
+      const text = await extractTextFromFile(file);
+      if (text && text.trim().length > 0) {
+        parts.push(`===== DOCUMENTO: ${file.originalname ?? 'sin nombre'} =====\n${text.trim()}`);
+      }
+    }
+    const combined = parts.join('\n\n');
+    if (combined.trim().length < 20) {
+      throw new BadRequestException(
+        'Escribe un brief o sube un documento con texto (los escaneados como imagen no se pueden leer)',
+      );
+    }
+    const agent = agentId
+      ? await this.agents.get(user.organizationId, agentId)
+      : { name: (name ?? '').trim() || 'Nuevo agente', kind: kind ?? 'custom' };
+    const fields = await this.assistant.generateAgentFromBrief(combined, agent, user.organizationId);
+    return { fields, extractedChars: combined.length, files: files?.length ?? 0 };
   }
 
   @Delete('silenced/:id')

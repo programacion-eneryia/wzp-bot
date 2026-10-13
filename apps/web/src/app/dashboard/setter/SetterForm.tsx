@@ -5,10 +5,12 @@ import Link from "next/link";
 import { apiFetch, apiUpload } from "@/lib/api";
 import { invalidateAgents, type Agent } from "@/lib/agents";
 import { invalidateStages } from "@/lib/stages";
-import SilencedContacts from "./SilencedContacts";
 import styles from "./setter.module.css";
 
-/** Base de Conocimiento + comportamiento global de la IA (setter_configs). */
+/**
+ * Base de Conocimiento: la información del negocio que comparten todos los
+ * agentes. Los ajustes de la IA viven en Agentes (generales y por agente).
+ */
 type SetterConfig = {
   company_name: string | null;
   summary: string | null;
@@ -20,19 +22,20 @@ type SetterConfig = {
   team: string | null;
   knowledge_base: string | null;
   proactive_template: string | null;
-  multi_bubble: boolean;
-  first_reply_min_s: number;
-  first_reply_max_s: number;
-  typing_cps: number;
-  active_hours_enabled: boolean;
-  active_hours_start: number;
-  active_hours_end: number;
-  timezone: string;
-  ignore_followed: boolean;
-  model: string | null;
-  daily_token_limit: number;
-  is_active: boolean;
 };
+
+const BUSINESS_KEYS: (keyof SetterConfig)[] = [
+  "company_name",
+  "summary",
+  "promise",
+  "offer",
+  "product",
+  "social_proof",
+  "pricing_links",
+  "team",
+  "knowledge_base",
+  "proactive_template",
+];
 
 type BriefResult = {
   config: SetterConfig;
@@ -44,84 +47,12 @@ type BriefResult = {
   files?: number;
 };
 
-// Modelos permitidos (deben coincidir con ALLOWED_MODELS del backend).
-const MODEL_OPTIONS: { value: string; label: string }[] = [
-  { value: "", label: "Por defecto — Claude Sonnet 4.6 (recomendado)" },
-  { value: "anthropic/claude-sonnet-4.6", label: "Claude Sonnet 4.6" },
-  { value: "anthropic/claude-3.5-sonnet", label: "Claude 3.5 Sonnet" },
-  { value: "anthropic/claude-3.5-haiku", label: "Claude 3.5 Haiku (rápido/barato)" },
-  { value: "openai/gpt-4o", label: "GPT-4o" },
-  { value: "openai/gpt-4o-mini", label: "GPT-4o mini (rápido/barato)" },
-  { value: "google/gemini-2.0-flash-001", label: "Gemini 2.0 Flash" },
-];
-
-// Zonas horarias frecuentes (España + Latinoamérica). Si el navegador soporta
-// la lista completa IANA, la usamos; si no, caemos a esta selección.
-const COMMON_TIMEZONES = [
-  "Europe/Madrid",
-  "Atlantic/Canary",
-  "America/Mexico_City",
-  "America/Bogota",
-  "America/Lima",
-  "America/Costa_Rica",
-  "America/Santiago",
-  "America/Argentina/Buenos_Aires",
-  "America/New_York",
-  "UTC",
-];
-
-function timezoneOptions(): string[] {
-  try {
-    const all = (Intl as unknown as { supportedValuesOf?: (k: string) => string[] })
-      .supportedValuesOf?.("timeZone");
-    if (Array.isArray(all) && all.length > 0) return all;
-  } catch {
-    // navegador sin soporte → lista común
-  }
-  return COMMON_TIMEZONES;
-}
-
-type Tab = "business" | "ai" | "silenced";
-
-const TABS: { id: Tab; label: string }[] = [
-  { id: "business", label: "Negocio" },
-  { id: "ai", label: "Ajustes de IA" },
-  { id: "silenced", label: "Silenciados" },
-];
-
-/** Campos que llegan del servidor pero el validador del PUT rechaza. */
-const SERVER_FIELDS = [
-  "organization_id",
-  "updated_at",
-  "created_at",
-  "setter_name",
-  "identity_role",
-  "objective",
-  "qualification_criteria",
-  "tone",
-  "rules",
-  "funnel_phases",
-  "conversation_types",
-  "best_practices",
-  "special_cases",
-  "followups",
-  "support_enabled",
-  "support_objective",
-  "support_instructions",
-  "winning_examples",
-  "calendar_mode",
-  "calendar_link",
-  "call_duration_min",
-  "default_calendar_id",
-];
-
-export default function SetterForm({ isAdmin = true }: { isAdmin?: boolean }) {
+export default function SetterForm() {
   const [cfg, setCfg] = useState<SetterConfig | null>(null);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [saved, setSaved] = useState(false);
-  const [tab, setTab] = useState<Tab>("business");
 
   const [brief, setBrief] = useState("");
   const [generating, setGenerating] = useState(false);
@@ -151,8 +82,8 @@ export default function SetterForm({ isAdmin = true }: { isAdmin?: boolean }) {
     setSaving(true);
     setError(null);
     try {
-      const payload = { ...cfg } as Record<string, unknown>;
-      for (const k of SERVER_FIELDS) delete payload[k];
+      const payload: Record<string, unknown> = {};
+      for (const k of BUSINESS_KEYS) payload[k] = cfg[k];
       const updated = await apiFetch<SetterConfig>("/api/setter/config", {
         method: "PUT",
         body: JSON.stringify(payload),
@@ -186,7 +117,6 @@ export default function SetterForm({ isAdmin = true }: { isAdmin?: boolean }) {
     setBrief(r.config.knowledge_base ?? "");
     setUploadInfo(describeResult(r));
     setSaved(true);
-    setTab("business");
     invalidateAgents();
     invalidateStages();
   }
@@ -318,20 +248,6 @@ export default function SetterForm({ isAdmin = true }: { isAdmin?: boolean }) {
 
       {error && <div className={styles.error}>{error}</div>}
 
-      <div className={styles.tabs}>
-        {TABS.map((t) => (
-          <button
-            key={t.id}
-            className={`${styles.tab} ${tab === t.id ? styles.tabActive : ""}`}
-            onClick={() => setTab(t.id)}
-          >
-            {t.label}
-          </button>
-        ))}
-      </div>
-
-      {tab === "business" && (
-        <>
           <section className={styles.card}>
             <h2 className={styles.cardTitle}>Tu negocio</h2>
             <p className={styles.muted}>
@@ -379,188 +295,13 @@ export default function SetterForm({ isAdmin = true }: { isAdmin?: boolean }) {
               "Hola {name}! Vi que te interesaste en… ¿te viene bien que te cuente cómo funciona?",
             )}
           </section>
-        </>
-      )}
 
-      {tab === "ai" && (
-        <>
-          <section className={styles.card}>
-            <h2 className={styles.cardTitle}>Comportamiento</h2>
-            <label className={styles.checkRow}>
-              <input
-                type="checkbox"
-                checked={cfg.is_active}
-                onChange={(e) => set("is_active", e.target.checked)}
-              />
-              <span>
-                <strong>IA activada</strong> — interruptor maestro. Si se apaga, ningún agente
-                responde.
-              </span>
-            </label>
-            <label className={styles.checkRow}>
-              <input
-                type="checkbox"
-                checked={cfg.multi_bubble}
-                onChange={(e) => set("multi_bubble", e.target.checked)}
-              />
-              <span>Dividir respuestas en varias burbujas (más humano)</span>
-            </label>
-            <label className={styles.checkRow}>
-              <input
-                type="checkbox"
-                checked={cfg.ignore_followed}
-                onChange={(e) => set("ignore_followed", e.target.checked)}
-              />
-              <span>No responder a cuentas que sigues (Instagram)</span>
-            </label>
-          </section>
-
-          <section className={styles.card}>
-            <h2 className={styles.cardTitle}>Tiempos (para sonar humano)</h2>
-            <div className={styles.row}>
-              <label className={styles.field}>
-                <span className={styles.label}>Tiempo mín. en contestar (seg)</span>
-                <input
-                  type="number"
-                  className={styles.input}
-                  value={cfg.first_reply_min_s}
-                  onChange={(e) => set("first_reply_min_s", Number(e.target.value))}
-                />
-              </label>
-              <label className={styles.field}>
-                <span className={styles.label}>Tiempo máx. en contestar (seg)</span>
-                <input
-                  type="number"
-                  className={styles.input}
-                  value={cfg.first_reply_max_s}
-                  onChange={(e) => set("first_reply_max_s", Number(e.target.value))}
-                />
-              </label>
-            </div>
-            <label className={styles.field}>
-              <span className={styles.label}>
-                Velocidad de escritura{" "}
-                <span className={styles.hint}>— caracteres por segundo (3-5 recomendado)</span>
-              </span>
-              <input
-                type="number"
-                className={styles.input}
-                value={cfg.typing_cps}
-                onChange={(e) => set("typing_cps", Number(e.target.value))}
-              />
-            </label>
-          </section>
-
-          <section className={styles.card}>
-            <h2 className={styles.cardTitle}>Horario de respuesta</h2>
-            <label className={styles.checkRow}>
-              <input
-                type="checkbox"
-                checked={cfg.active_hours_enabled}
-                onChange={(e) => set("active_hours_enabled", e.target.checked)}
-              />
-              <span>Responder solo dentro de un horario</span>
-            </label>
-            <div className={styles.row}>
-              <label className={styles.field}>
-                <span className={styles.label}>Inicio (hora, 0-23)</span>
-                <input
-                  type="number"
-                  className={styles.input}
-                  value={cfg.active_hours_start}
-                  onChange={(e) => set("active_hours_start", Number(e.target.value))}
-                />
-              </label>
-              <label className={styles.field}>
-                <span className={styles.label}>Fin (hora, 0-23)</span>
-                <input
-                  type="number"
-                  className={styles.input}
-                  value={cfg.active_hours_end}
-                  onChange={(e) => set("active_hours_end", Number(e.target.value))}
-                />
-              </label>
-            </div>
-            <label className={styles.field}>
-              <span className={styles.label}>
-                Zona horaria <span className={styles.hint}>— determina el horario activo</span>
-              </span>
-              <select
-                className={styles.input}
-                value={cfg.timezone}
-                onChange={(e) => set("timezone", e.target.value)}
-              >
-                {!timezoneOptions().includes(cfg.timezone) && cfg.timezone && (
-                  <option value={cfg.timezone}>{cfg.timezone}</option>
-                )}
-                {timezoneOptions().map((tz) => (
-                  <option key={tz} value={tz}>
-                    {tz}
-                  </option>
-                ))}
-              </select>
-            </label>
-          </section>
-
-          {isAdmin && (
-            <section className={styles.card}>
-              <h2 className={styles.cardTitle}>Modelo</h2>
-              <label className={styles.field}>
-                <span className={styles.label}>
-                  Modelo LLM por defecto{" "}
-                  <span className={styles.hint}>— cada agente puede sobreescribirlo</span>
-                </span>
-                <select
-                  className={styles.input}
-                  value={cfg.model ?? ""}
-                  onChange={(e) => set("model", e.target.value || null)}
-                >
-                  {MODEL_OPTIONS.map((m) => (
-                    <option key={m.value} value={m.value}>
-                      {m.label}
-                    </option>
-                  ))}
-                </select>
-              </label>
-            </section>
-          )}
-
-          {isAdmin && (
-            <section className={styles.card}>
-              <h2 className={styles.cardTitle}>Control de coste</h2>
-              <label className={styles.field}>
-                <span className={styles.label}>
-                  Límite de tokens de IA por día{" "}
-                  <span className={styles.hint}>
-                    — 0 = sin límite. Al superarlo, el bot deja de responder hasta el día
-                    siguiente.
-                  </span>
-                </span>
-                <input
-                  className={styles.input}
-                  type="number"
-                  min={0}
-                  step={10000}
-                  value={cfg.daily_token_limit ?? 0}
-                  onChange={(e) => set("daily_token_limit", Number(e.target.value))}
-                  placeholder="0"
-                />
-              </label>
-            </section>
-          )}
-        </>
-      )}
-
-      {tab === "silenced" && <SilencedContacts />}
-
-      {tab !== "silenced" && (
-        <div className={styles.actions}>
-          <button className={styles.saveBtn} onClick={save} disabled={saving}>
-            {saving ? "Guardando…" : "Guardar cambios"}
-          </button>
-          {saved && <span className={styles.savedMsg}>Guardado ✓</span>}
-        </div>
-      )}
+      <div className={styles.actions}>
+        <button className={styles.saveBtn} onClick={save} disabled={saving}>
+          {saving ? "Guardando…" : "Guardar cambios"}
+        </button>
+        {saved && <span className={styles.savedMsg}>Guardado ✓</span>}
+      </div>
     </div>
   );
 }

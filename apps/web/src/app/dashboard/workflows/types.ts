@@ -23,6 +23,8 @@ export type WfNodeData = {
   headers?: string;
   auth_token?: string;
   label?: string;
+  /** Agente que toma el chat en "Pasar a IA" (vacío = el del workflow). */
+  agent_id?: string;
 };
 
 export type WfDefNode = {
@@ -44,12 +46,14 @@ export type WorkflowDefinition = { nodes: WfDefNode[]; edges: WfDefEdge[] };
 export type Workflow = {
   id: string;
   name: string;
-  trigger: "lead_created" | "conversation_created" | "manual" | "stage";
+  trigger: "lead_created" | "conversation_created" | "manual" | "stage" | "webhook";
   trigger_config: Record<string, unknown>;
   is_active: boolean;
   /** Agente al que pertenece (null = genérico, vale para cualquier agente). */
   agent_id?: string | null;
   resume_after_hours: number | null;
+  /** URL pública para el trigger "Recibe un webhook". */
+  webhook_url?: string | null;
   definition: WorkflowDefinition;
   created_at: string;
   updated_at: string;
@@ -60,5 +64,6 @@ export const TRIGGER_LABEL: Record<Workflow["trigger"], string> = {
   conversation_created: "Cuando entra una conversación nueva",
   manual: "Manual",
   stage: "Al cambiar de estado",
+  webhook: "Recibe un webhook",
 };
 

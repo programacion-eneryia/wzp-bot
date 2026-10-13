@@ -36,6 +36,7 @@ export class WorkflowsController {
       trigger: dto.trigger,
       trigger_config: dto.trigger_config,
       resume_after_hours: dto.resume_after_hours,
+      agent_id: dto.agent_id,
       definition: dto.definition as unknown as WorkflowDefinition | undefined,
     });
   }
@@ -53,8 +54,14 @@ export class WorkflowsController {
       trigger_config: dto.trigger_config,
       is_active: dto.is_active,
       resume_after_hours: dto.resume_after_hours,
+      agent_id: dto.agent_id,
       definition: dto.definition as unknown as WorkflowDefinition | undefined,
     });
+  }
+
+  @Post(':id/webhook-token')
+  rotateWebhook(@CurrentUser() user: AuthContext, @Param('id') id: string) {
+    return this.workflows.rotateWebhookToken(user.organizationId, id);
   }
 
   @Delete(':id')

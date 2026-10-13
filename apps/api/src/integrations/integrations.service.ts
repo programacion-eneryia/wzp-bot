@@ -5,7 +5,7 @@ import { CryptoService } from '../common/crypto.service';
 import { assertSafeWebhookUrl } from '../common/url-safety';
 
 const COLS =
-  'organization_id, intake_token, manychat_api_key, default_channel_id, proactive_enabled, ghl_webhook_url';
+  'organization_id, intake_token, manychat_api_key, default_channel_id, proactive_enabled, ghl_webhook_url, ghl_api_token, ghl_location_id, ghl_setter_field, ghl_sync_chat_leads';
 
 export type Integration = {
   organization_id: string;
@@ -14,6 +14,12 @@ export type Integration = {
   default_channel_id: string | null;
   proactive_enabled: boolean;
   ghl_webhook_url: string | null;
+  /** Nunca se devuelve: solo si está configurado. */
+  ghl_api_token?: string | null;
+  ghl_api_token_set: boolean;
+  ghl_location_id: string | null;
+  ghl_setter_field: string | null;
+  ghl_sync_chat_leads: boolean;
 };
 
 @Injectable()
@@ -26,7 +32,12 @@ export class IntegrationsService {
 
   /** Descifra los secretos almacenados antes de devolver la fila. */
   private decode(row: Integration): Integration {
-    return { ...row, manychat_api_key: this.crypto.decrypt(row.manychat_api_key) };
+    const { ghl_api_token, ...rest } = row;
+    return {
+      ...rest,
+      manychat_api_key: this.crypto.decrypt(row.manychat_api_key),
+      ghl_api_token_set: Boolean(ghl_api_token),
+    };
   }
 
   async getOrCreate(orgId: string): Promise<Integration> {
@@ -53,6 +64,10 @@ export class IntegrationsService {
       default_channel_id?: string | null;
       proactive_enabled?: boolean;
       ghl_webhook_url?: string;
+      ghl_api_token?: string;
+      ghl_location_id?: string;
+      ghl_setter_field?: string;
+      ghl_sync_chat_leads?: boolean;
     },
   ): Promise<Integration> {
     await this.getOrCreate(orgId);
@@ -69,6 +84,20 @@ export class IntegrationsService {
     if (typeof patch.ghl_webhook_url === 'string') {
       const v = patch.ghl_webhook_url.trim();
       update.ghl_webhook_url = v ? assertSafeWebhookUrl(v) : null;
+    }
+    // Token de la integración privada de GHL: cifrado en reposo. Vacío = borrar.
+    if (typeof patch.ghl_api_token === 'string') {
+      const v = patch.ghl_api_token.trim();
+      update.ghl_api_token = v ? this.crypto.encrypt(v) : null;
+    }
+    if (typeof patch.ghl_location_id === 'string') {
+      update.ghl_location_id = patch.ghl_location_id.trim() || null;
+    }
+    if (typeof patch.ghl_setter_field === 'string') {
+      update.ghl_setter_field = patch.ghl_setter_field.trim() || null;
+    }
+    if (typeof patch.ghl_sync_chat_leads === 'boolean') {
+      update.ghl_sync_chat_leads = patch.ghl_sync_chat_leads;
     }
 
     const { data, error } = await this.supabase.admin

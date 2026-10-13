@@ -2,7 +2,18 @@
 
 import { useEffect, useRef, useState } from "react";
 import { apiFetch, apiUpload } from "@/lib/api";
-import { AGENT_KIND_LABEL, invalidateAgents, useAgents, type Agent, type AgentKind } from "@/lib/agents";
+import {
+  AGENT_KIND_LABEL,
+  invalidateAgents,
+  useAgents,
+  type Agent,
+  type AgentBehavior,
+  type AgentKind,
+} from "@/lib/agents";
+import { MODEL_CHOICES, timezoneOptions } from "@/lib/ai-options";
+import { useStages, type Pipeline } from "@/lib/stages";
+import SilencedContacts from "../setter/SilencedContacts";
+import GeneralSettings from "./GeneralSettings";
 import styles from "./agents.module.css";
 
 type Channel = {
@@ -23,15 +34,9 @@ const PROVIDER_LABEL: Record<string, string> = {
   telegram: "Telegram",
 };
 
-// Modelos permitidos (deben coincidir con ALLOWED_MODELS del backend).
 const MODEL_OPTIONS: { value: string; label: string }[] = [
-  { value: "", label: "El de la Base de Conocimiento (por defecto)" },
-  { value: "anthropic/claude-sonnet-4.6", label: "Claude Sonnet 4.6" },
-  { value: "anthropic/claude-3.5-sonnet", label: "Claude 3.5 Sonnet" },
-  { value: "anthropic/claude-3.5-haiku", label: "Claude 3.5 Haiku (rápido/barato)" },
-  { value: "openai/gpt-4o", label: "GPT-4o" },
-  { value: "openai/gpt-4o-mini", label: "GPT-4o mini (rápido/barato)" },
-  { value: "google/gemini-2.0-flash-001", label: "Gemini 2.0 Flash" },
+  { value: "", label: "El de los ajustes generales (por defecto)" },
+  ...MODEL_CHOICES,
 ];
 
 const KIND_CHIP: Record<AgentKind, string> = {
@@ -42,6 +47,7 @@ const KIND_CHIP: Record<AgentKind, string> = {
 
 export default function Agents({ isAdmin = true }: { isAdmin?: boolean }) {
   const { agents, loading, reload } = useAgents();
+  const { pipelines } = useStages();
   const [channels, setChannels] = useState<Channel[]>([]);
   const [calendars, setCalendars] = useState<Calendar[]>([]);
   const [editing, setEditing] = useState<Agent | null>(null);
@@ -102,6 +108,24 @@ export default function Agents({ isAdmin = true }: { isAdmin?: boolean }) {
     );
   }
 
+  async function setDefault(kind: "lead" | "conversation", agentId: string | null) {
+    const col = kind === "lead" ? "is_default_lead" : "is_default_conversation";
+    const current = agents.find((a) => a[col]);
+    await run(async () => {
+      if (agentId) {
+        await apiFetch(`/api/agents/${agentId}`, {
+          method: "PUT",
+          body: JSON.stringify({ [col]: true }),
+        });
+      } else if (current) {
+        await apiFetch(`/api/agents/${current.id}`, {
+          method: "PUT",
+          body: JSON.stringify({ [col]: false }),
+        });
+      }
+    });
+  }
+
   function remove(a: Agent) {
     if (
       !confirm(
@@ -118,6 +142,7 @@ export default function Agents({ isAdmin = true }: { isAdmin?: boolean }) {
         agent={editing}
         channels={channels}
         calendars={calendars}
+        pipelines={pipelines}
         isAdmin={isAdmin}
         onBack={() => {
           setEditing(null);
@@ -130,6 +155,8 @@ export default function Agents({ isAdmin = true }: { isAdmin?: boolean }) {
   return (
     <div className={styles.wrap}>
       {error && <div className={styles.error}>{error}</div>}
+
+      <GeneralSettings agents={agents} isAdmin={isAdmin} onSetDefault={setDefault} />
 
       <div className={styles.toolbar}>
         <button className={styles.primaryBtn} onClick={() => create("setter")} disabled={busy}>
@@ -161,7 +188,18 @@ export default function Agents({ isAdmin = true }: { isAdmin?: boolean }) {
             </div>
             <div className={styles.chips}>
               <span className={`${styles.chip} ${KIND_CHIP[a.kind]}`}>{AGENT_KIND_LABEL[a.kind]}</span>
-              {!a.uses_stages && <span className={`${styles.chip} ${styles.chipOff}`}>sin embudo</span>}
+              {a.is_default_lead && (
+                <span className={`${styles.chip} ${styles.chipOn}`}>por defecto · leads</span>
+              )}
+              {a.is_default_conversation && (
+                <span className={`${styles.chip} ${styles.chipOn}`}>por defecto · conversaciones</span>
+              )}
+              <span className={`${styles.chip} ${styles.chipOff}`}>
+                {a.pipeline_id
+                  ? `pipeline ${pipelines.find((p) => p.id === a.pipeline_id)?.name ?? ""}`
+                  : "sin pipeline"}
+              </span>
+              {a.behavior && <span className={`${styles.chip} ${styles.chipOff}`}>ajustes propios</span>}
               {a.calendar_mode !== "off" && (
                 <span className={`${styles.chip} ${styles.chipOff}`}>
                   {a.calendar_mode === "link" ? "agenda por enlace" : "agenda por huecos"}
@@ -208,22 +246,56 @@ export default function Agents({ isAdmin = true }: { isAdmin?: boolean }) {
 /* Editor                                                             */
 /* ------------------------------------------------------------------ */
 
-type EditorTab = "identity" | "conversation" | "calendar" | "learn" | "channels";
+type EditorTab = "identity" | "conversation" | "calendar" | "settings" | "learn" | "channels";
 
 const EDITOR_TABS: { id: EditorTab; label: string }[] = [
   { id: "identity", label: "Identidad" },
   { id: "conversation", label: "Cómo conversa" },
   { id: "calendar", label: "Agenda" },
+  { id: "settings", label: "Ajustes de IA" },
   { id: "learn", label: "Aprendizaje" },
   { id: "channels", label: "Canales" },
 ];
+
+/** Campos que la IA rellena desde un brief/documento. */
+type BriefFields = Partial<
+  Pick<
+    Agent,
+    | "persona_name"
+    | "identity_role"
+    | "objective"
+    | "tone"
+    | "rules"
+    | "instructions"
+    | "qualification_criteria"
+    | "funnel_phases"
+    | "conversation_types"
+    | "special_cases"
+    | "followups"
+    | "best_practices"
+  >
+>;
+
+/** Valores de partida cuando un agente activa ajustes propios. */
+const BEHAVIOR_DEFAULTS: Required<AgentBehavior> = {
+  multi_bubble: true,
+  first_reply_min_s: 5,
+  first_reply_max_s: 15,
+  active_hours_enabled: false,
+  active_hours_start: 9,
+  active_hours_end: 21,
+  timezone: "Europe/Madrid",
+};
 
 /** Campos del agente que se envían en el PUT. */
 const EDITABLE: (keyof Agent)[] = [
   "name",
   "kind",
   "is_active",
-  "uses_stages",
+  "pipeline_id",
+  "is_default_lead",
+  "is_default_conversation",
+  "behavior",
   "persona_name",
   "identity_role",
   "objective",
@@ -248,12 +320,14 @@ function AgentEditor({
   agent: initial,
   channels,
   calendars,
+  pipelines,
   isAdmin,
   onBack,
 }: {
   agent: Agent;
   channels: Channel[];
   calendars: Calendar[];
+  pipelines: Pipeline[];
   isAdmin: boolean;
   onBack: () => void;
 }) {
@@ -269,6 +343,49 @@ function AgentEditor({
   const examplesRef = useRef<HTMLInputElement>(null);
   const [examplesInfo, setExamplesInfo] = useState<string | null>(null);
   const [uploading, setUploading] = useState(false);
+  const [brief, setBrief] = useState("");
+  const [briefBusy, setBriefBusy] = useState(false);
+  const [briefInfo, setBriefInfo] = useState<string | null>(null);
+  const briefRef = useRef<HTMLInputElement>(null);
+
+  /** La IA lee el texto y/o los documentos y rellena los campos (sin guardar). */
+  async function fillFromBrief(files?: FileList) {
+    if (!brief.trim() && !files?.length) {
+      setError("Pega un texto o sube un documento para que la IA rellene el agente");
+      return;
+    }
+    setBriefBusy(true);
+    setError(null);
+    setBriefInfo(null);
+    try {
+      const form = new FormData();
+      if (brief.trim()) form.append("brief", brief.trim());
+      Array.from(files ?? []).forEach((f) => form.append("files", f));
+      form.append("agent_id", agent.id);
+      const r = await apiUpload<{ fields: BriefFields; extractedChars: number; files: number }>(
+        "/api/setter/agent-brief",
+        form,
+      );
+      const filled = Object.keys(r.fields).length;
+      setAgent((prev) => ({ ...prev, ...r.fields }));
+      setSaved(false);
+      setBriefInfo(
+        `La IA ha rellenado ${filled} campo(s)${r.files ? ` a partir de ${r.files} documento(s)` : ""}. Revísalos en cada pestaña y pulsa "Guardar cambios".`,
+      );
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Error al generar");
+    } finally {
+      setBriefBusy(false);
+      if (briefRef.current) briefRef.current.value = "";
+    }
+  }
+
+  const behavior = agent.behavior;
+  function setBehavior<K extends keyof AgentBehavior>(key: K, value: AgentBehavior[K]) {
+    setAgent((prev) => ({ ...prev, behavior: { ...(prev.behavior ?? {}), [key]: value } }));
+    setSaved(false);
+  }
+  const bv = { ...BEHAVIOR_DEFAULTS, ...(behavior ?? {}) };
 
   function set<K extends keyof Agent>(key: K, value: Agent[K]) {
     setAgent((prev) => ({ ...prev, [key]: value }));
@@ -385,6 +502,54 @@ function AgentEditor({
 
       {tab === "identity" && (
         <>
+          {isAdmin && (
+            <section className={styles.card}>
+              <h2 className={styles.cardTitle}>✨ Rellenar con IA desde un documento</h2>
+              <p className={styles.muted}>
+                Pega el brief de este agente o sube su guion, manual o SOP (PDF, Word o TXT). La IA
+                rellena identidad, objetivo, reglas, fases y casos. Nada se guarda hasta que pulses
+                &quot;Guardar cambios&quot;.
+              </p>
+              <textarea
+                className={styles.textarea}
+                rows={4}
+                value={brief}
+                onChange={(e) => setBrief(e.target.value)}
+                placeholder="Ej: Este agente atiende a clientes que ya compraron el curso. Resuelve dudas de acceso, facturación…"
+              />
+              <div className={styles.toolbar}>
+                <button
+                  className={styles.primaryBtn}
+                  onClick={() => void fillFromBrief()}
+                  disabled={briefBusy}
+                >
+                  {briefBusy ? "Analizando…" : "Rellenar desde el texto"}
+                </button>
+                <input
+                  ref={briefRef}
+                  type="file"
+                  multiple
+                  accept=".pdf,.docx,.txt,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document,text/plain"
+                  className={styles.fileInput}
+                  onChange={(e) => {
+                    const fs = e.target.files;
+                    if (fs && fs.length > 0) void fillFromBrief(fs);
+                  }}
+                  disabled={briefBusy}
+                />
+                <button
+                  type="button"
+                  className={styles.ghostBtn}
+                  onClick={() => briefRef.current?.click()}
+                  disabled={briefBusy}
+                >
+                  Subir documento
+                </button>
+              </div>
+              {briefInfo && <p className={styles.savedMsg}>{briefInfo}</p>}
+            </section>
+          )}
+
           <section className={styles.card}>
             <h2 className={styles.cardTitle}>Quién es</h2>
             <div className={styles.row}>
@@ -425,12 +590,7 @@ function AgentEditor({
                 <select
                   className={styles.select}
                   value={agent.kind}
-                  onChange={(e) => {
-                    const kind = e.target.value as AgentKind;
-                    set("kind", kind);
-                    if (kind === "support") set("uses_stages", false);
-                    if (kind === "setter") set("uses_stages", true);
-                  }}
+                  onChange={(e) => set("kind", e.target.value as AgentKind)}
                 >
                   <option value="setter">Setter — cualifica y agenda</option>
                   <option value="support">Soporte — atiende clientes</option>
@@ -454,17 +614,57 @@ function AgentEditor({
                 </label>
               )}
             </div>
+            <label className={styles.field}>
+              <span className={styles.label}>
+                Pipeline{" "}
+                <span className={styles.hint}>
+                  — etapas por las que avanzan sus conversaciones (se editan en Pipelines y Stages)
+                </span>
+              </span>
+              <select
+                className={styles.select}
+                value={agent.pipeline_id ?? ""}
+                onChange={(e) => set("pipeline_id", e.target.value || null)}
+              >
+                <option value="">Sin pipeline</option>
+                {pipelines.map((p) => (
+                  <option key={p.id} value={p.id}>
+                    {p.name}
+                    {p.is_default ? " (principal)" : ""}
+                  </option>
+                ))}
+              </select>
+            </label>
+          </section>
+
+          <section className={styles.card}>
+            <h2 className={styles.cardTitle}>Cuándo se activa solo</h2>
             <label className={styles.checkRow}>
               <input
                 type="checkbox"
-                checked={agent.uses_stages}
-                onChange={(e) => set("uses_stages", e.target.checked)}
+                checked={agent.is_default_lead}
+                onChange={(e) => set("is_default_lead", e.target.checked)}
               />
               <span>
-                <strong>Usa el embudo (Pipelines y Stages)</strong> — las conversaciones de este
-                agente avanzan por etapas y cuentan en Estadísticas. Desmárcalo para soporte.
+                <strong>Predeterminado para leads</strong> — atiende a los leads que entran por
+                formulario, GoHighLevel o webhook (si no indican otro agente).
               </span>
             </label>
+            <label className={styles.checkRow}>
+              <input
+                type="checkbox"
+                checked={agent.is_default_conversation}
+                onChange={(e) => set("is_default_conversation", e.target.checked)}
+              />
+              <span>
+                <strong>Predeterminado para conversaciones nuevas</strong> — responde a quien
+                escribe por primera vez por un canal sin agente asignado.
+              </span>
+            </label>
+            <p className={styles.muted}>
+              Solo puede haber un agente predeterminado de cada tipo; al marcar este, se desmarca el
+              anterior. Si no hay ninguno, los chats nuevos entran con la IA pausada.
+            </p>
           </section>
         </>
       )}
@@ -547,6 +747,103 @@ function AgentEditor({
             calendario o GoHighLevel), nunca porque el lead diga que ya reservó.
           </p>
         </section>
+      )}
+
+      {tab === "settings" && (
+        <>
+          <section className={styles.card}>
+            <h2 className={styles.cardTitle}>Comportamiento de este agente</h2>
+            <label className={styles.checkRow}>
+              <input
+                type="checkbox"
+                checked={Boolean(behavior)}
+                onChange={(e) => set("behavior", e.target.checked ? { ...BEHAVIOR_DEFAULTS } : null)}
+              />
+              <span>
+                <strong>Usar ajustes propios</strong> — si no, usa los ajustes generales de la
+                cuenta (horario, tiempos de respuesta…).
+              </span>
+            </label>
+            {behavior && (
+              <>
+                <label className={styles.checkRow}>
+                  <input
+                    type="checkbox"
+                    checked={bv.multi_bubble}
+                    onChange={(e) => setBehavior("multi_bubble", e.target.checked)}
+                  />
+                  <span>Dividir respuestas en varias burbujas</span>
+                </label>
+                <div className={styles.row}>
+                  <label className={styles.field}>
+                    <span className={styles.label}>Tiempo mín. en contestar (seg)</span>
+                    <input
+                      type="number"
+                      className={styles.input}
+                      value={bv.first_reply_min_s}
+                      onChange={(e) => setBehavior("first_reply_min_s", Number(e.target.value))}
+                    />
+                  </label>
+                  <label className={styles.field}>
+                    <span className={styles.label}>Tiempo máx. en contestar (seg)</span>
+                    <input
+                      type="number"
+                      className={styles.input}
+                      value={bv.first_reply_max_s}
+                      onChange={(e) => setBehavior("first_reply_max_s", Number(e.target.value))}
+                    />
+                  </label>
+                </div>
+                <label className={styles.checkRow}>
+                  <input
+                    type="checkbox"
+                    checked={bv.active_hours_enabled}
+                    onChange={(e) => setBehavior("active_hours_enabled", e.target.checked)}
+                  />
+                  <span>Responder solo dentro de un horario</span>
+                </label>
+                <div className={styles.row}>
+                  <label className={styles.field}>
+                    <span className={styles.label}>Inicio (hora, 0-23)</span>
+                    <input
+                      type="number"
+                      className={styles.input}
+                      value={bv.active_hours_start}
+                      onChange={(e) => setBehavior("active_hours_start", Number(e.target.value))}
+                    />
+                  </label>
+                  <label className={styles.field}>
+                    <span className={styles.label}>Fin (hora, 0-23)</span>
+                    <input
+                      type="number"
+                      className={styles.input}
+                      value={bv.active_hours_end}
+                      onChange={(e) => setBehavior("active_hours_end", Number(e.target.value))}
+                    />
+                  </label>
+                  <label className={styles.field}>
+                    <span className={styles.label}>Zona horaria</span>
+                    <select
+                      className={styles.select}
+                      value={bv.timezone}
+                      onChange={(e) => setBehavior("timezone", e.target.value)}
+                    >
+                      {!timezoneOptions().includes(bv.timezone) && (
+                        <option value={bv.timezone}>{bv.timezone}</option>
+                      )}
+                      {timezoneOptions().map((tz) => (
+                        <option key={tz} value={tz}>
+                          {tz}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                </div>
+              </>
+            )}
+          </section>
+          <SilencedContacts agentId={agent.id} agentName={agent.name} />
+        </>
       )}
 
       {tab === "learn" && (
