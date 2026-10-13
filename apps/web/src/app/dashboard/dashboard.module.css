@@ -50,8 +50,13 @@
 @media (max-width: 760px) {
   .shell {
     grid-template-columns: 1fr;
+    grid-template-rows: auto 1fr;
+  }
+  .topbar {
+    position: static;
+    padding: 10px 16px;
   }
   .content {
-    padding: 20px 16px 40px;
+    padding: 16px 12px 24px;
   }
 }
