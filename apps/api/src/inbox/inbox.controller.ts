@@ -54,6 +54,8 @@ class BulkDto {
     provider?: string;
     agent_id?: string;
     pipeline_id?: string;
+    q?: string;
+    ai?: string;
   };
   @IsOptional() @IsBoolean() ai_enabled?: boolean;
   /** UUID = pasar a ese agente; cadena vacía = volver al agente del canal. */
@@ -80,12 +82,16 @@ export class InboxController {
     @Query('provider') provider?: string,
     @Query('agent_id') agentId?: string,
     @Query('pipeline_id') pipelineId?: string,
+    @Query('q') q?: string,
+    @Query('ai') ai?: string,
   ) {
     const prov = (PROVIDERS as readonly string[]).includes(provider ?? '') ? provider : undefined;
     return this.inbox.list(user.organizationId, stage, archived === 'true' || archived === '1', {
       provider: prov,
       agentId: agentId || undefined,
       pipelineId: pipelineId || undefined,
+      search: q?.trim() || undefined,
+      aiEnabled: ai === 'on' ? true : ai === 'off' ? false : undefined,
     });
   }
 
@@ -102,6 +108,8 @@ export class InboxController {
         provider: prov && (PROVIDERS as readonly string[]).includes(prov) ? prov : undefined,
         agentId: str(f.agent_id),
         pipelineId: str(f.pipeline_id),
+        search: str(f.q),
+        aiEnabled: f.ai === 'on' ? true : f.ai === 'off' ? false : undefined,
       },
       ai_enabled: dto.ai_enabled,
       agent_id: dto.agent_id,

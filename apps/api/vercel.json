@@ -3,6 +3,7 @@
   "framework": null,
   "buildCommand": "pnpm run build",
   "outputDirectory": "public",
+  "regions": ["fra1"],
   "installCommand": "pnpm install --frozen-lockfile",
   "functions": {
     "api/index.js": {

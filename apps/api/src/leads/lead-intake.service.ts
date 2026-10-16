@@ -4,6 +4,7 @@ import { SetterConfigService } from '../setter/setter-config.service';
 import { MessagingService } from '../messaging/messaging.service';
 import { GhlSyncService } from '../ghl/ghl-sync.service';
 import { newConversationsStartPaused } from '../common/flags';
+import { betterName } from '../common/phone';
 import { WorkflowEngineService } from '../workflows/workflow-engine.service';
 import { AgentsService } from '../agents/agents.service';
 import { LeadsService } from './leads.service';
@@ -367,7 +368,9 @@ export class LeadIntakeService {
         .eq('organization_id', orgId)
         .eq('external_subscriber_id', input.external_id)
         .eq('is_test', false)
-        .maybeSingle();
+        .order('created_at', { ascending: true })
+        .limit(1)
+        .then((r) => ({ data: r.data?.[0] ?? null }));
       if (data) {
         await this.attachChannelIfMissing(data, channel);
         await this.applyExplicitAgent(orgId, data.id as string, input.agent);
@@ -381,18 +384,24 @@ export class LeadIntakeService {
     if (handle) {
       const { data } = await this.supabase.admin
         .from('conversations')
-        .select('id, proactive_sent, unipile_chat_id, contact_external_id, channel_id')
+        .select('id, proactive_sent, unipile_chat_id, contact_external_id, channel_id, contact_name')
         .eq('organization_id', orgId)
         .eq('provider', provider)
         .eq('contact_handle', handle)
         .eq('is_test', false)
-        .maybeSingle();
+        // Si hubiera varias, la que ya tiene chat es donde escribe el contacto.
+        .order('unipile_chat_id', { ascending: true, nullsFirst: false })
+        .order('last_message_at', { ascending: false, nullsFirst: false })
+        .limit(1)
+        .then((r) => ({ data: r.data?.[0] ?? null }));
       if (data) {
         // Actualizamos origen/consentimiento por si llega más info y, si la
         // conversación no tenía canal, la vinculamos al que ahora sí existe.
+        const name = betterName(data.contact_name as string | null, input.name);
         await this.supabase.admin
           .from('conversations')
           .update({
+            ...(name ? { contact_name: name } : {}),
             source: input.source ?? null,
             source_detail: input.source_detail ?? null,
             campaign: input.campaign ?? null,

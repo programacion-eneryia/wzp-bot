@@ -15,7 +15,18 @@ import { effectiveBehavior } from '../agents/agents.types';
 import { StagesService } from '../stages/stages.service';
 import { GhlSyncService } from '../ghl/ghl-sync.service';
 import { newConversationsStartPaused } from '../common/flags';
+import {
+  betterName,
+  isPlaceholderName,
+  phoneFromJid,
+  phoneOfAttendee,
+  phoneVariants,
+  toE164,
+} from '../common/phone';
 import { DEBOUNCE_MS, type OutgoingJob, type RespondJob } from './queues';
+
+const CONV_COLS =
+  'id, ai_enabled, mode, mode_locked, contact_name, contact_external_id, contact_handle, unread_count';
 
 /** Lock obsoleto: si una respuesta/envío quedó "en curso" más de esto, se reclama. */
 const LOCK_STALE_MS = 3 * 60 * 1000;
@@ -126,14 +137,22 @@ export class MessagingService {
         content: evt.text,
         metadata: { message_id: evt.messageId ?? null },
       });
+      const contactUpdate: Record<string, unknown> = {};
+      const name = betterName(conv.contact_name as string | null, evt.senderName);
+      if (name) contactUpdate.contact_name = name;
+      // El handle solo se cambia por un teléfono real, nunca por un id `@lid`.
+      const phone = phoneFromJid(evt.senderProviderId);
+      if (phone && phone !== conv.contact_handle) contactUpdate.contact_handle = phone;
+      else if (!conv.contact_handle && evt.senderProviderId) {
+        contactUpdate.contact_handle = evt.senderProviderId;
+      }
       await this.supabase.admin
         .from('conversations')
         .update({
           last_inbound_at: new Date().toISOString(),
           last_message_at: new Date().toISOString(),
           unread_count: (conv.unread_count ?? 0) + 1,
-          contact_name: evt.senderName ?? conv.contact_name,
-          contact_handle: evt.senderProviderId ?? conv.contact_handle,
+          ...contactUpdate,
         })
         .eq('id', conv.id);
 
@@ -507,19 +526,19 @@ export class MessagingService {
     evt: IncomingEvent,
   ): Promise<void> {
     try {
-      // Solo conversaciones existentes: no creamos chats a partir de ecos.
-      const { data: conv } = await this.supabase.admin
-        .from('conversations')
-        .select('id, ai_enabled')
-        .eq('organization_id', orgId)
-        .eq('channel_id', channel.id)
-        .eq('contact_external_id', evt.chatId)
-        .eq('is_test', false)
-        .maybeSingle();
-      if (!conv) return;
-
       const text = evt.text.trim();
       if (!text) return;
+
+      // No creamos chats a partir de ecos, pero sí vinculamos el de un lead que
+      // ya teníamos por teléfono (p.ej. la plantilla que GHL envía al entrar).
+      let conv = await this.findByChat(orgId, channel.id, evt.chatId, 'id, ai_enabled');
+      if (!conv) {
+        const { phone } = await this.chatContact(evt.chatId);
+        if (phone) {
+          conv = await this.linkIntakeConversation(orgId, channel, evt.chatId, phone, 'id, ai_enabled');
+        }
+      }
+      if (!conv) return;
 
       const since = new Date(Date.now() - 15 * 60_000).toISOString();
       const { data: recent } = await this.supabase.admin
@@ -535,19 +554,32 @@ export class MessagingService {
 
       if (evt.messageId && (await this.messageExists(conv.id as string, evt.messageId))) return;
 
+      // Antes de que el contacto escriba, un mensaje enviado desde fuera (la
+      // plantilla de primer contacto de GHL/CRM) no es una persona llevando el
+      // chat: no pausamos la IA.
+      const { count: contactMsgs } = await this.supabase.admin
+        .from('messages')
+        .select('id', { count: 'exact', head: true })
+        .eq('conversation_id', conv.id)
+        .eq('role', 'contact');
+      const firstContact = (contactMsgs ?? 0) === 0;
+
       await this.supabase.admin.from('messages').insert({
         conversation_id: conv.id,
         organization_id: orgId,
         role: 'agent',
         content: text,
-        metadata: { message_id: evt.messageId ?? null, source: 'manual_echo' },
+        metadata: {
+          message_id: evt.messageId ?? null,
+          source: firstContact ? 'external_first_contact' : 'manual_echo',
+        },
       });
 
       const update: Record<string, unknown> = {
         last_outbound_at: new Date().toISOString(),
         last_message_at: new Date().toISOString(),
       };
-      if (conv.ai_enabled) {
+      if (conv.ai_enabled && !firstContact) {
         // Cancela también cualquier respuesta pendiente del bot.
         update.ai_enabled = false;
         update.respond_after = null;
@@ -856,8 +888,8 @@ export class MessagingService {
         .select('id')
         .eq('organization_id', orgId)
         .eq('conversation_id', conversationId)
-        .maybeSingle();
-      if (byConv) return;
+        .limit(1);
+      if (byConv?.length) return;
 
       const { data: conv } = await this.supabase.admin
         .from('conversations')
@@ -869,25 +901,26 @@ export class MessagingService {
         .maybeSingle();
       if (!conv) return;
 
-      const phone = (conv.contact_handle as string | null) ?? null;
+      const phone = toE164(conv.contact_handle as string | null);
       if (phone) {
         const { data: byPhone } = await this.supabase.admin
           .from('leads')
-          .select('id, conversation_id')
+          .select('id')
           .eq('organization_id', orgId)
           .eq('phone', phone)
           .is('conversation_id', null)
-          .maybeSingle();
-        if (byPhone) {
+          .order('created_at', { ascending: true })
+          .limit(1);
+        if (byPhone?.length) {
           await this.supabase.admin
             .from('leads')
             .update({ conversation_id: conversationId })
-            .eq('id', byPhone.id);
+            .eq('id', byPhone[0].id);
           return;
         }
       }
 
-      await this.supabase.admin.from('leads').insert({
+      const { error: insertError } = await this.supabase.admin.from('leads').insert({
         organization_id: orgId,
         conversation_id: conversationId,
         name: (conv.contact_name as string | null) ?? null,
@@ -900,6 +933,11 @@ export class MessagingService {
         status: 'new',
         consent_optin: true,
       });
+      // 23505: otra ejecución en paralelo ya creó el lead de esta conversación.
+      if (insertError) {
+        if (insertError.code !== '23505') throw insertError;
+        return;
+      }
       // Lead nuevo por chat → contacto en GHL (si la cuenta lo tiene configurado).
       void this.ghlSync.syncChatLead(orgId, conversationId);
     } catch (err) {
@@ -1195,25 +1233,102 @@ export class MessagingService {
     return data;
   }
 
+  /** Conversación ya asociada a este chat del proveedor (si existe). */
+  async findByChat(orgId: string, channelId: string, chatId: string, cols = CONV_COLS) {
+    const { data } = await this.supabase.admin
+      .from('conversations')
+      .select(cols)
+      .eq('organization_id', orgId)
+      .eq('channel_id', channelId)
+      .eq('contact_external_id', chatId)
+      .eq('is_test', false)
+      .order('created_at', { ascending: true })
+      .limit(1);
+    return (data?.[0] as unknown as Record<string, any> | undefined) ?? null;
+  }
+
+  /** Nombre y teléfono real del contacto de un chat (vía participantes). */
+  async chatContact(chatId: string): Promise<{ name: string | null; phone: string | null }> {
+    try {
+      const attendees = await this.unipile.listChatAttendees(chatId);
+      const other = attendees.find((a) => !(a.is_self === 1 || a.is_self === true));
+      if (other) return { name: other.name?.trim() || null, phone: phoneOfAttendee(other) };
+    } catch (err) {
+      this.logger.warn(`No se pudieron leer los participantes del chat ${chatId}: ${String(err)}`);
+    }
+    return { name: null, phone: null };
+  }
+
+  /**
+   * Un lead que entró por GHL/formulario tiene ya su conversación (con el
+   * setter_id, el agente y la IA según GHL) pero sin chat de WhatsApp. Cuando
+   * aparece el chat de ese teléfono la vinculamos a ella en vez de crear otra:
+   * si no, la activación desde GHL caería en una conversación vacía y las
+   * respuestas del contacto en otra con la IA en pausa.
+   */
+  async linkIntakeConversation(
+    orgId: string,
+    channel: { id: string; provider: string },
+    chatId: string,
+    phone: string,
+    cols = CONV_COLS,
+  ) {
+    const { data } = await this.supabase.admin
+      .from('conversations')
+      .select(cols)
+      .eq('organization_id', orgId)
+      .eq('provider', channel.provider)
+      .in('contact_handle', phoneVariants(phone))
+      .is('unipile_chat_id', null)
+      .is('contact_external_id', null)
+      .eq('is_test', false)
+      .or(`channel_id.is.null,channel_id.eq.${channel.id}`)
+      .order('created_at', { ascending: false })
+      .limit(1);
+    const conv = data?.[0] as unknown as Record<string, any> | undefined;
+    if (!conv) return null;
+
+    const { data: linked } = await this.supabase.admin
+      .from('conversations')
+      .update({
+        unipile_chat_id: chatId,
+        contact_external_id: chatId,
+        channel_id: channel.id,
+        contact_handle: phone,
+      })
+      .eq('id', conv.id)
+      .is('unipile_chat_id', null)
+      .select(cols);
+    if (!linked?.length) return this.findByChat(orgId, channel.id, chatId, cols);
+    this.logger.log(`Chat ${chatId} vinculado a la conversación existente ${conv.id as string}`);
+    return linked[0] as unknown as Record<string, any>;
+  }
+
   private async upsertConversation(
     orgId: string,
     channel: { id: string; provider: string },
     evt: IncomingEvent,
   ) {
-    const { data: existing } = await this.supabase.admin
-      .from('conversations')
-      .select('id, ai_enabled, mode, mode_locked, contact_name, contact_external_id, contact_handle, unread_count')
-      .eq('organization_id', orgId)
-      .eq('channel_id', channel.id)
-      .eq('contact_external_id', evt.chatId)
-      .eq('is_test', false)
-      .maybeSingle();
-
+    const existing = await this.findByChat(orgId, channel.id, evt.chatId);
     if (existing) return existing;
+
+    const fromJid = phoneFromJid(evt.senderProviderId);
+    const contact = fromJid
+      ? { name: null, phone: fromJid }
+      : await this.chatContact(evt.chatId);
+    if (contact.phone) {
+      const linked = await this.linkIntakeConversation(orgId, channel, evt.chatId, contact.phone);
+      if (linked) return linked;
+    }
 
     // La IA solo arranca encendida si hay un agente predeterminado para
     // conversaciones nuevas; si no, se activa desde el inbox, un workflow o GHL.
     const initial = await this.agents.initialForConversation(orgId, channel.id);
+    const name =
+      [evt.senderName, contact.name].find((n) => !isPlaceholderName(n)) ??
+      evt.senderName ??
+      contact.name ??
+      'Lead';
     const { data: created, error } = await this.supabase.admin
       .from('conversations')
       .insert({
@@ -1222,13 +1337,13 @@ export class MessagingService {
         provider: channel.provider,
         contact_external_id: evt.chatId,
         unipile_chat_id: evt.chatId,
-        contact_handle: evt.senderProviderId ?? null,
-        contact_name: evt.senderName ?? 'Lead',
+        contact_handle: contact.phone ?? evt.senderProviderId ?? null,
+        contact_name: name,
         is_test: false,
         ai_enabled: initial.ai_enabled && !newConversationsStartPaused(),
         stage: initial.stage,
       })
-      .select('id, ai_enabled, mode, mode_locked, contact_name, contact_external_id, contact_handle, unread_count')
+      .select(CONV_COLS)
       .single();
     if (error) throw error;
 

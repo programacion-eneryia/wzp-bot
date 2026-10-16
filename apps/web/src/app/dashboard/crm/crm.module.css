@@ -107,7 +107,7 @@
 
 /* --- Table --- */
 .tableWrap {
-  border: 1px solid var(--border, rgba(255, 255, 255, 0.08));
+  border: 1.5px solid var(--line-strong);
   border-radius: 12px;
   overflow: hidden;
   background: var(--surface, #141414);
@@ -124,7 +124,7 @@
   text-transform: uppercase;
   letter-spacing: 0.06em;
   color: var(--text-faint, #8a8a8a);
-  border-bottom: 1px solid var(--border, rgba(255, 255, 255, 0.08));
+  border-bottom: 1.5px solid var(--line-strong);
 }
 .row {
   cursor: pointer;

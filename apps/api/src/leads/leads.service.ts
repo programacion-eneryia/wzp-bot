@@ -46,7 +46,9 @@ export class LeadsService {
     const email = normalizeEmail(input.email);
     const externalId = input.externalId?.trim() || null;
 
-    const existing = await this.findExisting(orgId, externalId, phone, email);
+    const existing =
+      (input.conversationId ? await this.findByConversation(orgId, input.conversationId) : null) ??
+      (await this.findExisting(orgId, externalId, phone, email));
 
     if (existing) {
       const update: Record<string, unknown> = {};
@@ -335,6 +337,16 @@ export class LeadsService {
 
   // ---------------------------------------------------------------------------
 
+  private async findByConversation(orgId: string, conversationId: string) {
+    const { data } = await this.supabase.admin
+      .from('leads')
+      .select(LEAD_COLUMNS)
+      .eq('organization_id', orgId)
+      .eq('conversation_id', conversationId)
+      .limit(1);
+    return data?.[0] ?? null;
+  }
+
   private async findExisting(
     orgId: string,
     externalId: string | null,
@@ -347,8 +359,9 @@ export class LeadsService {
         .select(LEAD_COLUMNS)
         .eq('organization_id', orgId)
         .eq(col, val)
-        .maybeSingle();
-      return data;
+        .order('created_at', { ascending: true })
+        .limit(1);
+      return data?.[0] ?? null;
     };
     if (externalId) {
       const found = await pick('external_id', externalId);

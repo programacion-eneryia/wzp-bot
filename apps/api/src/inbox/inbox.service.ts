@@ -8,10 +8,10 @@ import { SupabaseService } from '../supabase/supabase.service';
 import { SetterConfigService } from '../setter/setter-config.service';
 import {
   UnipileService,
-  type UnipileAttendee,
   type UnipileChat,
   type UnipileMessage,
 } from '../unipile/unipile.service';
+import { betterName, isPlaceholderName } from '../common/phone';
 import { MessagingService } from '../messaging/messaging.service';
 import { ConversionsApiService } from '../whatsapp-cloud/conversions-api.service';
 import { TagsService } from '../tags/tags.service';
@@ -19,6 +19,21 @@ import { StagesService } from '../stages/stages.service';
 import { AgentsService } from '../agents/agents.service';
 
 type FunnelStage = string;
+
+type ListFilters = {
+  stage?: string;
+  provider?: string;
+  agentId?: string;
+  pipelineId?: string;
+  search?: string;
+  aiEnabled?: boolean;
+};
+
+type FilterableQuery<Q> = {
+  eq(col: string, val: unknown): Q;
+  in(col: string, vals: unknown[]): Q;
+  or(filters: string): Q;
+};
 
 const MAX_CHATS = 40;
 const MAX_MESSAGES = 25;
@@ -42,7 +57,7 @@ export class InboxService {
     orgId: string,
     stage?: string,
     archived = false,
-    opts: { provider?: string; agentId?: string; pipelineId?: string } = {},
+    opts: Omit<ListFilters, 'stage'> = {},
   ) {
     let query = this.supabase.admin
       .from('conversations')
@@ -60,15 +75,8 @@ export class InboxService {
     // Por defecto ocultamos las conversaciones archivadas (canales desconectados).
     query = archived ? query.not('archived_at', 'is', null) : query.is('archived_at', null);
 
-    if (stage) query = query.eq('stage', stage);
-    if (opts.provider) query = query.eq('provider', opts.provider);
-    if (opts.agentId) query = query.eq('agent_id', opts.agentId);
-    if (opts.pipelineId && !stage) {
-      const keys = (await this.stages.list(orgId))
-        .filter((s) => s.pipeline_id === opts.pipelineId)
-        .map((s) => s.key);
-      query = query.in('stage', keys.length > 0 ? keys : ['__none__']);
-    }
+    const filters = { ...opts, stage };
+    query = this.applyFilters(query, filters, await this.pipelineKeys(orgId, filters));
 
     const { data, error } = await query;
     if (error) throw error;
@@ -111,6 +119,33 @@ export class InboxService {
     return convs.map((c) => ({ ...c, tags: byConv.get(c.id as string) ?? [] }));
   }
 
+  /** Claves de stage del pipeline filtrado (null = sin filtro de pipeline). */
+  private async pipelineKeys(orgId: string, f: ListFilters): Promise<string[] | null> {
+    if (!f.pipelineId || f.stage) return null;
+    const keys = (await this.stages.list(orgId))
+      .filter((s) => s.pipeline_id === f.pipelineId)
+      .map((s) => s.key);
+    return keys.length > 0 ? keys : ['__none__'];
+  }
+
+  // Síncrona a propósito: un `await` sobre el builder de Supabase lo ejecutaría.
+  private applyFilters<Q extends FilterableQuery<Q>>(q: Q, f: ListFilters, stageKeys: string[] | null): Q {
+    if (f.stage) q = q.eq('stage', f.stage);
+    if (f.provider) q = q.eq('provider', f.provider);
+    if (f.agentId) q = q.eq('agent_id', f.agentId);
+    if (f.aiEnabled !== undefined) q = q.eq('ai_enabled', f.aiEnabled);
+    if (f.search) {
+      // Nombre o teléfono; el teléfono se busca solo por dígitos (ignora espacios y +).
+      const term = f.search.replace(/[%_,()*\\]/g, ' ').trim();
+      const digits = term.replace(/\D/g, '');
+      const ors = [`contact_name.ilike.*${term}*`];
+      if (digits.length >= 3) ors.push(`contact_handle.ilike.*${digits}*`);
+      if (term) q = q.or(ors.join(','));
+    }
+    if (stageKeys) q = q.in('stage', stageKeys);
+    return q;
+  }
+
   async get(orgId: string, id: string, refresh = true) {
     const conv = await this.assertOwned(orgId, id);
 
@@ -128,14 +163,15 @@ export class InboxService {
       // Resolvemos por los participantes del chat lo que falte:
       //  - el nombre, si sigue como 'Lead' o vacío
       //  - el teléfono real, si el handle es un id interno (@lid / @...) o falta
-      const needName = !conv.contact_name || conv.contact_name === 'Lead';
+      const needName = isPlaceholderName(conv.contact_name);
       const needPhone = !conv.contact_handle || conv.contact_handle.includes('@');
       if (needName || needPhone) {
         const { name, handle } = await this.resolveAttendee(conv.unipile_chat_id as string);
         const update: Record<string, unknown> = {};
-        if (needName && name) {
-          conv.contact_name = name;
-          update.contact_name = name;
+        const better = betterName(conv.contact_name, name);
+        if (better) {
+          conv.contact_name = better;
+          update.contact_name = better;
         }
         if (needPhone && handle) {
           conv.contact_handle = handle;
@@ -178,7 +214,7 @@ export class InboxService {
     input: {
       ids?: string[];
       all?: boolean;
-      filters?: { stage?: string; provider?: string; agentId?: string; pipelineId?: string };
+      filters?: ListFilters;
       ai_enabled?: boolean;
       agent_id?: string | null;
     },
@@ -192,16 +228,8 @@ export class InboxService {
         .eq('is_test', false)
         .is('archived_at', null)
         .limit(5000);
-      const f = input.filters ?? {};
-      if (f.stage) q = q.eq('stage', f.stage);
-      if (f.provider) q = q.eq('provider', f.provider);
-      if (f.agentId) q = q.eq('agent_id', f.agentId);
-      if (f.pipelineId && !f.stage) {
-        const keys = (await this.stages.list(orgId))
-          .filter((s) => s.pipeline_id === f.pipelineId)
-          .map((s) => s.key);
-        q = q.in('stage', keys.length > 0 ? keys : ['__none__']);
-      }
+      const filters = input.filters ?? {};
+      q = this.applyFilters(q, filters, await this.pipelineKeys(orgId, filters));
       const { data } = await q;
       ids = (data ?? []).map((r) => r.id as string);
     }
@@ -480,16 +508,8 @@ export class InboxService {
    * (`<num>@s.whatsapp.net`); `provider_id` suele ser el id interno `@lid`.
    */
   private async resolveAttendee(chatId: string): Promise<{ name?: string; handle?: string }> {
-    try {
-      const attendees = await this.unipile.listChatAttendees(chatId);
-      const other = attendees.find((a) => !(a.is_self === 1 || a.is_self === true));
-      if (other) {
-        return { name: other.name?.trim() || undefined, handle: phoneOf(other) };
-      }
-    } catch (err) {
-      this.logger.warn(`No se pudieron leer los participantes del chat: ${String(err)}`);
-    }
-    return {};
+    const { name, phone } = await this.messaging.chatContact(chatId);
+    return { name: name ?? undefined, handle: phone ?? undefined };
   }
 
   /**
@@ -640,14 +660,8 @@ export class InboxService {
     channel: { id: string; provider: string },
     chat: UnipileChat,
   ) {
-    const { data: existing } = await this.supabase.admin
-      .from('conversations')
-      .select('id, contact_name')
-      .eq('organization_id', orgId)
-      .eq('channel_id', channel.id)
-      .eq('contact_external_id', chat.id)
-      .eq('is_test', false)
-      .maybeSingle();
+    const cols = 'id, contact_name, contact_handle';
+    let existing = await this.messaging.findByChat(orgId, channel.id, chat.id, cols);
 
     // Nombre y teléfono reales: el chat trae `name` en grupos; en WhatsApp 1:1
     // tanto el nombre como el teléfono salen de los participantes.
@@ -657,12 +671,17 @@ export class InboxService {
     if (!name && resolved.name) name = resolved.name;
     if (resolved.handle) handle = resolved.handle;
 
+    // Si ese teléfono ya entró como lead (GHL/formulario), el chat se vincula a
+    // su conversación: así no aparece duplicado ni con la IA en pausa.
+    if (!existing && handle) {
+      existing = await this.messaging.linkIntakeConversation(orgId, channel, chat.id, handle, cols);
+    }
+
     if (existing) {
       const update: Record<string, unknown> = {};
-      if ((!existing.contact_name || existing.contact_name === 'Lead') && name) {
-        update.contact_name = name;
-      }
-      if (handle) update.contact_handle = handle;
+      const better = betterName(existing.contact_name as string | null, name);
+      if (better) update.contact_name = better;
+      if (handle && handle !== existing.contact_handle) update.contact_handle = handle;
       if (Object.keys(update).length > 0) {
         await this.supabase.admin
           .from('conversations')
@@ -751,31 +770,6 @@ function buildTranscript(
     lines.push(`${who}: ${text}`);
   }
   return { text: lines.join('\n'), turns: lines.length };
-}
-
-/**
- * Teléfono real del participante. Preferimos `specifics.phone_number` (ya viene
- * con +). Si no, lo sacamos de `public_identifier` (`<num>@s.whatsapp.net`).
- * Nunca devolvemos el `provider_id` cuando es un id interno `@lid`.
- */
-function phoneOf(att: UnipileAttendee): string | undefined {
-  const phone = att.specifics?.phone_number?.trim();
-  if (phone) return phone;
-
-  const fromPublic = matchPhone(att.public_identifier);
-  if (fromPublic) return fromPublic;
-
-  const fromProvider = matchPhone(att.provider_id);
-  if (fromProvider) return fromProvider;
-
-  return undefined;
-}
-
-/** Extrae `+<digitos>` de algo como `34607196457@s.whatsapp.net`. */
-function matchPhone(raw?: string): string | undefined {
-  if (!raw) return undefined;
-  const m = /^(\d{6,15})@s\.whatsapp\.net$/.exec(raw.trim());
-  return m ? `+${m[1]}` : undefined;
 }
 
 function isFromUs(m: UnipileMessage): boolean {

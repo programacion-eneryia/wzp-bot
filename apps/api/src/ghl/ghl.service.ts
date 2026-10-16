@@ -191,13 +191,25 @@ export class GhlService {
       }
     }
 
+    // Al reactivar, si el contacto ya escribió y nadie le contestó, el bot le
+    // responde en el próximo tick; si el último mensaje es nuestro, espera.
+    let resume: Record<string, unknown> = { ai_enabled: true };
+    if (action === 'resume') {
+      const { data: last } = await this.supabase.admin
+        .from('messages')
+        .select('role')
+        .eq('conversation_id', conv.id)
+        .in('role', ['contact', 'assistant', 'agent'])
+        .order('created_at', { ascending: false })
+        .limit(1);
+      resume = {
+        ai_enabled: true,
+        respond_after: last?.[0]?.role === 'contact' ? new Date().toISOString() : null,
+      };
+    }
     await this.supabase.admin
       .from('conversations')
-      .update(
-        action === 'resume'
-          ? { ai_enabled: true }
-          : { ai_enabled: false, respond_after: null },
-      )
+      .update(action === 'resume' ? resume : { ai_enabled: false, respond_after: null })
       .eq('id', conv.id)
       .eq('organization_id', orgId);
     this.logger.log(
@@ -259,24 +271,28 @@ export class GhlService {
       if (data) return data as { id: string; stage: string };
     }
 
-    if (keys.contactId) {
+    // Si hubiera varias, preferimos la que tiene chat (donde escribe el contacto).
+    const first = async (col: string, val: string) => {
       const { data } = await this.supabase.admin
         .from('conversations')
         .select(sel)
         .eq('organization_id', orgId)
-        .eq('ghl_contact_id', keys.contactId)
-        .maybeSingle();
-      if (data) return data as { id: string; stage: string };
+        .eq(col, val)
+        .eq('is_test', false)
+        .order('unipile_chat_id', { ascending: true, nullsFirst: false })
+        .order('last_message_at', { ascending: false, nullsFirst: false })
+        .limit(1);
+      return (data?.[0] as { id: string; stage: string } | undefined) ?? null;
+    };
+
+    if (keys.contactId) {
+      const found = await first('ghl_contact_id', keys.contactId);
+      if (found) return found;
     }
 
     if (keys.phone) {
-      const { data } = await this.supabase.admin
-        .from('conversations')
-        .select(sel)
-        .eq('organization_id', orgId)
-        .eq('contact_handle', `+${keys.phone}`)
-        .maybeSingle();
-      if (data) return data as { id: string; stage: string };
+      const found = await first('contact_handle', `+${keys.phone}`);
+      if (found) return found;
     }
 
     // Último recurso: por el lead del CRM (external_id/teléfono/email) → conv.
@@ -305,8 +321,9 @@ export class GhlService {
         .eq('organization_id', orgId)
         .eq(col, val)
         .not('conversation_id', 'is', null)
-        .maybeSingle();
-      return (data?.conversation_id as string | null) ?? null;
+        .order('created_at', { ascending: true })
+        .limit(1);
+      return (data?.[0]?.conversation_id as string | null) ?? null;
     };
     if (keys.contactId) {
       const c = await pick('external_id', keys.contactId);

@@ -100,7 +100,45 @@ const QUAL_LABEL: Record<Analysis["qualification"], string> = {
   desconocido: "Desconocido",
 };
 
+function looksLikePhone(s: string | null | undefined): boolean {
+  const v = (s ?? "").trim();
+  return /^\+?[\d\s().-]{6,}$/.test(v) && v.replace(/\D/g, "").length >= 6;
+}
+
+function formatPhone(raw: string): string {
+  const digits = raw.replace(/\D/g, "");
+  if (digits.startsWith("34") && digits.length === 11) {
+    return `+34 ${digits.slice(2, 5)} ${digits.slice(5, 8)} ${digits.slice(8)}`;
+  }
+  return raw.startsWith("+") ? raw : `+${digits}`;
+}
+
+/** Nombre a mostrar: el real; si solo hay un número, el teléfono bien formateado. */
+function displayName(c: { contact_name: string | null; contact_handle: string | null }): string {
+  const name = c.contact_name?.trim();
+  if (name && name !== "Lead" && !looksLikePhone(name)) return name;
+  const handle = c.contact_handle ?? "";
+  if (/^\+\d{6,15}$/.test(handle)) return formatPhone(handle);
+  if (name && looksLikePhone(name)) return formatPhone(name);
+  return name || "Lead";
+}
+
+function shortWhen(iso: string | null): string {
+  if (!iso) return "";
+  const d = new Date(iso);
+  if (isNaN(d.getTime())) return "";
+  const today = new Date();
+  if (d.toDateString() === today.toDateString()) {
+    return d.toLocaleTimeString("es-ES", { hour: "2-digit", minute: "2-digit" });
+  }
+  const yesterday = new Date();
+  yesterday.setDate(today.getDate() - 1);
+  if (d.toDateString() === yesterday.toDateString()) return "Ayer";
+  return d.toLocaleDateString("es-ES", { day: "2-digit", month: "2-digit" });
+}
+
 function initials(name: string | null): string {
+  if (looksLikePhone(name)) return "#";
   const n = (name ?? "Lead").trim();
   const parts = n.split(/\s+/).slice(0, 2);
   return parts.map((p) => p[0]?.toUpperCase() ?? "").join("") || "L";
@@ -137,6 +175,9 @@ export default function Inbox() {
   const [filter, setFilter] = useState<Stage | "all">("all");
   const [providerFilter, setProviderFilter] = useState<string>("all");
   const [pipelineFilter, setPipelineFilter] = useState<string>("all");
+  const [aiFilter, setAiFilter] = useState<"all" | "on" | "off">("all");
+  const [searchInput, setSearchInput] = useState("");
+  const [search, setSearch] = useState("");
   // Selección múltiple para acciones en bloque.
   const [selecting, setSelecting] = useState(false);
   const [picked, setPicked] = useState<Set<string>>(new Set());
@@ -180,15 +221,23 @@ export default function Inbox() {
   const loadList = useCallback(async () => {
     try {
       const params = new URLSearchParams();
+      if (filter !== "all") params.set("stage", filter);
       if (providerFilter !== "all") params.set("provider", providerFilter);
       if (pipelineFilter !== "all") params.set("pipeline_id", pipelineFilter);
+      if (aiFilter !== "all") params.set("ai", aiFilter);
+      if (search) params.set("q", search);
       const qs = params.toString() ? `?${params.toString()}` : "";
       const data = await apiFetch<Conversation[]>(`/api/inbox/conversations${qs}`);
       setList(data);
     } catch (e) {
       setError(e instanceof Error ? e.message : "Error");
     }
-  }, [providerFilter, pipelineFilter]);
+  }, [filter, providerFilter, pipelineFilter, aiFilter, search]);
+
+  useEffect(() => {
+    const t = setTimeout(() => setSearch(searchInput.trim()), 300);
+    return () => clearTimeout(t);
+  }, [searchInput]);
 
   const loadConv = useCallback(async (id: string, refresh = false) => {
     try {
@@ -286,6 +335,8 @@ export default function Inbox() {
                   stage: filter !== "all" ? filter : undefined,
                   provider: providerFilter !== "all" ? providerFilter : undefined,
                   pipeline_id: pipelineFilter !== "all" ? pipelineFilter : undefined,
+                  ai: aiFilter !== "all" ? aiFilter : undefined,
+                  q: search || undefined,
                 },
               }
             : { ids: [...picked] }),
@@ -414,7 +465,10 @@ export default function Inbox() {
     : null;
   const convStages = convPipeline?.stages ?? [];
   const showStages = currentAgent ? Boolean(currentAgent.pipeline_id) : true;
-  const chipStages = stagesOf(pipelineFilter !== "all" ? pipelineFilter : defaultPipeline?.id);
+  // Etapas del desplegable: las del pipeline filtrado, o todas agrupadas por pipeline.
+  const stageGroups =
+    pipelineFilter !== "all" ? pipelines.filter((p) => p.id === pipelineFilter) : pipelines;
+  const flatStages = stageGroups.length === 0 ? stagesOf(defaultPipeline?.id) : [];
 
   async function changeMode(mode: "setter" | "support" | "ignored") {
     if (!conv) return;
@@ -567,7 +621,13 @@ export default function Inbox() {
     }
   }
 
-  const filtered = filter === "all" ? list : list.filter((c) => c.stage === filter);
+  const filtered = list;
+  const anyFilter =
+    filter !== "all" ||
+    providerFilter !== "all" ||
+    pipelineFilter !== "all" ||
+    aiFilter !== "all" ||
+    Boolean(search);
   const pickedCount = allMatching ? null : picked.size;
 
   return (
@@ -575,7 +635,14 @@ export default function Inbox() {
       {/* ---------- Lista ---------- */}
       <div className={styles.listPane}>
         <div className={styles.listHeader}>
-          <span className={styles.listTitle}>Chats</span>
+          <input
+            className={styles.search}
+            type="search"
+            value={searchInput}
+            onChange={(e) => setSearchInput(e.target.value)}
+            placeholder="Nombre o teléfono…"
+            aria-label="Buscar por nombre o teléfono"
+          />
           <div className={styles.listHeaderActions}>
             <button
               className={`${styles.syncBtn} ${selecting ? styles.syncBtnActive : ""}`}
@@ -584,8 +651,14 @@ export default function Inbox() {
               {selecting ? "Cancelar" : "Seleccionar"}
             </button>
             {!selecting && (
-              <button className={styles.syncBtn} onClick={sync} disabled={syncing}>
-                {syncing ? "Sincronizando…" : "Sincronizar"}
+              <button
+                className={`${styles.syncBtn} ${styles.iconBtn}`}
+                onClick={sync}
+                disabled={syncing}
+                title="Traer los chats recientes de los canales conectados"
+                aria-label="Sincronizar chats"
+              >
+                <span className={syncing ? styles.spin : undefined}>↻</span>
               </button>
             )}
           </div>
@@ -657,22 +730,9 @@ export default function Inbox() {
         )}
         {syncInfo && <div className={styles.syncInfo}>{syncInfo}</div>}
         <div className={styles.filters}>
-          <select
-            className={styles.moveSelect}
-            value={providerFilter}
-            onChange={(e) => setProviderFilter(e.target.value)}
-            title="Filtrar por canal"
-          >
-            <option value="all">Todos los canales</option>
-            {PROVIDERS.map((p) => (
-              <option key={p.id} value={p.id}>
-                {p.label}
-              </option>
-            ))}
-          </select>
           {pipelines.length > 1 && (
             <select
-              className={styles.moveSelect}
+              className={`${styles.moveSelect} ${pipelineFilter !== "all" ? styles.filterOn : ""}`}
               value={pipelineFilter}
               onChange={(e) => {
                 setPipelineFilter(e.target.value);
@@ -688,28 +748,60 @@ export default function Inbox() {
               ))}
             </select>
           )}
-          <button
-            className={`${styles.filter} ${filter === "all" ? styles.filterActive : ""}`}
-            onClick={() => setFilter("all")}
+          <select
+            className={`${styles.moveSelect} ${filter !== "all" ? styles.filterOn : ""}`}
+            value={filter}
+            onChange={(e) => setFilter(e.target.value as Stage | "all")}
+            title="Filtrar por etapa"
           >
-            Todos
-          </button>
-          {chipStages.map((s) => (
-            <button
-              key={s.key}
-              className={`${styles.filter} ${filter === s.key ? styles.filterActive : ""}`}
-              onClick={() => setFilter(s.key)}
-            >
-              {s.name}
-            </button>
-          ))}
+            <option value="all">Todas las etapas</option>
+            {stageGroups.length > 1
+              ? stageGroups.map((p) => (
+                  <optgroup key={p.id} label={p.name}>
+                    {p.stages.map((s) => (
+                      <option key={s.key} value={s.key}>
+                        {s.name}
+                      </option>
+                    ))}
+                  </optgroup>
+                ))
+              : (stageGroups[0]?.stages ?? flatStages).map((s) => (
+                  <option key={s.key} value={s.key}>
+                    {s.name}
+                  </option>
+                ))}
+          </select>
+          <select
+            className={`${styles.moveSelect} ${aiFilter !== "all" ? styles.filterOn : ""}`}
+            value={aiFilter}
+            onChange={(e) => setAiFilter(e.target.value as "all" | "on" | "off")}
+            title="Filtrar por estado de la IA"
+          >
+            <option value="all">IA: todas</option>
+            <option value="on">IA activa</option>
+            <option value="off">IA en pausa</option>
+          </select>
+          <select
+            className={`${styles.moveSelect} ${providerFilter !== "all" ? styles.filterOn : ""}`}
+            value={providerFilter}
+            onChange={(e) => setProviderFilter(e.target.value)}
+            title="Filtrar por canal"
+          >
+            <option value="all">Todos los canales</option>
+            {PROVIDERS.map((p) => (
+              <option key={p.id} value={p.id}>
+                {p.label}
+              </option>
+            ))}
+          </select>
         </div>
 
         <div className={styles.convList}>
           {filtered.length === 0 ? (
             <p className={styles.empty}>
-              No hay conversaciones todavía. Cuando un lead escriba a un canal conectado,
-              aparecerá aquí.
+              {anyFilter
+                ? "Ninguna conversación coincide con la búsqueda o los filtros."
+                : "No hay conversaciones todavía. Cuando un lead escriba a un canal conectado, aparecerá aquí."}
             </p>
           ) : (
             filtered.map((c) => (
@@ -730,11 +822,15 @@ export default function Inbox() {
                     {allMatching || picked.has(c.id) ? "✓" : ""}
                   </span>
                 )}
-                <div className={styles.avatar}>{initials(c.contact_name)}</div>
+                <div className={styles.avatar}>{initials(displayName(c))}</div>
                 <div className={styles.convBody}>
                   <div className={styles.convTop}>
-                    <span className={styles.convName}>{c.contact_name ?? "Lead"}</span>
-                    {c.unread_count > 0 && <span className={styles.badge}>{c.unread_count}</span>}
+                    <span className={styles.convName}>{displayName(c)}</span>
+                    {c.unread_count > 0 ? (
+                      <span className={styles.badge}>{c.unread_count}</span>
+                    ) : (
+                      <span className={styles.convWhen}>{shortWhen(c.last_message_at)}</span>
+                    )}
                   </div>
                   <div className={styles.convMeta}>
                     <span className={styles.provider}>
@@ -751,19 +847,6 @@ export default function Inbox() {
                       !c.ai_enabled && <span className={styles.paused}>IA en pausa</span>
                     )}
                   </div>
-                  {c.tags && c.tags.length > 0 && (
-                    <div className={styles.convTags}>
-                      {c.tags.slice(0, 4).map((t) => (
-                        <span
-                          key={t.tag_id}
-                          className={styles.convTagChip}
-                          style={{ borderColor: t.color, color: t.color }}
-                        >
-                          {t.name}
-                        </span>
-                      ))}
-                    </div>
-                  )}
                 </div>
               </button>
             ))
@@ -790,15 +873,19 @@ export default function Inbox() {
                 ←
               </button>
               <div className={styles.chatPerson}>
-                <div className={styles.avatarLg}>{initials(conv.contact_name)}</div>
+                <div className={styles.avatarLg}>{initials(displayName(conv))}</div>
                 <div>
                   <div className={styles.chatNameRow}>
-                    <span className={styles.chatName}>{conv.contact_name ?? "Lead"}</span>
+                    <span className={styles.chatName}>{displayName(conv)}</span>
                     <span className={styles.channelChip}>
                       {PROVIDER_LABEL[conv.provider ?? ""] ?? conv.provider}
                     </span>
                   </div>
-                  <span className={styles.chatHandle}>{conv.contact_handle ?? ""}</span>
+                  <span className={styles.chatHandle}>
+                    {/^\+\d{6,15}$/.test(conv.contact_handle ?? "")
+                      ? formatPhone(conv.contact_handle!)
+                      : ""}
+                  </span>
                 </div>
               </div>
               <button

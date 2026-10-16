@@ -281,14 +281,16 @@ export default function Crm() {
               {visibleLeads.map((l) => (
                 <tr key={l.id} onClick={() => setSelected(l.id)} className={styles.row}>
                   <td className={styles.nameCell}>{l.name || "Lead"}</td>
-                  <td className={styles.muted}>{l.phone || l.email || "—"}</td>
+                  <td className={styles.muted}>
+                    {(l.phone && !l.phone.includes("@") ? l.phone : null) || l.email || "—"}
+                  </td>
                   <td>
                     <span className={styles.sourceTag}>{sourceLabel(l.source)}</span>
                   </td>
                   <td>
                     {l.tags && l.tags.length > 0 ? (
-                      <span className={styles.tagChips}>
-                        {l.tags.map((t) => (
+                      <span className={styles.tagChips} title={l.tags.map((t) => t.name).join(", ")}>
+                        {l.tags.slice(0, 2).map((t) => (
                           <span
                             key={t.tag_id}
                             className={styles.tagChip}
@@ -297,6 +299,9 @@ export default function Crm() {
                             {t.name}
                           </span>
                         ))}
+                        {l.tags.length > 2 && (
+                          <span className={styles.muted}>+{l.tags.length - 2}</span>
+                        )}
                       </span>
                     ) : (
                       <span className={styles.muted}>—</span>
