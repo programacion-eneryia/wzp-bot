@@ -640,7 +640,8 @@ export default function Inbox() {
             type="search"
             value={searchInput}
             onChange={(e) => setSearchInput(e.target.value)}
-            placeholder="Nombre o teléfono…"
+            placeholder="Buscar…"
+            title="Buscar por nombre o teléfono"
             aria-label="Buscar por nombre o teléfono"
           />
           <div className={styles.listHeaderActions}>
@@ -836,7 +837,7 @@ export default function Inbox() {
                     <span className={styles.provider}>
                       {PROVIDER_LABEL[c.provider ?? ""] ?? c.provider}
                     </span>
-                    {c.mode && c.mode !== "unclassified" && (
+                    {(c.mode === "support" || c.mode === "ignored") && (
                       <span className={`${styles.modeTag} ${styles["mode_" + c.mode]}`}>
                         {MODE_LABEL[c.mode]}
                       </span>
