@@ -14,7 +14,9 @@ export default function OrgSwitcher({
   if (!memberships || memberships.length <= 1) return null;
 
   function change(id: string) {
-    document.cookie = `org_id=${encodeURIComponent(id)}; path=/; max-age=31536000`;
+    // SameSite=None: también debe guardarse con la app embebida en GHL (iframe).
+    const crossSite = location.protocol === "https:" ? "; samesite=none; secure" : "";
+    document.cookie = `org_id=${encodeURIComponent(id)}; path=/; max-age=31536000${crossSite}`;
     window.location.reload();
   }
 

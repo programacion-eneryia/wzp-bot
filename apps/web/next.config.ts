@@ -10,6 +10,20 @@ const connectSrc = isDev
   ? "connect-src 'self' https: wss: http://localhost:* ws://localhost:*"
   : "connect-src 'self' https: wss:";
 
+// Quién puede embeber la app en un iframe: GHL (y su marca blanca YouFunnelCloud)
+// la abre como enlace de menú personalizado. Cualquier otro sitio queda bloqueado
+// (anti-clickjacking). Se pueden añadir más con EMBED_ALLOWED_ORIGINS (espacios).
+const frameAncestors = [
+  "'self'",
+  "https://app.gohighlevel.com",
+  "https://*.gohighlevel.com",
+  "https://*.leadconnectorhq.com",
+  "https://*.msgsndr.com",
+  "https://app.youfunnelcloud.com",
+  "https://*.youfunnelcloud.com",
+  ...(process.env.EMBED_ALLOWED_ORIGINS ?? "").split(/\s+/).filter(Boolean),
+].join(" ");
+
 const nextConfig: NextConfig = {
   // En un monorepo, la raíz del workspace está dos niveles por encima.
   // Esto evita avisos de "additional lockfiles" y mejora el file tracing.
@@ -23,8 +37,8 @@ const nextConfig: NextConfig = {
       {
         source: "/:path*",
         headers: [
-          // Anti-clickjacking (el dashboard no debe embeberse en iframes).
-          { key: "X-Frame-Options", value: "DENY" },
+          // Sin X-Frame-Options: no admite lista de dominios; el anti-clickjacking
+          // lo da `frame-ancestors` en la CSP.
           { key: "X-Content-Type-Options", value: "nosniff" },
           { key: "Referrer-Policy", value: "strict-origin-when-cross-origin" },
           {
@@ -36,7 +50,7 @@ const nextConfig: NextConfig = {
             key: "Strict-Transport-Security",
             value: "max-age=63072000; includeSubDomains; preload",
           },
-          // CSP mínima: bloquea que la app sea embebida (frame-ancestors) y
+          // CSP mínima: limita quién puede embeber la app (frame-ancestors) y
           // restringe orígenes. 'unsafe-inline'/'unsafe-eval' son necesarios
           // para el runtime de Next; endurecer con nonces en el futuro.
           {
@@ -49,7 +63,7 @@ const nextConfig: NextConfig = {
               "font-src 'self' data:",
               connectSrc,
               "frame-src https://www.facebook.com https://web.facebook.com",
-              "frame-ancestors 'none'",
+              `frame-ancestors ${frameAncestors}`,
               "base-uri 'self'",
               "form-action 'self'",
             ].join("; "),
