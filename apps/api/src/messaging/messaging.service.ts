@@ -27,6 +27,7 @@ import { DEBOUNCE_MS, type OutgoingJob, type RespondJob } from './queues';
 
 /** Margen tras registrar un lead en el que su primer mensaje saliente se toma como la plantilla de GHL. */
 const FIRST_CONTACT_WINDOW_MS = 60 * 60_000;
+const ECHO_GRACE_MS = 5_000;
 
 const CONV_COLS =
   'id, ai_enabled, mode, mode_locked, contact_name, contact_external_id, contact_handle, unread_count';
@@ -544,17 +545,23 @@ export class MessagingService {
       }
       if (!conv) return;
 
-      const since = new Date(Date.now() - 15 * 60_000).toISOString();
-      const { data: recent } = await this.supabase.admin
-        .from('messages')
-        .select('content')
-        .eq('conversation_id', conv.id)
-        .in('role', ['assistant', 'agent'])
-        .gte('created_at', since)
-        .order('created_at', { ascending: false })
-        .limit(30);
-      const isOurs = (recent ?? []).some((m) => String(m.content ?? '').trim() === text);
-      if (isOurs) return;
+      const isOurs = async () => {
+        const since = new Date(Date.now() - 15 * 60_000).toISOString();
+        const { data: recent } = await this.supabase.admin
+          .from('messages')
+          .select('content')
+          .eq('conversation_id', conv!.id)
+          .in('role', ['assistant', 'agent'])
+          .gte('created_at', since)
+          .order('created_at', { ascending: false })
+          .limit(30);
+        return (recent ?? []).some((m) => String(m.content ?? '').trim() === text);
+      };
+      // Lo que enviamos nosotros se guarda justo después de enviarlo: si el eco
+      // llega antes, esperamos un momento antes de tomarlo como mensaje manual.
+      if (await isOurs()) return;
+      await sleep(ECHO_GRACE_MS);
+      if (await isOurs()) return;
 
       if (evt.messageId && (await this.messageExists(conv.id as string, evt.messageId))) return;
 
@@ -614,8 +621,16 @@ export class MessagingService {
     return Boolean(data);
   }
 
-  /** Envía un mensaje manual del agente humano y lo registra. Pausa la IA. */
-  async sendAgentMessage(orgId: string, conversationId: string, text: string) {
+  /**
+   * Envía un mensaje manual del agente humano y lo registra. Pausa la IA.
+   * Con `automated` (un flujo de GHL) se registra como automático y no pausa.
+   */
+  async sendAgentMessage(
+    orgId: string,
+    conversationId: string,
+    text: string,
+    opts: { automated?: string } = {},
+  ) {
     const { data: conv } = await this.supabase.admin
       .from('conversations')
       .select('id, unipile_chat_id, channel_id, transport, contact_handle, provider')
@@ -670,11 +685,15 @@ export class MessagingService {
     await this.supabase.admin.from('messages').insert({
       conversation_id: conversationId,
       organization_id: orgId,
-      role: 'agent',
+      role: opts.automated ? 'assistant' : 'agent',
       content: text,
+      ...(opts.automated ? { metadata: { source: opts.automated } } : {}),
     });
     // Al escribir manualmente, la IA se pausa (si la cuenta lo tiene activado).
-    if ((await this.setterConfig.getOrCreate(orgId)).pause_on_manual !== false) {
+    if (
+      !opts.automated &&
+      (await this.setterConfig.getOrCreate(orgId)).pause_on_manual !== false
+    ) {
       update.ai_enabled = false;
       update.respond_after = null;
     }

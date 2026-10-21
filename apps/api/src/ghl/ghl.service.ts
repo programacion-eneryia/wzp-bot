@@ -220,8 +220,8 @@ export class GhlService {
 
   /**
    * Webhook "enviar mensaje" desde GHL: entrega al lead, por el canal del bot
-   * (Unipile/Cloud), el texto que mande un flow de GHL. Como es un envío
-   * manual, PAUSA la IA (mismo comportamiento que escribir desde el inbox).
+   * (Unipile/Cloud), el texto que mande un flow de GHL. Es un envío
+   * automático: NO pausa la IA.
    * Body esperado: { message | text, setter_id | contact_id | phone | email }.
    */
   async handleSendMessageWebhook(
@@ -247,8 +247,8 @@ export class GhlService {
       return { ok: true, matched: false };
     }
 
-    await this.messaging.sendAgentMessage(orgId, conv.id, message);
-    this.logger.log(`GHL → mensaje enviado al lead por el bot (conv ${conv.id}); IA pausada`);
+    await this.messaging.sendAgentMessage(orgId, conv.id, message, { automated: 'ghl_workflow' });
+    this.logger.log(`GHL → mensaje de flujo enviado al lead (conv ${conv.id})`);
     return { ok: true, matched: true };
   }
 

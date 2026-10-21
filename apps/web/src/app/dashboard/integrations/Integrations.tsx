@@ -228,7 +228,7 @@ export default function Integrations({ isAdmin = true }: { isAdmin?: boolean }) 
               />
               <UrlRow
                 label="④ Enviar mensaje al lead por el bot"
-                hint='POST con JSON: {"message": "tu texto"}, más setter_id (o phone/contact_id). Al enviarse, la IA se pausa (mensaje manual).'
+                hint='POST con JSON: {"message": "tu texto"}, más setter_id (o phone/contact_id). Es un envío automático: no pausa la IA. Úsala para los mensajes de tus workflows de GHL; los que GHL envía por su cuenta llegan como si alguien escribiera desde el móvil y sí pausan.'
                 url={data.urls.ghl_send}
                 copied={copied === "ghl_send"}
                 onCopy={() => copy(data.urls.ghl_send, "ghl_send")}
