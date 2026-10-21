@@ -52,6 +52,8 @@ export type SetterConfig = {
   active_hours_end: number;
   timezone: string;
   ignore_followed: boolean;
+  // Pausar la IA del chat cuando una persona escribe a mano (portal o móvil).
+  pause_on_manual: boolean;
 
   // LLM
   model: string | null;

@@ -1,4 +1,4 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { BadRequestException, Injectable, Logger } from '@nestjs/common';
 import { SupabaseService } from '../supabase/supabase.service';
 import { UnipileService } from '../unipile/unipile.service';
 import { OpenRouterService } from '../openrouter/openrouter.service';
@@ -24,6 +24,9 @@ import {
   toE164,
 } from '../common/phone';
 import { DEBOUNCE_MS, type OutgoingJob, type RespondJob } from './queues';
+
+/** Margen tras registrar un lead en el que su primer mensaje saliente se toma como la plantilla de GHL. */
+const FIRST_CONTACT_WINDOW_MS = 60 * 60_000;
 
 const CONV_COLS =
   'id, ai_enabled, mode, mode_locked, contact_name, contact_external_id, contact_handle, unread_count';
@@ -531,11 +534,12 @@ export class MessagingService {
 
       // No creamos chats a partir de ecos, pero sí vinculamos el de un lead que
       // ya teníamos por teléfono (p.ej. la plantilla que GHL envía al entrar).
-      let conv = await this.findByChat(orgId, channel.id, evt.chatId, 'id, ai_enabled');
+      const cols = 'id, ai_enabled, source, mode_locked, created_at';
+      let conv = await this.findByChat(orgId, channel.id, evt.chatId, cols);
       if (!conv) {
         const { phone } = await this.chatContact(evt.chatId);
         if (phone) {
-          conv = await this.linkIntakeConversation(orgId, channel, evt.chatId, phone, 'id, ai_enabled');
+          conv = await this.linkIntakeConversation(orgId, channel, evt.chatId, phone, cols);
         }
       }
       if (!conv) return;
@@ -554,15 +558,20 @@ export class MessagingService {
 
       if (evt.messageId && (await this.messageExists(conv.id as string, evt.messageId))) return;
 
-      // Antes de que el contacto escriba, un mensaje enviado desde fuera (la
-      // plantilla de primer contacto de GHL/CRM) no es una persona llevando el
-      // chat: no pausamos la IA.
-      const { count: contactMsgs } = await this.supabase.admin
+      // La plantilla de primer contacto que GHL envía al registrar el lead no es
+      // una persona llevando el chat: si es el PRIMER mensaje de una conversación
+      // de lead recién creada, no pausamos. Cualquier otro mensaje manual sí.
+      const { count: priorMsgs } = await this.supabase.admin
         .from('messages')
         .select('id', { count: 'exact', head: true })
         .eq('conversation_id', conv.id)
-        .eq('role', 'contact');
-      const firstContact = (contactMsgs ?? 0) === 0;
+        .in('role', ['contact', 'assistant', 'agent']);
+      const createdAt = new Date(String(conv.created_at ?? '')).getTime();
+      const firstContact =
+        (priorMsgs ?? 0) === 0 &&
+        Boolean(conv.mode_locked || conv.source) &&
+        Number.isFinite(createdAt) &&
+        Date.now() - createdAt < FIRST_CONTACT_WINDOW_MS;
 
       await this.supabase.admin.from('messages').insert({
         conversation_id: conv.id,
@@ -579,7 +588,11 @@ export class MessagingService {
         last_outbound_at: new Date().toISOString(),
         last_message_at: new Date().toISOString(),
       };
-      if (conv.ai_enabled && !firstContact) {
+      if (
+        conv.ai_enabled &&
+        !firstContact &&
+        (await this.setterConfig.getOrCreate(orgId)).pause_on_manual !== false
+      ) {
         // Cancela también cualquier respuesta pendiente del bot.
         update.ai_enabled = false;
         update.respond_after = null;
@@ -605,11 +618,16 @@ export class MessagingService {
   async sendAgentMessage(orgId: string, conversationId: string, text: string) {
     const { data: conv } = await this.supabase.admin
       .from('conversations')
-      .select('id, unipile_chat_id, channel_id, transport')
+      .select('id, unipile_chat_id, channel_id, transport, contact_handle, provider')
       .eq('id', conversationId)
       .eq('organization_id', orgId)
       .maybeSingle();
     if (!conv) throw new Error('Conversación no encontrada');
+
+    const update: Record<string, unknown> = {
+      last_outbound_at: new Date().toISOString(),
+      last_message_at: new Date().toISOString(),
+    };
 
     if (conv.unipile_chat_id) {
       await this.transport.sendText({
@@ -617,6 +635,36 @@ export class MessagingService {
         chatId: conv.unipile_chat_id as string,
         text,
       });
+    } else {
+      // Aún sin chat (lead de GHL que no ha escrito, o canal reconectado):
+      // lo abrimos por teléfono en vez de guardar un mensaje que no se envía.
+      const phone = toE164(conv.contact_handle as string | null);
+      let q = this.supabase.admin
+        .from('channels')
+        .select('id, unipile_account_id')
+        .eq('organization_id', orgId)
+        .eq('status', 'connected');
+      q = conv.channel_id
+        ? q.eq('id', conv.channel_id as string)
+        : q.eq('provider', (conv.provider as string) ?? 'whatsapp');
+      const { data: channels } = await q.order('connected_at', { ascending: false }).limit(1);
+      const channel = channels?.[0];
+      if (!phone || !channel?.unipile_account_id) {
+        throw new BadRequestException(
+          'Este contacto aún no tiene chat abierto y no hay un teléfono o canal conectado para escribirle.',
+        );
+      }
+      const { chatId } = await this.transport.startChat({
+        transport: conv.transport as string,
+        accountId: channel.unipile_account_id as string,
+        recipientId: phone.replace(/\D/g, ''),
+        text,
+      });
+      update.channel_id = channel.id;
+      if (chatId) {
+        update.unipile_chat_id = chatId;
+        update.contact_external_id = chatId;
+      }
     }
 
     await this.supabase.admin.from('messages').insert({
@@ -625,14 +673,12 @@ export class MessagingService {
       role: 'agent',
       content: text,
     });
-    await this.supabase.admin
-      .from('conversations')
-      .update({
-        last_outbound_at: new Date().toISOString(),
-        last_message_at: new Date().toISOString(),
-        ai_enabled: false, // al escribir manualmente, la IA se pausa (como SkaleX)
-      })
-      .eq('id', conversationId);
+    // Al escribir manualmente, la IA se pausa (si la cuenta lo tiene activado).
+    if ((await this.setterConfig.getOrCreate(orgId)).pause_on_manual !== false) {
+      update.ai_enabled = false;
+      update.respond_after = null;
+    }
+    await this.supabase.admin.from('conversations').update(update).eq('id', conversationId);
 
     return { ok: true };
   }

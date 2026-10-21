@@ -19,6 +19,7 @@ type GeneralConfig = {
   active_hours_end: number;
   timezone: string;
   ignore_followed: boolean;
+  pause_on_manual: boolean;
   model: string | null;
   daily_token_limit: number;
 };
@@ -34,6 +35,7 @@ const KEYS: (keyof GeneralConfig)[] = [
   "active_hours_end",
   "timezone",
   "ignore_followed",
+  "pause_on_manual",
 ];
 const ADMIN_KEYS: (keyof GeneralConfig)[] = ["model", "daily_token_limit"];
 
@@ -175,6 +177,17 @@ export default function GeneralSettings({ agents, isAdmin, onSetDefault }: Props
               onChange={(e) => set("ignore_followed", e.target.checked)}
             />
             <span>No responder a cuentas que sigues (Instagram)</span>
+          </label>
+          <label className={styles.checkRow}>
+            <input
+              type="checkbox"
+              checked={cfg.pause_on_manual}
+              onChange={(e) => set("pause_on_manual", e.target.checked)}
+            />
+            <span>
+              Pausar la IA de un chat cuando una persona escribe a mano (desde Chats o desde el
+              móvil). La plantilla de primer contacto de GHL no la pausa.
+            </span>
           </label>
           <div className={styles.row}>
             <label className={styles.field}>

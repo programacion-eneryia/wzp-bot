@@ -114,6 +114,21 @@ export class AgentsService {
   }
 
   /**
+   * El agente de ese tipo que ya tiene la cuenta, para actualizarlo en vez de
+   * crear otro: primero el predeterminado, luego cualquier activo y, si no,
+   * uno inactivo (desactivarlo no debe provocar un duplicado).
+   */
+  async existingOfKind(orgId: string, kind: AgentKind): Promise<Agent | null> {
+    const ofKind = (await this.list(orgId)).filter((a) => a.kind === kind);
+    return (
+      ofKind.find((a) => a.is_active && (a.is_default_lead || a.is_default_conversation)) ??
+      ofKind.find((a) => a.is_active) ??
+      ofKind[0] ??
+      null
+    );
+  }
+
+  /**
    * Resuelve QUÉ agente atiende una conversación:
    *   1. override de la conversación (`conversations.agent_id`)
    *   2. modo soporte confirmado por un humano → agente de soporte

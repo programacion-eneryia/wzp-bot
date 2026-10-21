@@ -193,6 +193,19 @@ export class ChannelsService {
       this.logger.log(`Archivadas ${count} conversaciones del canal ${channelId}`);
     }
 
+    // Sin conversaciones no hay histórico que conservar: se borra del todo.
+    const { count: convs } = await this.supabase.admin
+      .from('conversations')
+      .select('id', { count: 'exact', head: true })
+      .eq('channel_id', channelId);
+    if (convs === 0) {
+      await this.supabase.admin
+        .from('channels')
+        .delete()
+        .eq('id', channelId)
+        .eq('organization_id', ctx.organizationId);
+    }
+
     return { ok: true };
   }
 
@@ -315,13 +328,51 @@ export class ChannelsService {
     }
     update.metadata = { type: account.type ?? null, sources: account.sources ?? null };
 
-    const { error } = await this.supabase.admin
+    const { data: channel, error } = await this.supabase.admin
       .from('channels')
       .update(update)
-      .eq('id', channelId);
+      .eq('id', channelId)
+      .select('id, organization_id, provider, display_name')
+      .maybeSingle();
 
     if (error) {
       this.logger.error(`No se pudo marcar conectado el canal ${channelId}: ${error.message}`);
+      return;
+    }
+    if (channel) await this.adoptPrevious(channel);
+  }
+
+  /**
+   * Al reconectar un número se crea un canal nuevo: el anterior (mismo tipo y
+   * nombre) le cede su histórico y su agente, y desaparece.
+   */
+  private async adoptPrevious(channel: {
+    id: string;
+    organization_id: string;
+    provider: string;
+    display_name: string | null;
+  }) {
+    if (!channel.display_name) return;
+    const { data: previous } = await this.supabase.admin
+      .from('channels')
+      .select('id')
+      .eq('organization_id', channel.organization_id)
+      .eq('provider', channel.provider)
+      .eq('display_name', channel.display_name)
+      .neq('status', 'connected')
+      .neq('id', channel.id);
+    for (const old of previous ?? []) {
+      const { data: moved, error } = await this.supabase.admin.rpc('adopt_channel', {
+        p_new: channel.id,
+        p_old: old.id,
+      });
+      if (error) {
+        this.logger.warn(`No se pudo traspasar el canal ${old.id as string}: ${error.message}`);
+      } else {
+        this.logger.log(
+          `Canal ${old.id as string} traspasado a ${channel.id} (${String(moved)} conversaciones)`,
+        );
+      }
     }
   }
 

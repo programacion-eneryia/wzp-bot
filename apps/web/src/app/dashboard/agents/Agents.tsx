@@ -24,6 +24,8 @@ type Channel = {
   agent_id?: string | null;
 };
 
+const liveChannels = (cs: Channel[]) => cs.filter((c) => c.status !== "disconnected");
+
 type Calendar = { id: string; provider: string; name: string | null; status: string };
 
 const PROVIDER_LABEL: Record<string, string> = {
@@ -55,7 +57,7 @@ export default function Agents({ isAdmin = true }: { isAdmin?: boolean }) {
   const [busy, setBusy] = useState(false);
 
   useEffect(() => {
-    apiFetch<Channel[]>("/api/channels").then(setChannels).catch(() => {});
+    apiFetch<Channel[]>("/api/channels").then((cs) => setChannels(liveChannels(cs))).catch(() => {});
     apiFetch<Calendar[]>("/api/calendar").then(setCalendars).catch(() => {});
   }, []);
 
@@ -63,7 +65,7 @@ export default function Agents({ isAdmin = true }: { isAdmin?: boolean }) {
     invalidateAgents();
     await reload();
     try {
-      setChannels(await apiFetch<Channel[]>("/api/channels"));
+      setChannels(liveChannels(await apiFetch<Channel[]>("/api/channels")));
     } catch {
       /* ignore */
     }

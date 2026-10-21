@@ -18,10 +18,10 @@ export type BriefApplyResult = {
 /**
  * Aplica lo generado a partir del brief:
  *   - Base de Conocimiento (setter_configs): campos de negocio + brief íntegro.
- *   - Agente SETTER: personalidad/objetivo/criterios (se crea si no existe).
- *   - Agente SOPORTE: objetivo/instrucciones (se crea si no existe).
- *   - Etiquetas sugeridas que no existan aún (auto-aplicables por la IA).
- *   - Etapas sugeridas que no existan aún.
+ *   - Agente SETTER: personalidad/objetivo/criterios (actualiza el existente,
+ *     aunque esté inactivo; solo se crea si la cuenta no tiene ninguno).
+ *   - Agente SOPORTE: objetivo/instrucciones (igual que el setter).
+ *   - Solo en la primera configuración: etiquetas y etapas sugeridas.
  */
 @Injectable()
 export class BriefApplyService {
@@ -40,6 +40,10 @@ export class BriefApplyService {
     gen: GeneratedBrief,
     brief: string,
   ): Promise<BriefApplyResult> {
+    // Etiquetas y etapas sugeridas solo en la primera configuración: al volver a
+    // generar no tocamos los pipelines ni las etiquetas que el cliente ya ajustó.
+    const firstSetup = !(await this.setterConfig.getOrCreate(orgId)).knowledge_base?.trim();
+
     // 1) Base de Conocimiento.
     const business: Partial<SetterConfig> = { knowledge_base: brief.slice(0, 28000) };
     for (const k of BUSINESS_FIELDS) {
@@ -50,7 +54,7 @@ export class BriefApplyService {
 
     // 2) Agente Setter.
     const setterPatch = setterAgentPatch(gen.fields);
-    let setter = await this.agents.firstOfKind(orgId, 'setter');
+    let setter = await this.agents.existingOfKind(orgId, 'setter');
     setter = setter
       ? await this.agents.update(orgId, setter.id, setterPatch)
       : await this.agents.create(orgId, userId, { ...setterPatch, kind: 'setter', name: 'Setter' });
@@ -64,7 +68,7 @@ export class BriefApplyService {
     };
     if (gen.support.objective) supportPatch.objective = gen.support.objective;
     if (gen.support.instructions) supportPatch.instructions = gen.support.instructions;
-    let support = await this.agents.firstOfKind(orgId, 'support');
+    let support = await this.agents.existingOfKind(orgId, 'support');
     support = support
       ? await this.agents.update(orgId, support.id, supportPatch)
       : await this.agents.create(orgId, userId, {
@@ -74,12 +78,14 @@ export class BriefApplyService {
         });
 
     // 4) Etiquetas sugeridas (solo las que no existan).
-    const created_tags = await this.ensureTags(orgId, userId, gen.suggested_tags);
+    const created_tags = firstSetup
+      ? await this.ensureTags(orgId, userId, gen.suggested_tags)
+      : [];
 
     // 5) Etapas sugeridas.
-    const created_stages = (await this.stages.ensureByNames(orgId, gen.suggested_stages)).map(
-      (s) => s.name,
-    );
+    const created_stages = firstSetup
+      ? (await this.stages.ensureByNames(orgId, gen.suggested_stages)).map((s) => s.name)
+      : [];
 
     return { config, setter, support, created_tags, created_stages };
   }

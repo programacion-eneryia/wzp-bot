@@ -59,6 +59,7 @@ export class UpdateSetterConfigDto {
   @IsOptional() @IsBoolean() support_enabled?: boolean;
   @IsOptional() @IsBoolean() active_hours_enabled?: boolean;
   @IsOptional() @IsBoolean() ignore_followed?: boolean;
+  @IsOptional() @IsBoolean() pause_on_manual?: boolean;
 
   @IsOptional() @Type(() => Number) @IsInt() @Min(0) @Max(60000) min_delay_ms?: number;
   @IsOptional() @Type(() => Number) @IsInt() @Min(0) @Max(60000) max_delay_ms?: number;
