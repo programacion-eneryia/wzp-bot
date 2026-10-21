@@ -14,6 +14,7 @@ import { MODEL_CHOICES, timezoneOptions } from "@/lib/ai-options";
 import { useStages, type Pipeline } from "@/lib/stages";
 import SilencedContacts from "../setter/SilencedContacts";
 import GeneralSettings from "./GeneralSettings";
+import PauseOnManualToggle from "./PauseOnManualToggle";
 import styles from "./agents.module.css";
 
 type Channel = {
@@ -755,6 +756,7 @@ function AgentEditor({
         <>
           <section className={styles.card}>
             <h2 className={styles.cardTitle}>Comportamiento de este agente</h2>
+            <PauseOnManualToggle isAdmin={isAdmin} />
             <label className={styles.checkRow}>
               <input
                 type="checkbox"

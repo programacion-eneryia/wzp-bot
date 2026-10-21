@@ -5,6 +5,7 @@ import { apiFetch } from "@/lib/api";
 import { MODEL_CHOICES, timezoneOptions } from "@/lib/ai-options";
 import type { Agent } from "@/lib/agents";
 import SilencedContacts from "../setter/SilencedContacts";
+import PauseOnManualToggle from "./PauseOnManualToggle";
 import styles from "./agents.module.css";
 
 /** Ajustes de comportamiento de la cuenta (setter_configs) que heredan los agentes. */
@@ -19,7 +20,6 @@ type GeneralConfig = {
   active_hours_end: number;
   timezone: string;
   ignore_followed: boolean;
-  pause_on_manual: boolean;
   model: string | null;
   daily_token_limit: number;
 };
@@ -35,7 +35,6 @@ const KEYS: (keyof GeneralConfig)[] = [
   "active_hours_end",
   "timezone",
   "ignore_followed",
-  "pause_on_manual",
 ];
 const ADMIN_KEYS: (keyof GeneralConfig)[] = ["model", "daily_token_limit"];
 
@@ -141,6 +140,7 @@ export default function GeneralSettings({ agents, isAdmin, onSetDefault }: Props
         agente. Sin agente predeterminado, la IA se activa a mano desde Chats, con un workflow
         (&quot;Pasar a IA&quot;) o desde GoHighLevel.
       </p>
+      <PauseOnManualToggle isAdmin={isAdmin} />
 
       {open && error && <div className={styles.error}>{error}</div>}
       {open && !cfg && !error && <p className={styles.muted}>Cargando…</p>}
@@ -177,17 +177,6 @@ export default function GeneralSettings({ agents, isAdmin, onSetDefault }: Props
               onChange={(e) => set("ignore_followed", e.target.checked)}
             />
             <span>No responder a cuentas que sigues (Instagram)</span>
-          </label>
-          <label className={styles.checkRow}>
-            <input
-              type="checkbox"
-              checked={cfg.pause_on_manual}
-              onChange={(e) => set("pause_on_manual", e.target.checked)}
-            />
-            <span>
-              Pausar la IA de un chat cuando una persona escribe a mano (desde Chats o desde el
-              móvil). La plantilla de primer contacto de GHL no la pausa.
-            </span>
           </label>
           <div className={styles.row}>
             <label className={styles.field}>
