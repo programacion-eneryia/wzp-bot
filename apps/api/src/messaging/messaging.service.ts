@@ -14,6 +14,7 @@ import { AgentsService } from '../agents/agents.service';
 import { effectiveBehavior } from '../agents/agents.types';
 import { StagesService } from '../stages/stages.service';
 import { GhlSyncService } from '../ghl/ghl-sync.service';
+import { ErrorLogService } from '../platform/error-log.service';
 import { newConversationsStartPaused } from '../common/flags';
 import {
   betterName,
@@ -28,6 +29,8 @@ import { DEBOUNCE_MS, type OutgoingJob, type RespondJob } from './queues';
 /** Margen tras registrar un lead en el que su primer mensaje saliente se toma como la plantilla de GHL. */
 const FIRST_CONTACT_WINDOW_MS = 60 * 60_000;
 const ECHO_GRACE_MS = 5_000;
+const RESPOND_RETRY_MS = 10 * 60_000;
+const RESPOND_RETRY_WINDOW_MS = 24 * 60 * 60_000;
 
 const CONV_COLS =
   'id, ai_enabled, mode, mode_locked, contact_name, contact_external_id, contact_handle, unread_count';
@@ -71,6 +74,7 @@ export class MessagingService {
     private readonly agents: AgentsService,
     private readonly stages: StagesService,
     private readonly ghlSync: GhlSyncService,
+    private readonly errorLog: ErrorLogService,
   ) {}
 
   /**
@@ -736,6 +740,9 @@ export class MessagingService {
 
     try {
       await this.generateAndSendLocked(job, orgId, conversationId, chatId, provider);
+    } catch (err) {
+      await this.retryResponseLater(orgId, conversationId, err);
+      throw err;
     } finally {
       try {
         await this.supabase.admin
@@ -745,6 +752,30 @@ export class MessagingService {
       } catch {
         // el lock caduca solo (LOCK_STALE_MS) si no se pudo liberar
       }
+    }
+  }
+
+  /**
+   * El lock ya limpió respond_after: si la generación falla (p.ej. el modelo sin
+   * saldo) hay que reprogramarla o el lead se queda sin respuesta para siempre.
+   * Solo se reintenta durante un día desde su último mensaje.
+   */
+  private async retryResponseLater(orgId: string, conversationId: string, err: unknown) {
+    const message = err instanceof Error ? err.message : String(err);
+    void this.errorLog.log({
+      source: 'respond',
+      message: `No se pudo responder (conv ${conversationId}): ${message}`,
+      organizationId: orgId,
+    });
+    try {
+      await this.supabase.admin
+        .from('conversations')
+        .update({ respond_after: new Date(Date.now() + RESPOND_RETRY_MS).toISOString() })
+        .eq('id', conversationId)
+        .is('respond_after', null)
+        .gte('last_inbound_at', new Date(Date.now() - RESPOND_RETRY_WINDOW_MS).toISOString());
+    } catch {
+      // sin reprogramar: el siguiente mensaje del lead lo vuelve a poner en cola
     }
   }
 

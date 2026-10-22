@@ -36,10 +36,12 @@ export class AllExceptionsFilter implements ExceptionFilter {
         ? exception.getStatus()
         : HttpStatus.INTERNAL_SERVER_ERROR;
 
-    const body =
+    const raw =
       exception instanceof HttpException
         ? exception.getResponse()
         : { statusCode: status, message: 'Internal server error' };
+    // `new HttpException('texto', n)` devuelve un string: el cliente lee `message`.
+    const body = typeof raw === 'string' ? { statusCode: status, message: raw } : raw;
 
     if (status >= 500) {
       const message =

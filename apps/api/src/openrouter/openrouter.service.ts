@@ -64,6 +64,12 @@ export class OpenRouterService implements OnModuleInit {
     const text = await res.text();
     if (!res.ok) {
       this.logger.error(`OpenRouter ${res.status}: ${text}`);
+      if (res.status === 402) {
+        throw new HttpException(
+          'La IA se ha quedado sin saldo: hay que recargar créditos para que vuelva a responder.',
+          503,
+        );
+      }
       throw new HttpException(`Error del modelo (${res.status})`, 502);
     }
 
