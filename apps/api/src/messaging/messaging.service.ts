@@ -29,6 +29,10 @@ import { DEBOUNCE_MS, type OutgoingJob, type RespondJob } from './queues';
 /** Margen tras registrar un lead en el que su primer mensaje saliente se toma como la plantilla de GHL. */
 const FIRST_CONTACT_WINDOW_MS = 60 * 60_000;
 const ECHO_GRACE_MS = 5_000;
+/** Reintentos (cada ECHO_GRACE_MS) esperando al lead cuando su plantilla llega antes. */
+const ECHO_LEAD_WAIT_TRIES = 3;
+/** Antigüedad máxima de un chat para vincularlo a un lead que acaba de entrar. */
+const RECENT_CHAT_MS = 30 * 60_000;
 const RESPOND_RETRY_MS = 10 * 60_000;
 const RESPOND_RETRY_WINDOW_MS = 24 * 60 * 60_000;
 const FOLLOWUP_BATCH = 10;
@@ -652,7 +656,14 @@ export class MessagingService {
       if (!conv) {
         const { phone } = await this.chatContact(evt.chatId);
         if (phone) {
-          conv = await this.linkIntakeConversation(orgId, channel, evt.chatId, phone, cols);
+          // GHL envía la plantilla y avisa del lead casi a la vez: si el eco llega
+          // antes que el lead, esperamos a que exista su conversación.
+          for (let i = 0; i <= ECHO_LEAD_WAIT_TRIES && !conv; i++) {
+            if (i > 0) await sleep(ECHO_GRACE_MS);
+            conv =
+              (await this.linkIntakeConversation(orgId, channel, evt.chatId, phone, cols)) ??
+              (await this.findByChat(orgId, channel.id, evt.chatId, cols));
+          }
         }
       }
       if (!conv) return;
@@ -1913,6 +1924,39 @@ export class MessagingService {
     if (!linked?.length) return this.findByChat(orgId, channel.id, chatId, cols);
     this.logger.log(`Chat ${chatId} vinculado a la conversación existente ${conv.id as string}`);
     return linked[0] as unknown as Record<string, any>;
+  }
+
+  /**
+   * Lead recién entrado cuyo chat ya existe en WhatsApp (GHL le envió la
+   * plantilla antes de avisarnos): lo buscamos entre los chats recientes de la
+   * cuenta y lo vinculamos, para que el portal muestre lo que se le ha enviado.
+   */
+  async linkRecentChatByPhone(
+    orgId: string,
+    channel: { id: string; provider: string; unipile_account_id?: string | null },
+    phone: string,
+  ): Promise<string | null> {
+    const wanted = phone.replace(/\D/g, '');
+    if (!channel.unipile_account_id || !wanted) return null;
+    try {
+      const chats = await this.unipile.listChats(channel.unipile_account_id, 15);
+      const since = Date.now() - RECENT_CHAT_MS;
+      for (const chat of chats) {
+        if (!chat.id) continue;
+        const ts = Date.parse(String(chat.timestamp ?? ''));
+        if (Number.isFinite(ts) && ts < since) continue;
+        const chatPhone =
+          phoneFromJid(chat.attendee_provider_id) ??
+          phoneFromJid(chat.provider_id) ??
+          (await this.chatContact(chat.id)).phone;
+        if (chatPhone?.replace(/\D/g, '') !== wanted) continue;
+        const linked = await this.linkIntakeConversation(orgId, channel, chat.id, `+${wanted}`, 'id');
+        return linked ? chat.id : null;
+      }
+    } catch (err) {
+      this.logger.warn(`No se pudo buscar el chat reciente de ${phone}: ${String(err)}`);
+    }
+    return null;
   }
 
   private async upsertConversation(

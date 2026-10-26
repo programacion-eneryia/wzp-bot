@@ -175,6 +175,13 @@ export class LeadIntakeService {
 
     // Buscamos conversación existente por teléfono/subscriber para no duplicar.
     const conv = await this.findOrCreateConversation(orgId, channel, provider, phoneDigits, input);
+    if (channel && provider === 'whatsapp' && phoneDigits && !conv.unipile_chat_id) {
+      const chatId = await this.messaging.linkRecentChatByPhone(orgId, channel, phoneDigits);
+      if (chatId) {
+        conv.unipile_chat_id = chatId;
+        conv.contact_external_id = chatId;
+      }
+    }
 
     // Enlazamos el lead del CRM con la conversación que abrirá el bot.
     if (leadId) {
