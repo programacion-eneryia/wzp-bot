@@ -119,10 +119,12 @@ export class SetterService {
           ? `${Math.round(opts.silentMinutes / 60)} horas`
           : `${opts.silentMinutes} minutos`;
 
+    // Va como turno de usuario (no de sistema): Claude exige que la conversación
+    // termine en un mensaje del usuario y aquí el último turno real es del bot.
     messages.push({
-      role: 'system',
+      role: 'user',
       content:
-        `# SEGUIMIENTO AUTOMÁTICO\n` +
+        `[INSTRUCCIÓN DEL SISTEMA — SEGUIMIENTO AUTOMÁTICO. Este texto NO lo ha escrito el lead; el lead no ha dicho nada.]\n` +
         `El lead lleva ${silence} sin contestar a tu último mensaje. Escribe ahora el seguimiento ${n} de ${opts.total}` +
         (last ? ' (el ÚLTIMO)' : '') +
         `.\n` +
