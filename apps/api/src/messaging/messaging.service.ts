@@ -1164,16 +1164,35 @@ export class MessagingService {
       )
       .eq('id', conversationId)
       .maybeSingle();
-    if (!conv || !conv.ai_enabled || conv.blocked || conv.archived_at || conv.is_test) return false;
-    if (conv.followups_paused || conv.mode === 'ignored') return false;
-    if (conv.stage && FOLLOWUP_STOP_STAGES.has(conv.stage as string)) return false;
-    if (!conv.last_outbound_at) return false;
+    // El lock ya vació next_followup_at. Las condiciones DEFINITIVAS (el lead
+    // contestó, etapa final, IA apagada…) cierran la cadena; las TRANSITORIAS
+    // (workflow en marcha, IA de la org pausada, tope de tokens) la aplazan
+    // para que el seguimiento no se pierda en silencio.
+    const stop = (reason: string) => {
+      this.logger.log(`Seguimiento cancelado (conv ${conversationId}): ${reason}`);
+      return false;
+    };
+    const defer = async (reason: string, minutes: number) => {
+      await this.supabase.admin
+        .from('conversations')
+        .update({ next_followup_at: new Date(Date.now() + minutes * 60_000).toISOString() })
+        .eq('id', conversationId);
+      this.logger.log(`Seguimiento aplazado ${minutes} min (conv ${conversationId}): ${reason}`);
+      return false;
+    };
+
+    if (!conv || !conv.ai_enabled || conv.blocked || conv.archived_at || conv.is_test) {
+      return stop('conversación sin IA, bloqueada, archivada o de prueba');
+    }
+    if (conv.followups_paused || conv.mode === 'ignored') return stop('seguimientos pausados o chat ignorado');
+    if (conv.stage && FOLLOWUP_STOP_STAGES.has(conv.stage as string)) return stop(`etapa final ${String(conv.stage)}`);
+    if (!conv.last_outbound_at) return stop('sin mensajes nuestros');
 
     const cfg = await this.setterConfig.getOrCreate(orgId);
-    if (!cfg.is_active) return false;
+    if (!cfg.is_active) return defer('IA de la organización desactivada', 60);
     if (cfg.daily_token_limit && cfg.daily_token_limit > 0) {
       const used = await this.openrouter.tokensUsedToday(orgId);
-      if (used >= cfg.daily_token_limit) return false;
+      if (used >= cfg.daily_token_limit) return defer('tope diario de tokens alcanzado', 60);
     }
 
     const agent = await this.agents.resolveForConversation(orgId, {
@@ -1183,7 +1202,8 @@ export class MessagingService {
     });
     const delays = agent?.followup_delays_min ?? [];
     const step = (conv.followup_count as number) ?? 0;
-    if (!agent || !agent.followup_enabled || step >= delays.length) return false;
+    if (!agent || !agent.followup_enabled) return stop('agente sin seguimiento activado');
+    if (step >= delays.length) return stop('secuencia completada');
 
     // Solo si el lead sigue sin contestar: el último mensaje debe ser nuestro.
     const { data: last } = await this.supabase.admin
@@ -1193,15 +1213,18 @@ export class MessagingService {
       .order('created_at', { ascending: false })
       .limit(1)
       .maybeSingle();
-    if (!last || last.role === 'contact') return false;
+    if (!last || last.role === 'contact') return stop('el lead ya contestó');
 
-    // Si un workflow ya está persiguiendo a este lead, no duplicamos.
+    // Si un workflow está persiguiendo AHORA a este lead (run activo), no
+    // duplicamos: lo volvemos a mirar en un rato. Los runs pausados no cuentan:
+    // quedan así cuando el lead contesta y, salvo reanudación programada, no
+    // vuelven a escribirle.
     const { count: runs } = await this.supabase.admin
       .from('workflow_runs')
       .select('id', { count: 'exact', head: true })
       .eq('conversation_id', conversationId)
-      .in('status', ['active', 'paused']);
-    if (runs) return false;
+      .eq('status', 'active');
+    if (runs) return defer('workflow activo en este chat', 30);
 
     // Cloud API: fuera de la ventana de 24 h solo se puede mandar plantilla.
     if (
@@ -1209,7 +1232,7 @@ export class MessagingService {
       conv.window_expires_at &&
       new Date(conv.window_expires_at as string).getTime() < Date.now()
     ) {
-      return false;
+      return stop('ventana de 24 h de WhatsApp Cloud cerrada');
     }
 
     const behavior = effectiveBehavior(cfg, agent);
@@ -1232,7 +1255,7 @@ export class MessagingService {
     }
 
     const chatId = (conv.unipile_chat_id ?? conv.contact_external_id) as string | null;
-    if (!chatId) return false;
+    if (!chatId) return stop('conversación sin chat al que escribir');
 
     const silentMinutes = Math.max(
       1,
@@ -1260,7 +1283,7 @@ export class MessagingService {
 
     const watermark = conv.last_inbound_at as string | null;
     for (const b of bubbles) {
-      if (await this.newerInboundExists(conversationId, watermark)) return false;
+      if (await this.newerInboundExists(conversationId, watermark)) return stop('el lead escribió mientras tanto');
       await sleep(Math.min(b.delayMs, 8_000));
       await this.transport.sendText({
         transport: conv.transport as string,
