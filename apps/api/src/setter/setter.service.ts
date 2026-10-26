@@ -127,7 +127,7 @@ export class SetterService {
 
     const previous = (opts.previous ?? []).map((t) => t.trim()).filter(Boolean);
     const previousBlock = previous.length
-      ? `\nYA LE HAS ENVIADO ESTOS SEGUIMIENTOS SIN RESPUESTA (PROHIBIDO repetirlos, parafrasearlos o volver a preguntar lo mismo):\n` +
+      ? `\nYA LE HAS ENVIADO ESTOS MENSAJES SIN RESPUESTA (PROHIBIDO repetirlos, parafrasearlos o volver a preguntar lo mismo con otras palabras):\n` +
         previous.map((t) => `  · "${t}"`).join('\n') +
         `\n`
       : '';
@@ -143,7 +143,7 @@ export class SetterService {
         `.\n` +
         previousBlock +
         (n === 1
-          ? `- Retoma de forma natural lo último que quedó pendiente (una pregunta que hiciste, un vídeo o enlace que le pasaste, la llamada que propusiste). Si le pediste que viera algo, pregúntale qué le pareció. Tono ligero, como quien escribe de pasada.\n`
+          ? `- Retoma de forma natural lo que quedó pendiente, pero desde otro ángulo: si le pasaste un vídeo o enlace, pregúntale qué le pareció; si le hiciste una pregunta, NO la repitas: dale un motivo breve para contestar o pregúntale otra cosa relacionada. Tono ligero, como quien escribe de pasada.\n`
           : last
             ? `- Es el último intento: cierra con elegancia dejando la puerta abierta (que te escriba cuando le encaje), sin reproches ni presión. Ángulo distinto a todo lo anterior.\n`
             : `- Cambia de ángulo respecto a los seguimientos anteriores: aporta algo nuevo (un dato útil, un beneficio concreto, una objeción típica resuelta en una frase o una pregunta distinta). No vuelvas a preguntar si vio algo si ya se lo preguntaste.\n`) +

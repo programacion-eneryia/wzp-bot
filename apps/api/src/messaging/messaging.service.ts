@@ -1451,13 +1451,13 @@ export class MessagingService {
       1,
       Math.round((Date.now() - new Date(silentSince).getTime()) / 60_000),
     );
-    // Seguimientos ya enviados en esta racha (para que el modelo no se repita).
+    // Lo que ya le hemos dicho sin respuesta en esta racha (la plantilla de
+    // primer contacto incluida), para que el modelo no lo repita.
     let previousQ = this.supabase.admin
       .from('messages')
       .select('content')
       .eq('conversation_id', conversationId)
-      .eq('role', 'assistant')
-      .not('metadata->>followup', 'is', null)
+      .in('role', ['assistant', 'agent'])
       .order('created_at', { ascending: true })
       .limit(10);
     if (conv.last_inbound_at) previousQ = previousQ.gt('created_at', conv.last_inbound_at as string);
