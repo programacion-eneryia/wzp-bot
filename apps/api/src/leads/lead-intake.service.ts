@@ -100,6 +100,7 @@ export class LeadIntakeService {
   }
 
   /** Elige el canal a usar: el por defecto de la org, o el primero del proveedor. */
+  /** Solo canales conectados: uno caído no puede escribir al lead. */
   private async pickChannel(orgId: string, defaultChannelId: string | null, provider: string) {
     if (defaultChannelId) {
       const { data } = await this.supabase.admin
@@ -107,6 +108,7 @@ export class LeadIntakeService {
         .select('id, provider, unipile_account_id, status')
         .eq('id', defaultChannelId)
         .eq('organization_id', orgId)
+        .eq('status', 'connected')
         .maybeSingle();
       if (data) return data;
     }
@@ -115,9 +117,10 @@ export class LeadIntakeService {
       .select('id, provider, unipile_account_id, status')
       .eq('organization_id', orgId)
       .eq('provider', provider)
-      .limit(1)
-      .maybeSingle();
-    return data;
+      .eq('status', 'connected')
+      .order('connected_at', { ascending: false })
+      .limit(1);
+    return data?.[0] ?? null;
   }
 
   async intake(input: IntakeInput): Promise<IntakeResult> {

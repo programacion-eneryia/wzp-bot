@@ -51,6 +51,7 @@ const LOCK_STALE_MS = 3 * 60 * 1000;
 // el rendimiento a cambio de más llamadas concurrentes a la IA / al proveedor.
 const RESPOND_BATCH = 25;
 const OUTBOX_BATCH = 30;
+const OUTBOX_MAX_ATTEMPTS = 6;
 
 type IncomingEvent = {
   accountId: string;
@@ -400,7 +401,7 @@ export class MessagingService {
     const staleIso = new Date(Date.now() - LOCK_STALE_MS).toISOString();
     const { data: rows } = await this.supabase.admin
       .from('outbox')
-      .select('id, organization_id, conversation_id, kind, transport, account_id, attendee_id, chat_id, content')
+      .select('id, organization_id, conversation_id, kind, transport, account_id, attendee_id, chat_id, content, attempts')
       .is('sent_at', null)
       .lte('send_after', nowIso)
       .or(`locked_at.is.null,locked_at.lt.${staleIso}`)
@@ -416,7 +417,7 @@ export class MessagingService {
         // Lock atómico: solo procede quien logra marcar locked_at.
         const { data: locked } = await this.supabase.admin
           .from('outbox')
-          .update({ locked_at: nowIso, attempts: 1 })
+          .update({ locked_at: nowIso, attempts: ((row.attempts as number | null) ?? 0) + 1 })
           .eq('id', row.id)
           .is('sent_at', null)
           .or(`locked_at.is.null,locked_at.lt.${staleIso}`)
@@ -441,11 +442,24 @@ export class MessagingService {
             .eq('id', row.id);
           return true;
         } catch (err) {
+          // Reintento cada 15 min; tras OUTBOX_MAX_ATTEMPTS se aparca (send_after
+          // nulo) con el error a la vista en vez de insistir para siempre.
+          const attempts = ((row.attempts as number | null) ?? 0) + 1;
           await this.supabase.admin
             .from('outbox')
-            .update({ locked_at: null, last_error: String(err) })
+            .update({
+              locked_at: null,
+              last_error: String(err),
+              send_after:
+                attempts >= OUTBOX_MAX_ATTEMPTS ? null : new Date(Date.now() + 15 * 60_000).toISOString(),
+            })
             .eq('id', row.id);
           this.logger.error(`Error enviando outbox ${row.id}: ${String(err)}`);
+          void this.errorLog.log({
+            source: 'outbox',
+            message: `No se pudo enviar un mensaje programado (conv ${String(row.conversation_id)}, intento ${attempts}): ${String(err).slice(0, 800)}`,
+            organizationId: row.organization_id as string,
+          });
           return false;
         }
       }),
@@ -753,17 +767,12 @@ export class MessagingService {
       // Aún sin chat (lead de GHL que no ha escrito, o canal reconectado):
       // lo abrimos por teléfono en vez de guardar un mensaje que no se envía.
       const phone = toE164(conv.contact_handle as string | null);
-      let q = this.supabase.admin
-        .from('channels')
-        .select('id, unipile_account_id')
-        .eq('organization_id', orgId)
-        .eq('status', 'connected');
-      q = conv.channel_id
-        ? q.eq('id', conv.channel_id as string)
-        : q.eq('provider', (conv.provider as string) ?? 'whatsapp');
-      const { data: channels } = await q.order('connected_at', { ascending: false }).limit(1);
-      const channel = channels?.[0];
-      if (!phone || !channel?.unipile_account_id) {
+      const channel = await this.liveUnipileChannel(
+        orgId,
+        conv.channel_id as string | null,
+        conv.provider as string | null,
+      );
+      if (!phone || !channel) {
         throw new BadRequestException(
           'Este contacto aún no tiene chat abierto y no hay un teléfono o canal conectado para escribirle.',
         );
@@ -829,17 +838,12 @@ export class MessagingService {
       }
 
       const phone = toE164(conv.contact_handle as string | null);
-      let q = this.supabase.admin
-        .from('channels')
-        .select('id, unipile_account_id')
-        .eq('organization_id', orgId)
-        .eq('status', 'connected');
-      q = conv.channel_id
-        ? q.eq('id', conv.channel_id as string)
-        : q.eq('provider', (conv.provider as string) ?? 'whatsapp');
-      const { data: channels } = await q.order('connected_at', { ascending: false }).limit(1);
-      const channel = channels?.[0];
-      if (!phone || !channel?.unipile_account_id) {
+      const channel = await this.liveUnipileChannel(
+        orgId,
+        conv.channel_id as string | null,
+        conv.provider as string | null,
+      );
+      if (!phone || !channel) {
         throw new Error('La conversación no tiene chat abierto ni un teléfono/canal conectado para escribirle');
       }
       const started = await this.transport.startChat({
@@ -865,6 +869,34 @@ export class MessagingService {
       }
       throw err;
     }
+  }
+
+  /**
+   * Canal de Unipile por el que escribir: el de la conversación si sigue
+   * conectado; si no (canal caído o sustituido al reconectar), el más reciente
+   * conectado de la org para ese proveedor.
+   */
+  private async liveUnipileChannel(
+    orgId: string,
+    preferredId: string | null,
+    provider: string | null,
+  ): Promise<{ id: string; unipile_account_id: string } | null> {
+    const base = () =>
+      this.supabase.admin
+        .from('channels')
+        .select('id, unipile_account_id')
+        .eq('organization_id', orgId)
+        .eq('status', 'connected')
+        .not('unipile_account_id', 'is', null);
+    if (preferredId) {
+      const { data } = await base().eq('id', preferredId).maybeSingle();
+      if (data) return data as { id: string; unipile_account_id: string };
+    }
+    const { data } = await base()
+      .eq('provider', provider ?? 'whatsapp')
+      .order('connected_at', { ascending: false })
+      .limit(1);
+    return (data?.[0] as { id: string; unipile_account_id: string } | undefined) ?? null;
   }
 
   private async markChannelDisconnected(channelId: string | null) {
@@ -1564,18 +1596,27 @@ export class MessagingService {
   }
 
   private async deliverProactive(job: OutgoingJob) {
-    if (!job.accountId || !job.attendeeId) return;
     // Evita duplicar si ya se contactó (reintentos / carreras).
     const { data: conv } = await this.supabase.admin
       .from('conversations')
-      .select('proactive_sent')
+      .select('proactive_sent, channel_id, provider')
       .eq('id', job.conversationId)
       .maybeSingle();
     if (conv?.proactive_sent) return;
 
+    // Lanzar (no volver en silencio): si no, la cola lo marca como enviado.
+    const channel = await this.liveUnipileChannel(
+      job.orgId,
+      (conv?.channel_id as string | null) ?? null,
+      (conv?.provider as string | null) ?? null,
+    );
+    const accountId = channel?.unipile_account_id ?? job.accountId;
+    if (!accountId) throw new Error('Sin canal de WhatsApp conectado para el primer mensaje');
+    if (!job.attendeeId) throw new Error('El lead no tiene teléfono para el primer mensaje');
+
     const { chatId } = await this.transport.startChat({
       transport: job.transport,
-      accountId: job.accountId,
+      accountId,
       recipientId: job.attendeeId,
       text: job.content,
     });
@@ -1593,6 +1634,7 @@ export class MessagingService {
         proactive_sent: true,
         unipile_chat_id: chatId,
         contact_external_id: chatId,
+        ...(channel ? { channel_id: channel.id } : {}),
         last_outbound_at: new Date().toISOString(),
         last_message_at: new Date().toISOString(),
       })
@@ -1612,7 +1654,7 @@ export class MessagingService {
   }): Promise<{ skipped?: string; delayMs?: number }> {
     const { data: conv } = await this.supabase.admin
       .from('conversations')
-      .select('unipile_chat_id, contact_external_id, contact_handle, channel_id, transport')
+      .select('unipile_chat_id, contact_external_id, contact_handle, channel_id, transport, provider')
       .eq('id', params.conversationId)
       .maybeSingle();
     if (!conv) return { skipped: 'sin conversación' };
@@ -1632,13 +1674,13 @@ export class MessagingService {
       insert.chat_id = chatId;
     } else {
       // Primer contacto: necesitamos cuenta de Unipile + teléfono del lead.
-      const { data: channel } = await this.supabase.admin
-        .from('channels')
-        .select('unipile_account_id')
-        .eq('id', conv.channel_id as string)
-        .maybeSingle();
+      const channel = await this.liveUnipileChannel(
+        params.orgId,
+        conv.channel_id as string | null,
+        conv.provider as string | null,
+      );
       const attendee = ((conv.contact_handle as string) ?? '').replace(/[^\d]/g, '');
-      if (!channel?.unipile_account_id || !attendee) return { skipped: 'sin destino' };
+      if (!channel || !attendee) return { skipped: 'sin destino' };
       insert.account_id = channel.unipile_account_id;
       insert.attendee_id = attendee;
     }
@@ -1680,7 +1722,7 @@ export class MessagingService {
         })
         .eq('id', job.conversationId);
     } else {
-      return;
+      throw new Error('Mensaje de workflow sin chat ni cuenta/teléfono de destino');
     }
 
     await this.supabase.admin.from('messages').insert({
@@ -1804,17 +1846,34 @@ export class MessagingService {
   ) {
     const { data } = await this.supabase.admin
       .from('conversations')
-      .select(cols)
+      .select(`${cols}, channel_id`)
       .eq('organization_id', orgId)
       .eq('provider', channel.provider)
       .in('contact_handle', phoneVariants(phone))
       .is('unipile_chat_id', null)
       .is('contact_external_id', null)
       .eq('is_test', false)
-      .or(`channel_id.is.null,channel_id.eq.${channel.id}`)
       .order('created_at', { ascending: false })
-      .limit(1);
-    const conv = data?.[0] as unknown as Record<string, any> | undefined;
+      .limit(5);
+    const candidates = (data ?? []) as unknown as Record<string, any>[];
+    // Vale la del mismo canal, sin canal, o en un canal que ya no está conectado
+    // (p.ej. el lead de GHL se creó apuntando a un canal caído o sustituido).
+    let conv: Record<string, any> | undefined;
+    for (const c of candidates) {
+      if (!c.channel_id || c.channel_id === channel.id) {
+        conv = c;
+        break;
+      }
+      const { data: other } = await this.supabase.admin
+        .from('channels')
+        .select('status')
+        .eq('id', c.channel_id as string)
+        .maybeSingle();
+      if (!other || other.status !== 'connected') {
+        conv = c;
+        break;
+      }
+    }
     if (!conv) return null;
 
     const { data: linked } = await this.supabase.admin
