@@ -802,6 +802,83 @@ export class MessagingService {
     return { ok: true };
   }
 
+  /**
+   * Envía un texto del bot. Si la conversación aún no tiene chat en Unipile
+   * (canal recién reconectado: los ids de chat cambian con la cuenta nueva) lo
+   * abre por teléfono con ese mismo texto. Devuelve el chat a usar después.
+   * Si Unipile dice que la cuenta está desconectada, marca el canal para que se
+   * vea en el panel.
+   */
+  private async deliverBotText(
+    orgId: string,
+    conversationId: string,
+    conv: Record<string, unknown>,
+    chatId: string | null,
+    text: string,
+  ): Promise<string | null> {
+    try {
+      if (chatId || conv.transport !== 'unipile') {
+        await this.transport.sendText({
+          transport: conv.transport as string,
+          chatId,
+          text,
+          channelId: conv.channel_id as string | null,
+          to: (conv.contact_handle ?? conv.contact_external_id) as string | null,
+        });
+        return chatId;
+      }
+
+      const phone = toE164(conv.contact_handle as string | null);
+      let q = this.supabase.admin
+        .from('channels')
+        .select('id, unipile_account_id')
+        .eq('organization_id', orgId)
+        .eq('status', 'connected');
+      q = conv.channel_id
+        ? q.eq('id', conv.channel_id as string)
+        : q.eq('provider', (conv.provider as string) ?? 'whatsapp');
+      const { data: channels } = await q.order('connected_at', { ascending: false }).limit(1);
+      const channel = channels?.[0];
+      if (!phone || !channel?.unipile_account_id) {
+        throw new Error('La conversación no tiene chat abierto ni un teléfono/canal conectado para escribirle');
+      }
+      const started = await this.transport.startChat({
+        transport: 'unipile',
+        accountId: channel.unipile_account_id as string,
+        recipientId: phone.replace(/\D/g, ''),
+        text,
+      });
+      if (started.chatId) {
+        await this.supabase.admin
+          .from('conversations')
+          .update({
+            channel_id: channel.id,
+            unipile_chat_id: started.chatId,
+            contact_external_id: started.chatId,
+          })
+          .eq('id', conversationId);
+      }
+      return started.chatId;
+    } catch (err) {
+      if (String(err).includes('disconnected_account')) {
+        void this.markChannelDisconnected(conv.channel_id as string | null);
+      }
+      throw err;
+    }
+  }
+
+  private async markChannelDisconnected(channelId: string | null) {
+    if (!channelId) return;
+    await this.supabase.admin
+      .from('channels')
+      .update({
+        status: 'error',
+        last_error: 'WhatsApp se ha desconectado: hay que volver a conectar el número.',
+      })
+      .eq('id', channelId)
+      .eq('status', 'connected');
+  }
+
   // ---------------------------------------------------------------------------
 
   /**
@@ -886,7 +963,7 @@ export class MessagingService {
     const { data: conv } = await this.supabase.admin
       .from('conversations')
       .select(
-        'id, ai_enabled, blocked, mode, mode_locked, contact_name, contact_external_id, contact_handle, last_inbound_at, transport, channel_id, agent_id, stage',
+        'id, ai_enabled, blocked, mode, mode_locked, contact_name, contact_external_id, contact_handle, last_inbound_at, transport, provider, channel_id, agent_id, stage',
       )
       .eq('id', conversationId)
       .maybeSingle();
@@ -1013,6 +1090,7 @@ export class MessagingService {
     // Retardo inicial (simula "leer"). El cps/longitud da el ritmo entre burbujas.
     await sleep(randomSeconds(behavior.first_reply_min_s, behavior.first_reply_max_s) * 1000);
 
+    let target: string | null = chatId || null;
     for (const b of bubbles) {
       if (await this.newerInboundExists(conversationId, watermark)) {
         this.logger.log(`Llegó un mensaje nuevo; abortando respuesta vieja (${conversationId})`);
@@ -1025,16 +1103,12 @@ export class MessagingService {
       }
 
       try {
-        await this.transport.sendText({
-          transport: conv.transport as string,
-          chatId,
-          text: b.content,
-          channelId: conv.channel_id as string | null,
-          to: (conv.contact_handle ?? conv.contact_external_id) as string | null,
-        });
+        target = await this.deliverBotText(orgId, conversationId, conv, target, b.content);
       } catch (err) {
+        // Se relanza para que generateAndSend reprograme la respuesta: si no,
+        // el lead se queda sin contestar para siempre.
         this.logger.error(`No se pudo enviar la burbuja: ${String(err)}`);
-        return;
+        throw err;
       }
       await this.supabase.admin.from('messages').insert({
         conversation_id: conversationId,
@@ -1163,7 +1237,7 @@ export class MessagingService {
     const { data: conv } = await this.supabase.admin
       .from('conversations')
       .select(
-        'id, ai_enabled, blocked, archived_at, is_test, stage, mode, contact_name, contact_handle, contact_external_id, unipile_chat_id, transport, channel_id, agent_id, last_inbound_at, last_outbound_at, followup_count, followups_paused, window_expires_at',
+        'id, ai_enabled, blocked, archived_at, is_test, stage, mode, contact_name, contact_handle, contact_external_id, unipile_chat_id, transport, provider, channel_id, agent_id, last_inbound_at, last_outbound_at, followup_count, followups_paused, window_expires_at',
       )
       .eq('id', conversationId)
       .maybeSingle();
@@ -1257,8 +1331,9 @@ export class MessagingService {
       return false;
     }
 
-    const chatId = (conv.unipile_chat_id ?? conv.contact_external_id) as string | null;
-    if (!chatId) return stop('conversación sin chat al que escribir');
+    // Sin chat (canal reconectado) se abre por teléfono al enviar.
+    let chatId = (conv.unipile_chat_id ?? conv.contact_external_id) as string | null;
+    if (!chatId && !conv.contact_handle) return stop('conversación sin chat ni teléfono al que escribir');
 
     // Lo que de verdad lleva el lead callado: desde SU último mensaje (no desde
     // el último empujón nuestro, que resetearía el contador en cada seguimiento).
@@ -1305,13 +1380,7 @@ export class MessagingService {
     for (const b of bubbles) {
       if (await this.newerInboundExists(conversationId, watermark)) return stop('el lead escribió mientras tanto');
       await sleep(Math.min(b.delayMs, 8_000));
-      await this.transport.sendText({
-        transport: conv.transport as string,
-        chatId,
-        text: b.content,
-        channelId: conv.channel_id as string | null,
-        to: (conv.contact_handle ?? conv.contact_external_id) as string | null,
-      });
+      chatId = await this.deliverBotText(orgId, conversationId, conv, chatId, b.content);
       await this.supabase.admin.from('messages').insert({
         conversation_id: conversationId,
         organization_id: orgId,

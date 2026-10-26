@@ -246,6 +246,9 @@ export class UnipileService implements OnModuleInit {
     if (!res.ok) {
       const detail = await res.text();
       this.logger.error(`Unipile send → ${res.status}: ${detail}`);
+      if (detail.includes('disconnected_account')) {
+        throw new HttpException('No se pudo enviar el mensaje: cuenta desconectada (disconnected_account)', res.status);
+      }
       throw new HttpException(`No se pudo enviar el mensaje (${res.status})`, res.status);
     }
   }
@@ -273,6 +276,9 @@ export class UnipileService implements OnModuleInit {
     const body = await res.text();
     if (!res.ok) {
       this.logger.error(`Unipile startChat → ${res.status}: ${body}`);
+      if (body.includes('disconnected_account')) {
+        throw new HttpException('No se pudo iniciar el chat: cuenta desconectada (disconnected_account)', res.status);
+      }
       throw new HttpException(`No se pudo iniciar el chat (${res.status})`, res.status);
     }
     return (body ? safeJson(body) : {}) as { chat_id?: string };
