@@ -20,6 +20,7 @@ import {
   IsString,
   IsUUID,
   MaxLength,
+  Max,
   Min,
   MinLength,
   ValidateIf,
@@ -63,6 +64,9 @@ class AgentDto {
   @IsOptional() @ValidateIf((_, v) => v !== null) @IsUUID() pipeline_id?: string | null;
   @IsOptional() @IsBoolean() is_default_lead?: boolean;
   @IsOptional() @IsBoolean() is_default_conversation?: boolean;
+  @IsOptional() @IsBoolean() followup_enabled?: boolean;
+  @IsOptional() @IsArray() @ArrayMaxSize(10) @IsInt({ each: true }) @Min(1, { each: true }) @Max(43200, { each: true })
+  followup_delays_min?: number[];
   @IsOptional() @ValidateIf((_, v) => v !== null) @IsObject() behavior?: AgentBehavior | null;
 }
 

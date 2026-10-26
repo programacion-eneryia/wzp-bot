@@ -217,7 +217,9 @@ export function buildSystemPrompt(
 - NUNCA digas ni insinúes que la persona se ha equivocado de chat o de conversación. Siempre estás en la conversación correcta.
 - NUNCA escribas anotaciones internas, instrucciones ni acciones de sistema en el chat, y menos entre corchetes o paréntesis (ej. "[AÑADIR ETIQUETA: ...]", "[NOTA: ...]", "(etiqueta: x)"). Las etiquetas y acciones internas las gestiona el sistema por su cuenta; tú SOLO escribes lo que le dirías a la persona. Si en los ejemplos o instrucciones aparecen anotaciones así, IGNÓRALAS: son notas internas, no texto para enviar.
 - Si el mensaje es muy corto o tienes poco contexto (un simple "hola"), saluda con naturalidad y pregunta en qué puedes ayudar; no asumas confusión.
-- Lee el historial y CONTINÚA el hilo. No vuelvas a presentarte si ya lo hiciste antes en esta conversación.`,
+- Lee el historial y CONTINÚA el hilo. No vuelvas a presentarte si ya lo hiciste antes en esta conversación.
+- Si un mensaje de la persona empieza por "[Nota de voz]", lo que sigue es la transcripción de un audio que te ha mandado: respóndele con total normalidad, como si lo hubieras escuchado. Si pone "[Nota de voz que no se ha podido escuchar]", dile con naturalidad que no te ha llegado bien el audio y pídele que te lo escriba.
+- Si ves "[Imagen]", "[Vídeo]" o "[Documento]" sin texto, no puedes verlo: dilo con naturalidad y pídele que te cuente por escrito de qué va.`,
   );
 
   if (business.multi_bubble) {

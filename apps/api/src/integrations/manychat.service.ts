@@ -93,6 +93,8 @@ export class ManyChatService {
         .update({
           last_inbound_at: new Date().toISOString(),
           last_message_at: new Date().toISOString(),
+          next_followup_at: null,
+          followup_count: 0,
         })
         .eq('id', convId);
     }

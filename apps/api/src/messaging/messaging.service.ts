@@ -1,6 +1,6 @@
 import { BadRequestException, Injectable, Logger } from '@nestjs/common';
 import { SupabaseService } from '../supabase/supabase.service';
-import { UnipileService } from '../unipile/unipile.service';
+import { UnipileService, type UnipileAttachment } from '../unipile/unipile.service';
 import { OpenRouterService } from '../openrouter/openrouter.service';
 import { SetterService } from '../setter/setter.service';
 import { SetterConfigService } from '../setter/setter-config.service';
@@ -11,7 +11,7 @@ import { TransportService } from './transport.service';
 import { TagClassifierService } from '../tags/tag-classifier.service';
 import { WorkflowTriggerService } from '../workflows/workflow-trigger.service';
 import { AgentsService } from '../agents/agents.service';
-import { effectiveBehavior } from '../agents/agents.types';
+import { effectiveBehavior, type Agent } from '../agents/agents.types';
 import { StagesService } from '../stages/stages.service';
 import { GhlSyncService } from '../ghl/ghl-sync.service';
 import { ErrorLogService } from '../platform/error-log.service';
@@ -31,6 +31,11 @@ const FIRST_CONTACT_WINDOW_MS = 60 * 60_000;
 const ECHO_GRACE_MS = 5_000;
 const RESPOND_RETRY_MS = 10 * 60_000;
 const RESPOND_RETRY_WINDOW_MS = 24 * 60 * 60_000;
+const FOLLOWUP_BATCH = 10;
+/** Etapas en las que ya no tiene sentido perseguir al lead. */
+const FOLLOWUP_STOP_STAGES = new Set(['call_scheduled', 'won', 'lost', 'not_qualified']);
+/** Al recibir un mensaje del lead, el ciclo de seguimiento se reinicia. */
+const FOLLOWUP_RESET = { next_followup_at: null, followup_count: 0 } as const;
 
 const CONV_COLS =
   'id, ai_enabled, mode, mode_locked, contact_name, contact_external_id, contact_handle, unread_count';
@@ -160,6 +165,7 @@ export class MessagingService {
           last_inbound_at: new Date().toISOString(),
           last_message_at: new Date().toISOString(),
           unread_count: (conv.unread_count ?? 0) + 1,
+          ...FOLLOWUP_RESET,
           ...contactUpdate,
         })
         .eq('id', conv.id);
@@ -291,6 +297,7 @@ export class MessagingService {
           unread_count: ((existing?.unread_count as number) ?? 0) + 1,
           contact_name: params.name ?? existing?.contact_name ?? 'Lead',
           window_expires_at: new Date(Date.now() + 24 * 3600 * 1000).toISOString(),
+          ...FOLLOWUP_RESET,
         })
         .eq('id', convId);
 
@@ -478,6 +485,7 @@ export class MessagingService {
     let latestIsSelf = false;
     let latestText = '';
     let latestId: string | undefined;
+    let latestAttachments: UnipileAttachment[] = [];
     try {
       const msgs = await this.unipile.listChatMessages(chatId, 3);
       const latest = [...msgs].sort((a, b) => msgTime(b) - msgTime(a))[0];
@@ -485,15 +493,27 @@ export class MessagingService {
         latestIsSelf = latest.is_sender === 1 || latest.is_sender === true;
         latestText = (latest.text ?? '').trim();
         latestId = latest.id ? String(latest.id) : undefined;
+        latestAttachments = latest.attachments ?? [];
       }
     } catch (err) {
       this.logger.warn(`No se pudo leer el chat en Unipile: ${String(err)}`);
     }
 
-    const text = payloadText || (!latestIsSelf ? latestText : '');
+    let text = payloadText || (!latestIsSelf ? latestText : '');
     if (!text) {
-      this.logger.debug(`Webhook sin texto. Claves: ${Object.keys(payload).join(', ')}`);
-      return null;
+      // Sin texto: puede ser una nota de voz, una imagen, un documento… Antes se
+      // descartaba y el bot se quedaba callado. Ahora lo describimos (y el audio
+      // se transcribe) para que la conversación siga.
+      const payloadAtts = Array.isArray(payload.attachments)
+        ? (payload.attachments as UnipileAttachment[])
+        : [];
+      const atts = payloadAtts.length ? payloadAtts : latestIsSelf ? [] : latestAttachments;
+      const msgId = payloadId ?? latestId;
+      text = await this.describeAttachments(atts, msgId, accountId);
+      if (!text) {
+        this.logger.debug(`Webhook sin texto. Claves: ${Object.keys(payload).join(', ')}`);
+        return null;
+      }
     }
 
     // Eco de un mensaje NUESTRO: el último de Unipile es nuestro y el texto
@@ -519,6 +539,47 @@ export class MessagingService {
       senderName,
       senderProviderId,
     };
+  }
+
+  /**
+   * Convierte los adjuntos de un mensaje sin texto en algo que el bot pueda
+   * leer: las notas de voz se transcriben; el resto se describe entre corchetes.
+   */
+  private async describeAttachments(
+    atts: UnipileAttachment[],
+    messageId: string | undefined,
+    accountId: string,
+  ): Promise<string> {
+    if (!atts.length) return '';
+    const parts: string[] = [];
+    for (const a of atts) {
+      const type = String(a.type ?? '').toLowerCase();
+      const mime = String(a.mimetype ?? '');
+      if (type === 'audio' || mime.startsWith('audio/')) {
+        let transcript: string | null = null;
+        if (messageId && a.id) {
+          try {
+            const file = await this.unipile.downloadAttachment(messageId, String(a.id));
+            const channel = await this.findChannel(accountId);
+            transcript = await this.openrouter.transcribeAudio(file.data, file.mime || mime, {
+              orgId: (channel?.organization_id as string | undefined) ?? undefined,
+            });
+          } catch (err) {
+            this.logger.warn(`No se pudo transcribir la nota de voz: ${String(err)}`);
+          }
+        }
+        parts.push(transcript ? `[Nota de voz] ${transcript}` : '[Nota de voz que no se ha podido escuchar]');
+      } else if (type === 'img' || type === 'image' || mime.startsWith('image/')) {
+        parts.push('[Imagen]');
+      } else if (type === 'video' || mime.startsWith('video/')) {
+        parts.push('[Vídeo]');
+      } else if (type === 'sticker' || type === 'gif') {
+        parts.push('[Sticker]');
+      } else if (type === 'file' || type === 'document' || mime) {
+        parts.push(a.file_name ? `[Documento: ${String(a.file_name)}]` : '[Documento]');
+      }
+    }
+    return parts.join('\n');
   }
 
   /**
@@ -607,6 +668,7 @@ export class MessagingService {
         // Cancela también cualquier respuesta pendiente del bot.
         update.ai_enabled = false;
         update.respond_after = null;
+        update.next_followup_at = null;
         this.logger.log(`Mensaje manual detectado en ${conv.id}; IA pausada (human takeover)`);
       }
       await this.supabase.admin.from('conversations').update(update).eq('id', conv.id);
@@ -700,6 +762,7 @@ export class MessagingService {
     ) {
       update.ai_enabled = false;
       update.respond_after = null;
+      update.next_followup_at = null;
     }
     await this.supabase.admin.from('conversations').update(update).eq('id', conversationId);
 
@@ -790,7 +853,7 @@ export class MessagingService {
     const { data: conv } = await this.supabase.admin
       .from('conversations')
       .select(
-        'id, ai_enabled, blocked, mode, mode_locked, contact_name, contact_external_id, contact_handle, last_inbound_at, transport, channel_id, agent_id',
+        'id, ai_enabled, blocked, mode, mode_locked, contact_name, contact_external_id, contact_handle, last_inbound_at, transport, channel_id, agent_id, stage',
       )
       .eq('id', conversationId)
       .maybeSingle();
@@ -958,6 +1021,9 @@ export class MessagingService {
       }
     }
 
+    // Si el lead no contesta, el agente le hará seguimiento según su secuencia.
+    await this.scheduleFollowUp(conversationId, agent, conv.stage as string | null);
+
     // El bot ha hablado con este contacto → lo registramos como lead en el CRM
     // (si aún no lo estaba). Así todos los chats atendidos quedan en el CRM.
     void this.ensureLeadForConversation(orgId, conversationId);
@@ -970,6 +1036,223 @@ export class MessagingService {
     // Auto-etiquetado IA: analiza la conversación y aplica las etiquetas que
     // correspondan según sus criterios (respeta lo manual).
     void this.tagClassifier.maybeTag(orgId, conversationId);
+  }
+
+  // ---------------------------------------------------------------------------
+  //  SEGUIMIENTO AUTOMÁTICO
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Tras una respuesta del bot: si el agente tiene seguimiento activado y el
+   * lead no está en una etapa final, programa el primer seguimiento.
+   */
+  private async scheduleFollowUp(conversationId: string, agent: Agent, stage: string | null) {
+    const delays = agent.followup_delays_min ?? [];
+    if (!agent.followup_enabled || delays.length === 0) return;
+    if (stage && FOLLOWUP_STOP_STAGES.has(stage)) return;
+    await this.supabase.admin
+      .from('conversations')
+      .update({
+        followup_count: 0,
+        next_followup_at: new Date(Date.now() + delays[0] * 60_000).toISOString(),
+      })
+      .eq('id', conversationId);
+  }
+
+  /** Envía los seguimientos vencidos (lo llama el cron). Devuelve cuántos mandó. */
+  async processDueFollowUps(limit = FOLLOWUP_BATCH): Promise<number> {
+    const nowIso = new Date().toISOString();
+    const { data: due } = await this.supabase.admin
+      .from('conversations')
+      .select('id, organization_id')
+      .lte('next_followup_at', nowIso)
+      .not('next_followup_at', 'is', null)
+      .eq('ai_enabled', true)
+      .eq('blocked', false)
+      .is('archived_at', null)
+      .order('next_followup_at', { ascending: true })
+      .limit(limit);
+    if (!due || due.length === 0) return 0;
+
+    const results = await Promise.allSettled(
+      due.map((c) => this.sendFollowUp(c.organization_id as string, c.id as string)),
+    );
+    let sent = 0;
+    results.forEach((r, i) => {
+      if (r.status === 'fulfilled') sent += r.value ? 1 : 0;
+      else this.logger.error(`Error en seguimiento de conv ${due[i].id}: ${String(r.reason)}`);
+    });
+    return sent;
+  }
+
+  private async sendFollowUp(orgId: string, conversationId: string): Promise<boolean> {
+    // Mismo lock que las respuestas: nunca dos envíos a la vez al mismo chat.
+    // Se vacía next_followup_at al tomarlo; se vuelve a poner al terminar.
+    const nowIso = new Date().toISOString();
+    const staleIso = new Date(Date.now() - LOCK_STALE_MS).toISOString();
+    const { data: locked } = await this.supabase.admin
+      .from('conversations')
+      .update({ responding_lock_at: nowIso, next_followup_at: null })
+      .eq('id', conversationId)
+      .not('next_followup_at', 'is', null)
+      .or(`responding_lock_at.is.null,responding_lock_at.lt.${staleIso}`)
+      .select('id')
+      .maybeSingle();
+    if (!locked) return false;
+
+    try {
+      return await this.sendFollowUpLocked(orgId, conversationId);
+    } catch (err) {
+      // Reintento único en media hora (p.ej. el modelo falló).
+      await this.supabase.admin
+        .from('conversations')
+        .update({ next_followup_at: new Date(Date.now() + 30 * 60_000).toISOString() })
+        .eq('id', conversationId)
+        .is('next_followup_at', null);
+      throw err;
+    } finally {
+      await this.supabase.admin
+        .from('conversations')
+        .update({ responding_lock_at: null })
+        .eq('id', conversationId);
+    }
+  }
+
+  private async sendFollowUpLocked(orgId: string, conversationId: string): Promise<boolean> {
+    const { data: conv } = await this.supabase.admin
+      .from('conversations')
+      .select(
+        'id, ai_enabled, blocked, archived_at, is_test, stage, mode, contact_name, contact_handle, contact_external_id, unipile_chat_id, transport, channel_id, agent_id, last_inbound_at, last_outbound_at, followup_count, followups_paused, window_expires_at',
+      )
+      .eq('id', conversationId)
+      .maybeSingle();
+    if (!conv || !conv.ai_enabled || conv.blocked || conv.archived_at || conv.is_test) return false;
+    if (conv.followups_paused || conv.mode === 'ignored') return false;
+    if (conv.stage && FOLLOWUP_STOP_STAGES.has(conv.stage as string)) return false;
+    if (!conv.last_outbound_at) return false;
+
+    const cfg = await this.setterConfig.getOrCreate(orgId);
+    if (!cfg.is_active) return false;
+    if (cfg.daily_token_limit && cfg.daily_token_limit > 0) {
+      const used = await this.openrouter.tokensUsedToday(orgId);
+      if (used >= cfg.daily_token_limit) return false;
+    }
+
+    const agent = await this.agents.resolveForConversation(orgId, {
+      agent_id: conv.agent_id as string | null,
+      channel_id: conv.channel_id as string | null,
+      mode: conv.mode as string | null,
+    });
+    const delays = agent?.followup_delays_min ?? [];
+    const step = (conv.followup_count as number) ?? 0;
+    if (!agent || !agent.followup_enabled || step >= delays.length) return false;
+
+    // Solo si el lead sigue sin contestar: el último mensaje debe ser nuestro.
+    const { data: last } = await this.supabase.admin
+      .from('messages')
+      .select('role')
+      .eq('conversation_id', conversationId)
+      .order('created_at', { ascending: false })
+      .limit(1)
+      .maybeSingle();
+    if (!last || last.role === 'contact') return false;
+
+    // Si un workflow ya está persiguiendo a este lead, no duplicamos.
+    const { count: runs } = await this.supabase.admin
+      .from('workflow_runs')
+      .select('id', { count: 'exact', head: true })
+      .eq('conversation_id', conversationId)
+      .in('status', ['active', 'paused']);
+    if (runs) return false;
+
+    // Cloud API: fuera de la ventana de 24 h solo se puede mandar plantilla.
+    if (
+      conv.transport === 'whatsapp_cloud' &&
+      conv.window_expires_at &&
+      new Date(conv.window_expires_at as string).getTime() < Date.now()
+    ) {
+      return false;
+    }
+
+    const behavior = effectiveBehavior(cfg, agent);
+    if (
+      behavior.active_hours_enabled &&
+      !inActiveHours(behavior.active_hours_start, behavior.active_hours_end, behavior.timezone)
+    ) {
+      const resumeAt = nextActiveSlot(
+        Date.now(),
+        true,
+        behavior.active_hours_start,
+        behavior.active_hours_end,
+        behavior.timezone,
+      );
+      await this.supabase.admin
+        .from('conversations')
+        .update({ next_followup_at: new Date(resumeAt).toISOString() })
+        .eq('id', conversationId);
+      return false;
+    }
+
+    const chatId = (conv.unipile_chat_id ?? conv.contact_external_id) as string | null;
+    if (!chatId) return false;
+
+    const silentMinutes = Math.max(
+      1,
+      Math.round((Date.now() - new Date(conv.last_outbound_at as string).getTime()) / 60_000),
+    );
+    const bubbles = await this.setter.followUp(orgId, conversationId, {
+      agent,
+      contactName: conv.contact_name as string | null,
+      persist: false,
+      step,
+      total: delays.length,
+      silentMinutes,
+    });
+
+    const nextStep = step + 1;
+    if (bubbles.length === 0) {
+      // El modelo decidió no insistir: cerramos el ciclo para este chat.
+      await this.supabase.admin
+        .from('conversations')
+        .update({ followup_count: delays.length, next_followup_at: null })
+        .eq('id', conversationId);
+      this.logger.log(`Seguimiento omitido por el modelo (conv ${conversationId})`);
+      return false;
+    }
+
+    const watermark = conv.last_inbound_at as string | null;
+    for (const b of bubbles) {
+      if (await this.newerInboundExists(conversationId, watermark)) return false;
+      await sleep(Math.min(b.delayMs, 8_000));
+      await this.transport.sendText({
+        transport: conv.transport as string,
+        chatId,
+        text: b.content,
+        channelId: conv.channel_id as string | null,
+        to: (conv.contact_handle ?? conv.contact_external_id) as string | null,
+      });
+      await this.supabase.admin.from('messages').insert({
+        conversation_id: conversationId,
+        organization_id: orgId,
+        role: 'assistant',
+        content: b.content,
+        metadata: { followup: nextStep },
+      });
+    }
+
+    const nextAt =
+      nextStep < delays.length ? new Date(Date.now() + delays[nextStep] * 60_000).toISOString() : null;
+    await this.supabase.admin
+      .from('conversations')
+      .update({
+        last_outbound_at: new Date().toISOString(),
+        last_message_at: new Date().toISOString(),
+        followup_count: nextStep,
+        next_followup_at: nextAt,
+      })
+      .eq('id', conversationId);
+    this.logger.log(`Seguimiento ${nextStep}/${delays.length} enviado (conv ${conversationId})`);
+    return true;
   }
 
   /**

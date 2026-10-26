@@ -39,6 +39,11 @@ export type Agent = {
   /** Ajustes de IA propios; null = hereda los generales de la cuenta. */
   behavior: AgentBehavior | null;
 
+  /** Seguimiento automático si el lead no responde al bot. */
+  followup_enabled: boolean;
+  /** Esperas (minutos) entre el último mensaje del bot y cada seguimiento. */
+  followup_delays_min: number[];
+
   created_at: string;
   updated_at: string;
 };

@@ -54,6 +54,7 @@ export class LocalSchedulerService implements OnModuleInit, OnModuleDestroy {
       await Promise.all([
         this.messaging.processDueResponses(),
         this.messaging.processDueOutbox(),
+        this.messaging.processDueFollowUps(),
       ]);
     } catch (err) {
       this.logger.error(`Error en tick local: ${String(err)}`);

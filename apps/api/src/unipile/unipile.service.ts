@@ -37,12 +37,24 @@ export type UnipileChat = {
   [key: string]: unknown;
 };
 
+export type UnipileAttachment = {
+  id: string;
+  /** 'audio' | 'img' | 'video' | 'file' | 'sticker' … */
+  type?: string;
+  mimetype?: string;
+  file_name?: string;
+  duration?: number;
+  voice_note?: boolean;
+  [key: string]: unknown;
+};
+
 export type UnipileMessage = {
   id: string;
   text?: string;
   is_sender?: number | boolean;
   timestamp?: string;
   date?: string;
+  attachments?: UnipileAttachment[];
   [key: string]: unknown;
 };
 
@@ -188,6 +200,24 @@ export class UnipileService implements OnModuleInit {
   }
 
   /** Lista los mensajes de un chat (los más recientes). */
+  /** Descarga un adjunto (nota de voz, imagen…) de un mensaje. */
+  async downloadAttachment(
+    messageId: string,
+    attachmentId: string,
+  ): Promise<{ data: Buffer; mime: string }> {
+    const res = await fetch(
+      `${this.baseUrl}/messages/${encodeURIComponent(messageId)}/attachments/${encodeURIComponent(attachmentId)}`,
+      { headers: { 'X-API-KEY': this.apiKey } },
+    );
+    if (!res.ok) {
+      throw new HttpException(`No se pudo descargar el adjunto (${res.status})`, res.status);
+    }
+    return {
+      data: Buffer.from(await res.arrayBuffer()),
+      mime: res.headers.get('content-type') ?? 'application/octet-stream',
+    };
+  }
+
   async listChatMessages(chatId: string, limit = 25): Promise<UnipileMessage[]> {
     const data = await this.request<{ items?: UnipileMessage[] }>(
       `/chats/${encodeURIComponent(chatId)}/messages?limit=${limit}`,

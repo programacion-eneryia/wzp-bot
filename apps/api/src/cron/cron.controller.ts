@@ -63,15 +63,16 @@ export class CronController {
     // Los workflows corren PRIMERO: pueden encolar mensajes al outbox, que se
     // drena en la misma pasada.
     const workflows = await this.workflows.processDueRuns();
-    const [responses, proactive] = await Promise.all([
+    const [responses, proactive, followups] = await Promise.all([
       this.messaging.processDueResponses(),
       this.messaging.processDueOutbox(),
+      this.messaging.processDueFollowUps(),
     ]);
-    if (responses || proactive || workflows) {
+    if (responses || proactive || workflows || followups) {
       this.logger.log(
-        `Cron tick: ${responses} respuestas, ${proactive} proactivos, ${workflows} workflows`,
+        `Cron tick: ${responses} respuestas, ${proactive} proactivos, ${followups} seguimientos, ${workflows} workflows`,
       );
     }
-    return { ok: true, responses, proactive, workflows };
+    return { ok: true, responses, proactive, followups, workflows };
   }
 }

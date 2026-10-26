@@ -95,6 +95,70 @@ export class OpenRouterService implements OnModuleInit {
     return content;
   }
 
+  /**
+   * Transcribe un audio (nota de voz) con un modelo multimodal. Devuelve el
+   * texto o null si el modelo no pudo entenderlo.
+   */
+  async transcribeAudio(
+    audio: Buffer,
+    mime: string,
+    options: Pick<ChatOptions, 'orgId' | 'conversationId'> = {},
+  ): Promise<string | null> {
+    const format = /ogg|opus/i.test(mime)
+      ? 'ogg'
+      : /mp4|m4a|aac/i.test(mime)
+        ? 'm4a'
+        : /wav/i.test(mime)
+          ? 'wav'
+          : 'mp3';
+    const model = this.config.get<string>('OPENROUTER_AUDIO_MODEL') ?? 'google/gemini-2.5-flash';
+    const res = await fetch('https://openrouter.ai/api/v1/chat/completions', {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${this.apiKey}`,
+        'Content-Type': 'application/json',
+        'HTTP-Referer': this.referer,
+        'X-Title': 'WZP Setter',
+      },
+      body: JSON.stringify({
+        model,
+        temperature: 0,
+        max_tokens: 1500,
+        usage: { include: true },
+        messages: [
+          {
+            role: 'user',
+            content: [
+              {
+                type: 'text',
+                text:
+                  'Transcribe literalmente esta nota de voz en su idioma original. ' +
+                  'Devuelve solo la transcripción, sin comillas ni comentarios. ' +
+                  'Si no hay voz inteligible, responde exactamente: [inaudible]',
+              },
+              { type: 'input_audio', input_audio: { data: audio.toString('base64'), format } },
+            ],
+          },
+        ],
+      }),
+    });
+    const text = await res.text();
+    if (!res.ok) {
+      this.logger.error(`OpenRouter (audio) ${res.status}: ${text}`);
+      return null;
+    }
+    const data = JSON.parse(text) as {
+      choices?: { message?: { content?: string } }[];
+      usage?: { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number; cost?: number };
+    };
+    if (options.orgId && data.usage) {
+      void this.recordUsage({ ...options, purpose: 'transcribe' }, model, data.usage);
+    }
+    const out = data.choices?.[0]?.message?.content?.trim() ?? '';
+    if (!out || /^\[inaudible\]$/i.test(out)) return null;
+    return out;
+  }
+
   private async recordUsage(
     options: ChatOptions,
     model: string,

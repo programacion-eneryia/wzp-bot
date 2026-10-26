@@ -279,6 +279,77 @@ type BriefFields = Partial<
   >
 >;
 
+/** Editor de la secuencia de seguimientos (cada espera cuenta desde el mensaje anterior). */
+function FollowupSteps({ value, onChange }: { value: number[]; onChange: (v: number[]) => void }) {
+  const unitOf = (min: number): [number, 1 | 60 | 1440] =>
+    min % 1440 === 0 ? [min / 1440, 1440] : min % 60 === 0 ? [min / 60, 60] : [min, 1];
+  const update = (i: number, minutes: number) => {
+    const next = [...value];
+    next[i] = Math.max(1, Math.round(minutes));
+    onChange(next);
+  };
+  return (
+    <div>
+      {value.map((min, i) => {
+        const [amount, unit] = unitOf(min);
+        return (
+          <div className={styles.row} key={i}>
+            <label className={styles.field}>
+              <span className={styles.label}>
+                {i === 0
+                  ? "1er seguimiento, tras el último mensaje del agente"
+                  : `${i + 1}º seguimiento, tras el anterior`}
+              </span>
+              <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                <input
+                  type="number"
+                  min={1}
+                  className={styles.input}
+                  style={{ width: 90 }}
+                  value={amount}
+                  onChange={(e) => update(i, Number(e.target.value) * unit)}
+                />
+                <select
+                  className={styles.select}
+                  value={unit}
+                  onChange={(e) => update(i, amount * Number(e.target.value))}
+                >
+                  <option value={1}>minutos</option>
+                  <option value={60}>horas</option>
+                  <option value={1440}>días</option>
+                </select>
+                <button
+                  type="button"
+                  className={styles.ghostBtn}
+                  disabled={value.length <= 1}
+                  onClick={() => onChange(value.filter((_, j) => j !== i))}
+                  title="Quitar este seguimiento"
+                >
+                  ✕
+                </button>
+              </div>
+            </label>
+          </div>
+        );
+      })}
+      {value.length < 6 && (
+        <button
+          type="button"
+          className={styles.ghostBtn}
+          onClick={() => onChange([...value, Math.min(value[value.length - 1] * 2, 10080)])}
+        >
+          + Añadir otro seguimiento
+        </button>
+      )}
+      <p className={styles.muted}>
+        Solo se envían dentro del horario de respuesta del agente. El último seguimiento cierra
+        dejando la puerta abierta; después, el agente no vuelve a insistir hasta que el lead
+        escriba.
+      </p>
+    </div>
+  );
+}
+
 /** Valores de partida cuando un agente activa ajustes propios. */
 const BEHAVIOR_DEFAULTS: Required<AgentBehavior> = {
   multi_bubble: true,
@@ -299,6 +370,8 @@ const EDITABLE: (keyof Agent)[] = [
   "is_default_lead",
   "is_default_conversation",
   "behavior",
+  "followup_enabled",
+  "followup_delays_min",
   "persona_name",
   "identity_role",
   "objective",
@@ -682,6 +755,32 @@ function AgentEditor({
           {area("special_cases", "Casos especiales", 4)}
           {area("followups", "Seguimiento", 3, "qué hacer si no responde")}
           {area("best_practices", "Buenas prácticas", 4)}
+        </section>
+      )}
+
+      {tab === "conversation" && (
+        <section className={styles.card}>
+          <h2 className={styles.cardTitle}>Seguimiento automático</h2>
+          <label className={styles.checkRow}>
+            <input
+              type="checkbox"
+              checked={Boolean(agent.followup_enabled)}
+              onChange={(e) => set("followup_enabled", e.target.checked)}
+            />
+            <span>
+              <strong>Volver a escribir si el lead no contesta</strong> — cuando el agente manda
+              un mensaje y la persona no responde, le escribe un seguimiento corto y natural
+              (retoma lo pendiente: el vídeo que le pasó, la pregunta, la llamada). Se detiene
+              en cuanto el lead responde, si agenda, si se descarta o si una persona toma el
+              chat.
+            </span>
+          </label>
+          {agent.followup_enabled && (
+            <FollowupSteps
+              value={agent.followup_delays_min ?? [60, 1440, 4320]}
+              onChange={(v) => set("followup_delays_min", v)}
+            />
+          )}
         </section>
       )}
 

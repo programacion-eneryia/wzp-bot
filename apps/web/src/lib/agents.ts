@@ -36,6 +36,8 @@ export type Agent = {
   is_default_conversation: boolean;
   /** Ajustes de IA propios; null = usa los generales. */
   behavior: AgentBehavior | null;
+  followup_enabled: boolean;
+  followup_delays_min: number[];
   created_at: string;
   updated_at: string;
   channels?: Array<{ id: string; provider: string; display_name: string | null }>;

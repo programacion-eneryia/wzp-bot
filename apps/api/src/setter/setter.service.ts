@@ -62,6 +62,118 @@ export class SetterService {
     opts: RespondOptions = {},
   ): Promise<Bubble[]> {
     const persist = opts.persist ?? true;
+    const ctx = await this.buildContext(orgId, conversationId, opts);
+    if (!ctx) return [];
+    const { cfg, agent, messages } = ctx;
+
+    const raw = await this.openrouter.chat(messages, {
+      model: this.modelFor(agent, cfg),
+      orgId,
+      conversationId,
+      purpose: 'respond',
+    });
+
+    const bubbles = this.toBubbles(raw, cfg, agent);
+
+    // Persistimos cada burbuja como un mensaje del asistente (salvo que el
+    // llamador prefiera persistir él mismo según se vayan enviando).
+    if (persist && bubbles.length > 0) {
+      const rows = bubbles.map((b) => ({
+        conversation_id: conversationId,
+        organization_id: orgId,
+        role: 'assistant' as const,
+        content: b.content,
+      }));
+      const { error } = await this.supabase.admin.from('messages').insert(rows);
+      if (error) this.logger.error(`No se pudieron guardar las respuestas: ${error.message}`);
+
+      await this.supabase.admin
+        .from('conversations')
+        .update({ last_message_at: new Date().toISOString() })
+        .eq('id', conversationId);
+    }
+
+    return bubbles;
+  }
+
+  /**
+   * Genera un SEGUIMIENTO: el lead no ha contestado al último mensaje del bot.
+   * Devuelve [] si el modelo decide que no procede insistir (el lead se despidió,
+   * dijo que no, ya está agendado…).
+   */
+  async followUp(
+    orgId: string,
+    conversationId: string,
+    opts: RespondOptions & { step: number; total: number; silentMinutes: number },
+  ): Promise<Bubble[]> {
+    const ctx = await this.buildContext(orgId, conversationId, opts);
+    if (!ctx) return [];
+    const { cfg, agent, messages } = ctx;
+
+    const n = opts.step + 1;
+    const last = n >= opts.total;
+    const silence =
+      opts.silentMinutes >= 2880
+        ? `${Math.round(opts.silentMinutes / 1440)} días`
+        : opts.silentMinutes >= 120
+          ? `${Math.round(opts.silentMinutes / 60)} horas`
+          : `${opts.silentMinutes} minutos`;
+
+    messages.push({
+      role: 'system',
+      content:
+        `# SEGUIMIENTO AUTOMÁTICO\n` +
+        `El lead lleva ${silence} sin contestar a tu último mensaje. Escribe ahora el seguimiento ${n} de ${opts.total}` +
+        (last ? ' (el ÚLTIMO)' : '') +
+        `.\n` +
+        `- Retoma de forma natural lo último que quedó pendiente (una pregunta que hiciste, un vídeo o enlace que le pasaste, la llamada que propusiste). Si le pediste que viera algo, pregúntale qué le pareció.\n` +
+        `- Muy breve: una o dos frases, una sola burbuja salvo que sea imprescindible. Sin saludos largos ni repetir lo ya dicho.\n` +
+        (n === 1
+          ? `- Tono ligero, como quien escribe de pasada.\n`
+          : last
+            ? `- Es el último intento: cierra con elegancia dejando la puerta abierta (que te escriba cuando le encaje), sin reproches ni presión.\n`
+            : `- Aporta algo nuevo (un dato útil, un beneficio concreto o una pregunta distinta), no repitas el seguimiento anterior.\n`) +
+        `- Si en la conversación el lead ya se despidió, dijo claramente que no le interesa, pidió que no le escribas, ya agendó, o insistir sería inoportuno, responde EXACTAMENTE: NO_SEGUIMIENTO`,
+    });
+
+    const raw = await this.openrouter.chat(messages, {
+      model: this.modelFor(agent, cfg),
+      orgId,
+      conversationId,
+      purpose: 'followup',
+      temperature: 0.7,
+    });
+    if (/NO_SEGUIMIENTO/i.test(raw) || !raw.trim()) return [];
+
+    // Como mucho dos burbujas: un seguimiento no es una parrafada.
+    return this.toBubbles(raw, cfg, agent).slice(0, 2);
+  }
+
+  private modelFor(agent: Agent, cfg: { model: string | null }): string | undefined {
+    return (
+      agent.model ?? cfg.model ?? this.config.get<string>('OPENROUTER_DEFAULT_MODEL') ?? undefined
+    );
+  }
+
+  private toBubbles(raw: string, cfg: Parameters<typeof effectiveBehavior>[0], agent: Agent): Bubble[] {
+    const behavior = effectiveBehavior(cfg, agent) as {
+      multi_bubble: boolean;
+      min_delay_ms: number;
+      max_delay_ms: number;
+    };
+    const parts = behavior.multi_bubble
+      ? splitBubbles(raw)
+      : [humanizePunctuation(stripEmojis(stripInternalDirectives(raw.trim())))].filter(
+          (p) => p.length > 0,
+        );
+    return parts.map((content) => ({
+      content,
+      delayMs: humanDelayMs(content, behavior.min_delay_ms, behavior.max_delay_ms),
+    }));
+  }
+
+  /** Base de Conocimiento + agente + historial → mensajes para el modelo. */
+  private async buildContext(orgId: string, conversationId: string, opts: RespondOptions) {
     const cfg = await this.setterConfig.getOrCreate(orgId);
 
     // Contexto que dejó el lead al registrarse (respuestas del formulario, incl.
@@ -86,7 +198,7 @@ export class SetterService {
           }));
     if (!agent) {
       this.logger.warn(`La org ${orgId} no tiene ningún agente activo; no se responde`);
-      return [];
+      return null;
     }
 
     // Si el modo de agenda es "huecos", calculamos disponibilidad real para que
@@ -135,43 +247,6 @@ export class SetterService {
         })),
     ];
 
-    const raw = await this.openrouter.chat(messages, {
-      model:
-        agent.model ?? cfg.model ?? this.config.get<string>('OPENROUTER_DEFAULT_MODEL') ?? undefined,
-      orgId,
-      conversationId,
-      purpose: 'respond',
-    });
-
-    const behavior = effectiveBehavior(cfg, agent);
-    const parts = behavior.multi_bubble
-      ? splitBubbles(raw)
-      : [humanizePunctuation(stripEmojis(stripInternalDirectives(raw.trim())))].filter(
-          (p) => p.length > 0,
-        );
-    const bubbles: Bubble[] = parts.map((content) => ({
-      content,
-      delayMs: humanDelayMs(content, behavior.min_delay_ms, behavior.max_delay_ms),
-    }));
-
-    // Persistimos cada burbuja como un mensaje del asistente (salvo que el
-    // llamador prefiera persistir él mismo según se vayan enviando).
-    if (persist && bubbles.length > 0) {
-      const rows = bubbles.map((b) => ({
-        conversation_id: conversationId,
-        organization_id: orgId,
-        role: 'assistant' as const,
-        content: b.content,
-      }));
-      const { error } = await this.supabase.admin.from('messages').insert(rows);
-      if (error) this.logger.error(`No se pudieron guardar las respuestas: ${error.message}`);
-
-      await this.supabase.admin
-        .from('conversations')
-        .update({ last_message_at: new Date().toISOString() })
-        .eq('id', conversationId);
-    }
-
-    return bubbles;
+    return { cfg, agent, messages };
   }
 }

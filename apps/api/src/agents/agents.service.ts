@@ -43,6 +43,8 @@ const EDITABLE: (keyof AgentInput)[] = [
   'sort_order',
   'pipeline_id',
   'is_default_lead',
+  'followup_enabled',
+  'followup_delays_min',
   'is_default_conversation',
   'behavior',
 ];
