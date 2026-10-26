@@ -1815,7 +1815,30 @@ export class MessagingService {
       .eq('is_test', false)
       .order('created_at', { ascending: true })
       .limit(1);
-    return (data?.[0] as unknown as Record<string, any> | undefined) ?? null;
+    const found = (data?.[0] as unknown as Record<string, any> | undefined) ?? null;
+    if (found) return found;
+
+    // Los ids de chat de Unipile son únicos: si el chat ya está en otra
+    // conversación de la org (colgada de un canal antiguo o caído), es la misma.
+    // La pasamos a este canal en vez de crear un duplicado.
+    const { data: elsewhere } = await this.supabase.admin
+      .from('conversations')
+      .select('id')
+      .eq('organization_id', orgId)
+      .eq('contact_external_id', chatId)
+      .eq('is_test', false)
+      .order('created_at', { ascending: true })
+      .limit(1);
+    const otherId = elsewhere?.[0]?.id as string | undefined;
+    if (!otherId) return null;
+    const { data: moved } = await this.supabase.admin
+      .from('conversations')
+      .update({ channel_id: channelId })
+      .eq('id', otherId)
+      .select(cols)
+      .maybeSingle();
+    if (moved) this.logger.log(`Chat ${chatId}: conversación ${otherId} pasada al canal ${channelId}`);
+    return (moved as unknown as Record<string, any> | null) ?? null;
   }
 
   /** Nombre y teléfono real del contacto de un chat (vía participantes). */
