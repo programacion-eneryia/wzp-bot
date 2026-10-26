@@ -1080,7 +1080,15 @@ export class MessagingService {
     let sent = 0;
     results.forEach((r, i) => {
       if (r.status === 'fulfilled') sent += r.value ? 1 : 0;
-      else this.logger.error(`Error en seguimiento de conv ${due[i].id}: ${String(r.reason)}`);
+      else {
+        const reason = r.reason instanceof Error ? r.reason.stack ?? r.reason.message : String(r.reason);
+        this.logger.error(`Error en seguimiento de conv ${due[i].id}: ${reason}`);
+        void this.errorLog.log({
+          source: 'followup',
+          message: `No se pudo enviar el seguimiento (conv ${due[i].id}): ${reason.slice(0, 1500)}`,
+          organizationId: due[i].organization_id as string,
+        });
+      }
     });
     return sent;
   }
