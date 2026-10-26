@@ -33,7 +33,10 @@ const RESPOND_RETRY_MS = 10 * 60_000;
 const RESPOND_RETRY_WINDOW_MS = 24 * 60 * 60_000;
 const FOLLOWUP_BATCH = 10;
 /** Etapas en las que ya no tiene sentido perseguir al lead. */
-const FOLLOWUP_STOP_STAGES = new Set(['call_scheduled', 'won', 'lost', 'not_qualified']);
+// Etapas que cierran el seguimiento. "No cualificado" NO está: un lead puede
+// volver a escribir meses después y la conversación revive; si no procede
+// insistir, el modelo responde NO_SEGUIMIENTO con el contexto delante.
+const FOLLOWUP_STOP_STAGES = new Set(['call_scheduled', 'won', 'lost']);
 /** Al recibir un mensaje del lead, el ciclo de seguimiento se reinicia. */
 const FOLLOWUP_RESET = { next_followup_at: null, followup_count: 0 } as const;
 
@@ -1257,10 +1260,26 @@ export class MessagingService {
     const chatId = (conv.unipile_chat_id ?? conv.contact_external_id) as string | null;
     if (!chatId) return stop('conversación sin chat al que escribir');
 
+    // Lo que de verdad lleva el lead callado: desde SU último mensaje (no desde
+    // el último empujón nuestro, que resetearía el contador en cada seguimiento).
+    const silentSince = (conv.last_inbound_at ?? conv.last_outbound_at) as string;
     const silentMinutes = Math.max(
       1,
-      Math.round((Date.now() - new Date(conv.last_outbound_at as string).getTime()) / 60_000),
+      Math.round((Date.now() - new Date(silentSince).getTime()) / 60_000),
     );
+    // Seguimientos ya enviados en esta racha (para que el modelo no se repita).
+    let previousQ = this.supabase.admin
+      .from('messages')
+      .select('content')
+      .eq('conversation_id', conversationId)
+      .eq('role', 'assistant')
+      .not('metadata->>followup', 'is', null)
+      .order('created_at', { ascending: true })
+      .limit(10);
+    if (conv.last_inbound_at) previousQ = previousQ.gt('created_at', conv.last_inbound_at as string);
+    const { data: previousRows } = await previousQ;
+    const previous = (previousRows ?? []).map((r) => r.content as string);
+
     const bubbles = await this.setter.followUp(orgId, conversationId, {
       agent,
       contactName: conv.contact_name as string | null,
@@ -1268,6 +1287,7 @@ export class MessagingService {
       step,
       total: delays.length,
       silentMinutes,
+      previous,
     });
 
     const nextStep = step + 1;

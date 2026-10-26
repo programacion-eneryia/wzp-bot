@@ -104,7 +104,13 @@ export class SetterService {
   async followUp(
     orgId: string,
     conversationId: string,
-    opts: RespondOptions & { step: number; total: number; silentMinutes: number },
+    opts: RespondOptions & {
+      step: number;
+      total: number;
+      silentMinutes: number;
+      /** Textos de los seguimientos ya enviados en esta racha de silencio. */
+      previous?: string[];
+    },
   ): Promise<Bubble[]> {
     const ctx = await this.buildContext(orgId, conversationId, opts);
     if (!ctx) return [];
@@ -119,23 +125,30 @@ export class SetterService {
           ? `${Math.round(opts.silentMinutes / 60)} horas`
           : `${opts.silentMinutes} minutos`;
 
+    const previous = (opts.previous ?? []).map((t) => t.trim()).filter(Boolean);
+    const previousBlock = previous.length
+      ? `\nYA LE HAS ENVIADO ESTOS SEGUIMIENTOS SIN RESPUESTA (PROHIBIDO repetirlos, parafrasearlos o volver a preguntar lo mismo):\n` +
+        previous.map((t) => `  · "${t}"`).join('\n') +
+        `\n`
+      : '';
+
     // Va como turno de usuario (no de sistema): Claude exige que la conversación
     // termine en un mensaje del usuario y aquí el último turno real es del bot.
     messages.push({
       role: 'user',
       content:
         `[INSTRUCCIÓN DEL SISTEMA — SEGUIMIENTO AUTOMÁTICO. Este texto NO lo ha escrito el lead; el lead no ha dicho nada.]\n` +
-        `El lead lleva ${silence} sin contestar a tu último mensaje. Escribe ahora el seguimiento ${n} de ${opts.total}` +
+        `El lead lleva ${silence} sin contestar. Escribe ahora el seguimiento ${n} de ${opts.total}` +
         (last ? ' (el ÚLTIMO)' : '') +
         `.\n` +
-        `- Retoma de forma natural lo último que quedó pendiente (una pregunta que hiciste, un vídeo o enlace que le pasaste, la llamada que propusiste). Si le pediste que viera algo, pregúntale qué le pareció.\n` +
-        `- Muy breve: una o dos frases, una sola burbuja salvo que sea imprescindible. Sin saludos largos ni repetir lo ya dicho.\n` +
+        previousBlock +
         (n === 1
-          ? `- Tono ligero, como quien escribe de pasada.\n`
+          ? `- Retoma de forma natural lo último que quedó pendiente (una pregunta que hiciste, un vídeo o enlace que le pasaste, la llamada que propusiste). Si le pediste que viera algo, pregúntale qué le pareció. Tono ligero, como quien escribe de pasada.\n`
           : last
-            ? `- Es el último intento: cierra con elegancia dejando la puerta abierta (que te escriba cuando le encaje), sin reproches ni presión.\n`
-            : `- Aporta algo nuevo (un dato útil, un beneficio concreto o una pregunta distinta), no repitas el seguimiento anterior.\n`) +
-        `- Si en la conversación el lead ya se despidió, dijo claramente que no le interesa, pidió que no le escribas, ya agendó, o insistir sería inoportuno, responde EXACTAMENTE: NO_SEGUIMIENTO`,
+            ? `- Es el último intento: cierra con elegancia dejando la puerta abierta (que te escriba cuando le encaje), sin reproches ni presión. Ángulo distinto a todo lo anterior.\n`
+            : `- Cambia de ángulo respecto a los seguimientos anteriores: aporta algo nuevo (un dato útil, un beneficio concreto, una objeción típica resuelta en una frase o una pregunta distinta). No vuelvas a preguntar si vio algo si ya se lo preguntaste.\n`) +
+        `- Muy breve: una o dos frases, una sola burbuja salvo que sea imprescindible. Sin saludos largos ni repetir lo ya dicho.\n` +
+        `- Si en la conversación el lead ya se despidió, dijo claramente que no le interesa, pidió que no le escribas, ya agendó, le dijiste que no encajaba y se cerró la conversación, o insistir sería inoportuno, responde EXACTAMENTE: NO_SEGUIMIENTO`,
     });
 
     const raw = await this.openrouter.chat(messages, {
