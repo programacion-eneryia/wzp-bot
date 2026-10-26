@@ -510,20 +510,21 @@ export class MessagingService {
       // Sin texto: puede ser una nota de voz, una imagen, un documento… Antes se
       // descartaba y el bot se quedaba callado. Ahora lo describimos (y el audio
       // se transcribe) para que la conversación siga.
-      let atts = Array.isArray(payload.attachments)
-        ? (payload.attachments as UnipileAttachment[])
-        : [];
+      // El webhook nombra los campos distinto que la API (`attachment_id`,
+      // `attachment_type`…): los normalizamos.
+      let atts = normalizeAttachments(payload.attachments);
       let msgId = payloadId ?? latestId;
       // Fuente fiable: el propio mensaje por id. La lista del chat puede ir con
       // retraso (y entonces el "último" sería nuestro) y el webhook puede venir
-      // sin adjuntos. Si el mensaje es nuestro, es un eco sin texto: fuera.
+      // sin adjuntos o sin su mimetype. Si el mensaje es nuestro, es un eco sin
+      // texto: fuera.
       if (payloadId) {
         try {
           const full = await this.unipile.getMessage(payloadId);
           if (full.is_sender === 1 || full.is_sender === true) return null;
           const fullText = (full.text ?? '').trim();
           if (fullText) text = fullText;
-          if (!atts.length && full.attachments?.length) atts = full.attachments;
+          if (full.attachments?.length) atts = normalizeAttachments(full.attachments);
           msgId = payloadId;
         } catch (err) {
           this.logger.warn(`No se pudo leer el mensaje ${payloadId} en Unipile: ${String(err)}`);
@@ -1774,6 +1775,24 @@ export class MessagingService {
  * Algunos webhooks llegan con un content-type que Express parsea mal y dejan
  * todo el JSON como una única clave. Lo detectamos y reparseamos.
  */
+/**
+ * Unifica la forma de los adjuntos: la API devuelve `{id,type,mimetype,…}` y el
+ * webhook `{attachment_id,attachment_type,attachment_size,…}`.
+ */
+function normalizeAttachments(raw: unknown): UnipileAttachment[] {
+  if (!Array.isArray(raw)) return [];
+  return raw
+    .filter((a): a is Record<string, unknown> => !!a && typeof a === 'object')
+    .map((a) => ({
+      ...a,
+      id: String(a.id ?? a.attachment_id ?? ''),
+      type: (a.type ?? a.attachment_type) as string | undefined,
+      mimetype: (a.mimetype ?? a.attachment_mimetype ?? a.mime_type) as string | undefined,
+      file_name: (a.file_name ?? a.attachment_name ?? a.name) as string | undefined,
+      file_size: (a.file_size ?? a.attachment_size) as number | undefined,
+    }));
+}
+
 /** Copia del payload acotada para guardarla en el panel de errores. */
 function truncateForLog(payload: unknown): Record<string, unknown> {
   try {
