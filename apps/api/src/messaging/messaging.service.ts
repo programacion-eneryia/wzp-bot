@@ -184,7 +184,13 @@ export class MessagingService {
       // aquí; si está activa, lo hará el hook tras la respuesta del bot.
       if (!conv.ai_enabled) void this.tagClassifier.maybeTag(orgId, conv.id as string);
     } catch (err) {
-      this.logger.error(`Error procesando mensaje entrante: ${String(err)}`);
+      const reason = err instanceof Error ? err.stack ?? err.message : String(err);
+      this.logger.error(`Error procesando mensaje entrante: ${reason}`);
+      void this.errorLog.log({
+        source: 'webhook',
+        message: `Error procesando mensaje entrante: ${reason.slice(0, 1500)}`,
+        detail: { payload: truncateForLog(rawPayload) },
+      });
     }
   }
 
@@ -504,14 +510,37 @@ export class MessagingService {
       // Sin texto: puede ser una nota de voz, una imagen, un documento… Antes se
       // descartaba y el bot se quedaba callado. Ahora lo describimos (y el audio
       // se transcribe) para que la conversación siga.
-      const payloadAtts = Array.isArray(payload.attachments)
+      let atts = Array.isArray(payload.attachments)
         ? (payload.attachments as UnipileAttachment[])
         : [];
-      const atts = payloadAtts.length ? payloadAtts : latestIsSelf ? [] : latestAttachments;
-      const msgId = payloadId ?? latestId;
-      text = await this.describeAttachments(atts, msgId, accountId);
+      let msgId = payloadId ?? latestId;
+      // Fuente fiable: el propio mensaje por id. La lista del chat puede ir con
+      // retraso (y entonces el "último" sería nuestro) y el webhook puede venir
+      // sin adjuntos. Si el mensaje es nuestro, es un eco sin texto: fuera.
+      if (payloadId) {
+        try {
+          const full = await this.unipile.getMessage(payloadId);
+          if (full.is_sender === 1 || full.is_sender === true) return null;
+          const fullText = (full.text ?? '').trim();
+          if (fullText) text = fullText;
+          if (!atts.length && full.attachments?.length) atts = full.attachments;
+          msgId = payloadId;
+        } catch (err) {
+          this.logger.warn(`No se pudo leer el mensaje ${payloadId} en Unipile: ${String(err)}`);
+        }
+      }
       if (!text) {
-        this.logger.debug(`Webhook sin texto. Claves: ${Object.keys(payload).join(', ')}`);
+        if (!atts.length && !latestIsSelf) atts = latestAttachments;
+        text = await this.describeAttachments(atts, msgId, accountId);
+      }
+      if (!text) {
+        this.logger.warn(`Webhook sin texto ni adjuntos. Claves: ${Object.keys(payload).join(', ')}`);
+        void this.errorLog.log({
+          level: 'warn',
+          source: 'webhook',
+          message: `Mensaje entrante descartado: sin texto ni adjuntos reconocibles (chat ${chatId}, msg ${payloadId ?? '?'})`,
+          detail: { payload: truncateForLog(payload) },
+        });
         return null;
       }
     }
@@ -1745,6 +1774,16 @@ export class MessagingService {
  * Algunos webhooks llegan con un content-type que Express parsea mal y dejan
  * todo el JSON como una única clave. Lo detectamos y reparseamos.
  */
+/** Copia del payload acotada para guardarla en el panel de errores. */
+function truncateForLog(payload: unknown): Record<string, unknown> {
+  try {
+    const json = JSON.stringify(payload);
+    return json.length > 6000 ? { truncated: json.slice(0, 6000) } : (JSON.parse(json) as Record<string, unknown>);
+  } catch {
+    return { unserializable: true };
+  }
+}
+
 function normalizeBody(body: Record<string, unknown>): Record<string, unknown> {
   if (body && typeof body === 'object' && body.account_id === undefined) {
     const keys = Object.keys(body);

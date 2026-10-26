@@ -199,7 +199,11 @@ export class UnipileService implements OnModuleInit {
     return data.items ?? [];
   }
 
-  /** Lista los mensajes de un chat (los más recientes). */
+  /** Recupera un mensaje concreto por su id (texto, remitente y adjuntos). */
+  async getMessage(messageId: string): Promise<UnipileMessage> {
+    return this.request<UnipileMessage>(`/messages/${encodeURIComponent(messageId)}`);
+  }
+
   /** Descarga un adjunto (nota de voz, imagen…) de un mensaje. */
   async downloadAttachment(
     messageId: string,
