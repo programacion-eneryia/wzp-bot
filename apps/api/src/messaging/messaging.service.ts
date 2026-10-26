@@ -33,6 +33,8 @@ const ECHO_GRACE_MS = 5_000;
 const ECHO_LEAD_WAIT_TRIES = 3;
 /** Antigüedad máxima de un chat para vincularlo a un lead que acaba de entrar. */
 const RECENT_CHAT_MS = 30 * 60_000;
+/** Una plantilla de primer contacto más antigua que esto ya no arranca seguimientos. */
+const FIRST_CONTACT_FOLLOWUP_WINDOW_MS = 24 * 60 * 60_000;
 const RESPOND_RETRY_MS = 10 * 60_000;
 const RESPOND_RETRY_WINDOW_MS = 24 * 60 * 60_000;
 const FOLLOWUP_BATCH = 10;
@@ -730,6 +732,9 @@ export class MessagingService {
         this.logger.log(`Mensaje manual detectado en ${conv.id}; IA pausada (human takeover)`);
       }
       await this.supabase.admin.from('conversations').update(update).eq('id', conv.id);
+      if (firstContact) {
+        await this.startFollowUpsAfterFirstContact(conv.id as string, update.last_outbound_at as string);
+      }
     } catch (err) {
       this.logger.warn(`No se pudo procesar el eco saliente: ${String(err)}`);
     }
@@ -1207,6 +1212,67 @@ export class MessagingService {
         next_followup_at: new Date(Date.now() + delays[0] * 60_000).toISOString(),
       })
       .eq('id', conversationId);
+  }
+
+  /**
+   * Primer contacto que no envió el bot (la plantilla de GHL): arranca la
+   * secuencia de seguimiento del agente contando desde ese mensaje, como si lo
+   * hubiera enviado él. Solo en leads recientes que aún no han escrito y cuya
+   * secuencia no ha empezado.
+   */
+  async startFollowUpsAfterFirstContact(conversationId: string, sentAt: string): Promise<void> {
+    try {
+      const sentMs = Date.parse(sentAt);
+      if (!Number.isFinite(sentMs) || Date.now() - sentMs > FIRST_CONTACT_FOLLOWUP_WINDOW_MS) return;
+      const { data: conv } = await this.supabase.admin
+        .from('conversations')
+        .select(
+          'id, organization_id, agent_id, channel_id, mode, stage, source, ai_enabled, followups_paused, next_followup_at, followup_count, last_inbound_at, last_outbound_at',
+        )
+        .eq('id', conversationId)
+        .maybeSingle();
+      if (
+        !conv ||
+        !conv.source ||
+        !conv.ai_enabled ||
+        conv.followups_paused ||
+        conv.next_followup_at ||
+        conv.followup_count ||
+        conv.last_inbound_at ||
+        (conv.stage && FOLLOWUP_STOP_STAGES.has(conv.stage as string))
+      ) {
+        return;
+      }
+      const { count: fromLead } = await this.supabase.admin
+        .from('messages')
+        .select('id', { count: 'exact', head: true })
+        .eq('conversation_id', conversationId)
+        .eq('role', 'contact');
+      if (fromLead) return;
+
+      const agent = await this.agents.resolveForConversation(conv.organization_id as string, {
+        agent_id: conv.agent_id as string | null,
+        channel_id: conv.channel_id as string | null,
+        mode: conv.mode as string | null,
+      });
+      const delays = agent?.followup_delays_min ?? [];
+      if (!agent?.followup_enabled || delays.length === 0) return;
+
+      const dueAt = new Date(Math.max(Date.now(), sentMs + delays[0] * 60_000)).toISOString();
+      const lastOut = conv.last_outbound_at as string | null;
+      await this.supabase.admin
+        .from('conversations')
+        .update({
+          followup_count: 0,
+          next_followup_at: dueAt,
+          last_outbound_at: lastOut && lastOut > sentAt ? lastOut : sentAt,
+        })
+        .eq('id', conversationId)
+        .is('next_followup_at', null);
+      this.logger.log(`Seguimiento programado tras el primer contacto (conv ${conversationId}, ${dueAt})`);
+    } catch (err) {
+      this.logger.warn(`No se pudo programar el seguimiento tras el primer contacto: ${String(err)}`);
+    }
   }
 
   /** Envía los seguimientos vencidos (lo llama el cron). Devuelve cuántos mandó. */
@@ -1951,12 +2017,41 @@ export class MessagingService {
           (await this.chatContact(chat.id)).phone;
         if (chatPhone?.replace(/\D/g, '') !== wanted) continue;
         const linked = await this.linkIntakeConversation(orgId, channel, chat.id, `+${wanted}`, 'id');
-        return linked ? chat.id : null;
+        if (!linked) return null;
+        await this.importFirstContact(orgId, linked.id as string, chat.id);
+        return chat.id;
       }
     } catch (err) {
       this.logger.warn(`No se pudo buscar el chat reciente de ${phone}: ${String(err)}`);
     }
     return null;
+  }
+
+  /** Guarda lo que ya se le envió al lead antes de vincular su chat y arranca los seguimientos. */
+  private async importFirstContact(orgId: string, conversationId: string, chatId: string) {
+    const msgs = await this.unipile.listChatMessages(chatId, 10);
+    if (msgs.some((m) => !(m.is_sender === 1 || m.is_sender === true))) return;
+    let latest: string | null = null;
+    for (const m of [...msgs].reverse()) {
+      const text = (m.text ?? '').trim();
+      if (!m.id || !text || (await this.messageExists(conversationId, String(m.id)))) continue;
+      const at = new Date(String(m.timestamp ?? m.date ?? Date.now())).toISOString();
+      await this.supabase.admin.from('messages').insert({
+        conversation_id: conversationId,
+        organization_id: orgId,
+        role: 'agent',
+        content: text,
+        created_at: at,
+        metadata: { message_id: String(m.id), source: 'external_first_contact' },
+      });
+      if (!latest || at > latest) latest = at;
+    }
+    if (!latest) return;
+    await this.supabase.admin
+      .from('conversations')
+      .update({ last_message_at: latest })
+      .eq('id', conversationId);
+    await this.startFollowUpsAfterFirstContact(conversationId, latest);
   }
 
   private async upsertConversation(

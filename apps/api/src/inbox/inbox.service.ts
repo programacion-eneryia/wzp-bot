@@ -652,6 +652,12 @@ export class InboxService {
       .update({ last_message_at: latest.created_at })
       .eq('id', convId);
 
+    const outgoing = rows.filter((r) => r.role === 'assistant');
+    if (outgoing.length > 0 && outgoing.length === rows.length) {
+      const sentAt = outgoing.reduce((a, b) => (a.created_at > b.created_at ? a : b)).created_at;
+      await this.messaging.startFollowUpsAfterFirstContact(convId, sentAt);
+    }
+
     return rows.length;
   }
 
