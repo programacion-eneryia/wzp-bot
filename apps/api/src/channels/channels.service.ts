@@ -296,10 +296,13 @@ export class ChannelsService {
 
     const ok = payload.status === 'CREATION_SUCCESS' || payload.status === 'RECONNECTED';
     if (!ok || !payload.account_id) {
+      // Unipile puede mandar un CREATION_FAIL tardío (enlace caducado o
+      // reintento) después de que el canal ya se conectó: no lo tumbamos.
       await this.supabase.admin
         .from('channels')
         .update({ status: 'error', last_error: `Conexión fallida: ${payload.status ?? 'desconocido'}` })
-        .eq('id', channelId);
+        .eq('id', channelId)
+        .neq('status', 'connected');
       return;
     }
 
