@@ -39,6 +39,8 @@ const MAX_CHATS = 40;
 const MAX_MESSAGES = 25;
 /** Mismo texto y mismo lado dentro de esta ventana = mismo mensaje (aunque cambie el id). */
 const SAME_MESSAGE_WINDOW_MS = 3 * 60_000;
+// Salientes más recientes que esto no se importan todavía (ver importMessages).
+const RECENT_OUTGOING_SKIP_MS = 2 * 60_000;
 
 @Injectable()
 export class InboxService {
@@ -587,7 +589,7 @@ export class InboxService {
       const side =
         role === 'contact' ? 'in' : role === 'assistant' || role === 'agent' ? 'out' : null;
       if (!side) continue;
-      const key = `${side}::${String(m.content ?? '').trim()}`;
+      const key = `${side}::${normalizeForCompare(String(m.content ?? ''))}`;
       const arr = unreconciled.get(key) ?? [];
       arr.push({ id: m.id as string, meta });
       unreconciled.set(key, arr);
@@ -628,7 +630,7 @@ export class InboxService {
 
     for (const m of msgs) {
       const id = m.id ? String(m.id) : '';
-      const text = (m.text ?? '').trim();
+      const text = (m.text ?? '').replace(/\r\n?/g, '\n').trim();
       if (!id || !text || seen.has(id)) continue;
 
       const side = isFromUs(m) ? 'out' : 'in';
@@ -637,7 +639,15 @@ export class InboxService {
         continue;
       }
 
-      const key = `${side}::${text}`;
+      // Un mensaje nuestro de hace segundos puede estar aún guardándose (el
+      // envío persiste la fila justo después de que WhatsApp lo acepte) o llegar
+      // por el webhook de eco. Lo dejamos para el siguiente sync: así no se
+      // duplica por una carrera entre el envío y abrir el chat.
+      if (side === 'out' && Date.now() - new Date(timestampOf(m)).getTime() < RECENT_OUTGOING_SKIP_MS) {
+        continue;
+      }
+
+      const key = `${side}::${normalizeForCompare(text)}`;
       const pool = unreconciled.get(key);
       if (pool && pool.length > 0) {
         // Ya lo teníamos guardado sin id: rellenamos el message_id y NO duplicamos.
