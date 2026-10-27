@@ -4,7 +4,7 @@ import { SetterConfigService } from '../setter/setter-config.service';
 import { MessagingService } from '../messaging/messaging.service';
 import { GhlSyncService } from '../ghl/ghl-sync.service';
 import { newConversationsStartPaused } from '../common/flags';
-import { betterName } from '../common/phone';
+import { betterName, phoneVariants } from '../common/phone';
 import { WorkflowEngineService } from '../workflows/workflow-engine.service';
 import { AgentsService } from '../agents/agents.service';
 import { LeadsService } from './leads.service';
@@ -397,7 +397,7 @@ export class LeadIntakeService {
         .select('id, proactive_sent, unipile_chat_id, contact_external_id, channel_id, contact_name')
         .eq('organization_id', orgId)
         .eq('provider', provider)
-        .eq('contact_handle', handle)
+        .in('contact_handle', phoneVariants(handle))
         .eq('is_test', false)
         // Si hubiera varias, la que ya tiene chat es donde escribe el contacto.
         .order('unipile_chat_id', { ascending: true, nullsFirst: false })

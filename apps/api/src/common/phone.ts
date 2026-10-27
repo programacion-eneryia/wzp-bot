@@ -26,10 +26,41 @@ export function phoneFromJid(raw?: string | null): string | null {
   return m ? `+${m[1]}` : null;
 }
 
-/** Variantes con las que puede estar guardado un teléfono (`+34…` y `34…`). */
+/**
+ * Dígitos "canónicos" de un teléfono: sin el prefijo de móvil que WhatsApp
+ * añade en México (`52 1 …`) y Argentina (`54 9 …`). GHL/formularios mandan
+ * `+52 55 1234 5678` y WhatsApp lo expone como `521 55 1234 5678`: son el
+ * mismo número y hay que reconocerlo como tal.
+ */
+export function canonicalDigits(raw: string): string {
+  const d = raw.replace(/\D/g, '');
+  if (/^521\d{10}$/.test(d)) return `52${d.slice(3)}`;
+  if (/^549\d{10}$/.test(d)) return `54${d.slice(3)}`;
+  return d;
+}
+
+/** Mismo número aunque uno lleve el prefijo de móvil de México/Argentina. */
+export function samePhone(a?: string | null, b?: string | null): boolean {
+  if (!a || !b) return false;
+  const ca = canonicalDigits(a);
+  return ca.length >= 6 && ca === canonicalDigits(b);
+}
+
+/** Dígitos con los que WhatsApp marca ese número (México/Argentina con el prefijo de móvil). */
+export function whatsappDigits(raw: string): string {
+  const c = canonicalDigits(raw);
+  if (/^52\d{10}$/.test(c)) return `521${c.slice(2)}`;
+  if (/^54\d{10}$/.test(c)) return `549${c.slice(2)}`;
+  return c;
+}
+
+/**
+ * Variantes con las que puede estar guardado un teléfono: con y sin `+`, y
+ * con y sin el prefijo de móvil de México/Argentina.
+ */
 export function phoneVariants(e164: string): string[] {
-  const digits = e164.replace(/\D/g, '');
-  return [`+${digits}`, digits];
+  const set = new Set([e164.replace(/\D/g, ''), canonicalDigits(e164), whatsappDigits(e164)]);
+  return [...set].filter(Boolean).flatMap((d) => [`+${d}`, d]);
 }
 
 /** Un "nombre" que en realidad es un número (`+34 6 77 10 26 43`). */

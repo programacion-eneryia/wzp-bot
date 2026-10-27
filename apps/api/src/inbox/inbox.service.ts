@@ -12,7 +12,7 @@ import {
   type UnipileMessage,
 } from '../unipile/unipile.service';
 import { betterName, isPlaceholderName } from '../common/phone';
-import { MessagingService } from '../messaging/messaging.service';
+import { MessagingService, normalizeForCompare } from '../messaging/messaging.service';
 import { ConversionsApiService } from '../whatsapp-cloud/conversions-api.service';
 import { TagsService } from '../tags/tags.service';
 import { StagesService } from '../stages/stages.service';
@@ -37,6 +37,8 @@ type FilterableQuery<Q> = {
 
 const MAX_CHATS = 40;
 const MAX_MESSAGES = 25;
+/** Mismo texto y mismo lado dentro de esta ventana = mismo mensaje (aunque cambie el id). */
+const SAME_MESSAGE_WINDOW_MS = 3 * 60_000;
 
 @Injectable()
 export class InboxService {
@@ -561,7 +563,7 @@ export class InboxService {
 
     const { data: existing } = await this.supabase.admin
       .from('messages')
-      .select('id, role, content, metadata')
+      .select('id, role, content, metadata, created_at')
       .eq('conversation_id', convId);
 
     // IDs de proveedor ya guardados: no se reimportan.
@@ -591,6 +593,29 @@ export class InboxService {
       unreconciled.set(key, arr);
     }
 
+    // Mensajes ya guardados CON id. WhatsApp puede cambiar el id de un mensaje
+    // nuestro entre el envío y la sincronización, así que, además del id, un
+    // mensaje del mismo lado con el mismo texto y hora cercana es el mismo.
+    const known: { side: 'in' | 'out'; text: string; at: number }[] = [];
+    for (const m of existing ?? []) {
+      const meta = (m.metadata as Record<string, unknown> | null) ?? {};
+      if (!meta.message_id) continue;
+      const role = m.role as string;
+      const side =
+        role === 'contact' ? 'in' : role === 'assistant' || role === 'agent' ? 'out' : null;
+      if (!side) continue;
+      known.push({
+        side,
+        text: normalizeForCompare(String(m.content ?? '')),
+        at: new Date(m.created_at as string).getTime(),
+      });
+    }
+    const alreadyStored = (side: 'in' | 'out', text: string, at: string) => {
+      const t = normalizeForCompare(text);
+      const ms = new Date(at).getTime();
+      return known.some((k) => k.side === side && k.text === t && Math.abs(k.at - ms) < SAME_MESSAGE_WINDOW_MS);
+    };
+
     const rows: Array<{
       conversation_id: string;
       organization_id: string;
@@ -606,7 +631,13 @@ export class InboxService {
       const text = (m.text ?? '').trim();
       if (!id || !text || seen.has(id)) continue;
 
-      const key = `${isFromUs(m) ? 'out' : 'in'}::${text}`;
+      const side = isFromUs(m) ? 'out' : 'in';
+      if (alreadyStored(side, text, timestampOf(m))) {
+        seen.add(id);
+        continue;
+      }
+
+      const key = `${side}::${text}`;
       const pool = unreconciled.get(key);
       if (pool && pool.length > 0) {
         // Ya lo teníamos guardado sin id: rellenamos el message_id y NO duplicamos.

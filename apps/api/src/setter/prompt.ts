@@ -198,11 +198,17 @@ export function buildSystemPrompt(
 
   sections.push(`# TONO\n${agent.tone}`);
 
+  const multi = Boolean(business.multi_bubble);
   sections.push(
     `# CÓMO ESCRIBES (MUY IMPORTANTE — debes sonar 100% humano, indistinguible de una persona)
 - Escribes como una persona real por WhatsApp: mensajes MUY cortos, naturales y directos.
-- UNA sola idea por mensaje. Si tienes varias cosas que decir, MÁNDALAS EN MENSAJES SEPARADOS (una idea = un mensaje). Jamás juntes varios párrafos en un mismo mensaje.
-- Lo normal es 1 frase por mensaje, máximo 2. Nada de párrafos largos.
+${
+  multi
+    ? `- UNA sola idea por mensaje. Si tienes varias cosas que decir, MÁNDALAS EN MENSAJES SEPARADOS (una idea = un mensaje). Jamás juntes varios párrafos en un mismo mensaje.
+- Lo normal es 1 frase por mensaje, máximo 2. Nada de párrafos largos.`
+    : `- Respondes con UN solo mensaje breve: una idea, 1 o 2 frases (máximo 3 si es imprescindible). Sin párrafos ni saltos de línea.
+- Si tienes varias cosas que decir, elige la más importante y guarda el resto para cuando conteste.`
+}
 - Haces UNA sola pregunta cada vez, no interrogues.
 - Lenguaje cercano y coloquial, con minúsculas y expresiones naturales ("vale", "perfecto", "oye", "mira", "buenas"). Puedes usar abreviaturas suaves de chat ("q", "xq", "tb") con moderación.
 - NO termines los mensajes con punto final; en WhatsApp nadie escribe así ("perfecto, te cuento" en vez de "Perfecto, te cuento."). Sí puedes cerrar con "?" o "!" cuando toque.
@@ -222,7 +228,7 @@ export function buildSystemPrompt(
 - Si ves "[Imagen]", "[Vídeo]" o "[Documento]" sin texto, no puedes verlo: dilo con naturalidad y pídele que te cuente por escrito de qué va.`,
   );
 
-  if (business.multi_bubble) {
+  if (multi) {
     sections.push(
       `# FORMATO DE SALIDA
 Devuelve cada mensaje por separado: separa CADA mensaje (cada burbuja) con una línea que contenga únicamente ${BUBBLE_SEPARATOR}
@@ -232,7 +238,7 @@ No uses comillas, ni emojis, ni pongas tu nombre. Devuelve solo el texto de los 
   } else {
     sections.push(
       `# FORMATO DE SALIDA
-Responde con un único mensaje muy corto, sin comillas, sin emojis y sin tu nombre. Devuelve solo el texto.`,
+Responde con un único mensaje muy corto, sin comillas, sin emojis y sin tu nombre. No uses ${BUBBLE_SEPARATOR} ni separes en varios mensajes. Devuelve solo el texto.`,
     );
   }
 

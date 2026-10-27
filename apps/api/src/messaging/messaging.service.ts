@@ -22,7 +22,9 @@ import {
   phoneFromJid,
   phoneOfAttendee,
   phoneVariants,
+  samePhone,
   toE164,
+  whatsappDigits,
 } from '../common/phone';
 import { DEBOUNCE_MS, type OutgoingJob, type RespondJob } from './queues';
 
@@ -670,6 +672,10 @@ export class MessagingService {
       }
       if (!conv) return;
 
+      // WhatsApp devuelve el eco con saltos de línea \r\n y espacios distintos a
+      // los que guardamos: se compara normalizado, o un mensaje del bot pasaría
+      // por manual y pausaría la IA (ocurrió en producción).
+      const wanted = normalizeForCompare(text);
       const isOurs = async () => {
         const since = new Date(Date.now() - 15 * 60_000).toISOString();
         const { data: recent } = await this.supabase.admin
@@ -680,7 +686,7 @@ export class MessagingService {
           .gte('created_at', since)
           .order('created_at', { ascending: false })
           .limit(30);
-        return (recent ?? []).some((m) => String(m.content ?? '').trim() === text);
+        return (recent ?? []).some((m) => normalizeForCompare(String(m.content ?? '')) === wanted);
       };
       // Lo que enviamos nosotros se guarda justo después de enviarlo: si el eco
       // llega antes, esperamos un momento antes de tomarlo como mensaje manual.
@@ -691,13 +697,15 @@ export class MessagingService {
       if (evt.messageId && (await this.messageExists(conv.id as string, evt.messageId))) return;
 
       // La plantilla de primer contacto que GHL envía al registrar el lead no es
-      // una persona llevando el chat: si es el PRIMER mensaje de una conversación
-      // de lead recién creada, no pausamos. Cualquier otro mensaje manual sí.
+      // una persona llevando el chat: si es el PRIMER mensaje NUESTRO de una
+      // conversación de lead recién creada, no pausamos (aunque el lead ya haya
+      // contestado: su respuesta puede llegarnos antes que el eco de la
+      // plantilla). Cualquier otro mensaje manual sí pausa.
       const { count: priorMsgs } = await this.supabase.admin
         .from('messages')
         .select('id', { count: 'exact', head: true })
         .eq('conversation_id', conv.id)
-        .in('role', ['contact', 'assistant', 'agent']);
+        .in('role', ['assistant', 'agent']);
       const createdAt = new Date(String(conv.created_at ?? '')).getTime();
       const firstContact =
         (priorMsgs ?? 0) === 0 &&
@@ -796,7 +804,7 @@ export class MessagingService {
       const { chatId } = await this.transport.startChat({
         transport: conv.transport as string,
         accountId: channel.unipile_account_id as string,
-        recipientId: phone.replace(/\D/g, ''),
+        recipientId: whatsappDigits(phone),
         text,
       });
       update.channel_id = channel.id;
@@ -865,7 +873,7 @@ export class MessagingService {
       const started = await this.transport.startChat({
         transport: 'unipile',
         accountId: channel.unipile_account_id as string,
-        recipientId: phone.replace(/\D/g, ''),
+        recipientId: whatsappDigits(phone),
         text,
       });
       if (started.chatId) {
@@ -1545,7 +1553,7 @@ export class MessagingService {
           .from('leads')
           .select('id')
           .eq('organization_id', orgId)
-          .eq('phone', phone)
+          .in('phone', phoneVariants(phone))
           .is('conversation_id', null)
           .order('created_at', { ascending: true })
           .limit(1);
@@ -2003,7 +2011,7 @@ export class MessagingService {
     phone: string,
   ): Promise<string | null> {
     const wanted = phone.replace(/\D/g, '');
-    if (!channel.unipile_account_id || !wanted) return null;
+    if (!channel.unipile_account_id || wanted.length < 6) return null;
     try {
       const chats = await this.unipile.listChats(channel.unipile_account_id, 15);
       const since = Date.now() - RECENT_CHAT_MS;
@@ -2015,8 +2023,8 @@ export class MessagingService {
           phoneFromJid(chat.attendee_provider_id) ??
           phoneFromJid(chat.provider_id) ??
           (await this.chatContact(chat.id)).phone;
-        if (chatPhone?.replace(/\D/g, '') !== wanted) continue;
-        const linked = await this.linkIntakeConversation(orgId, channel, chat.id, `+${wanted}`, 'id');
+        if (!samePhone(chatPhone, wanted)) continue;
+        const linked = await this.linkIntakeConversation(orgId, channel, chat.id, chatPhone as string, 'id');
         if (!linked) return null;
         await this.importFirstContact(orgId, linked.id as string, chat.id);
         return chat.id;
@@ -2249,6 +2257,15 @@ function msgTime(m: { timestamp?: string; date?: string }): number {
 function randomSeconds(min: number, max: number): number {
   if (max <= min) return min;
   return Math.floor(min + Math.random() * (max - min));
+}
+
+/** Texto comparable entre lo que guardamos y lo que devuelve WhatsApp. */
+export function normalizeForCompare(text: string): string {
+  return text
+    .replace(/\r\n?/g, '\n')
+    .replace(/[ \t]+/g, ' ')
+    .replace(/\s*\n\s*/g, '\n')
+    .trim();
 }
 
 function sleep(ms: number): Promise<void> {

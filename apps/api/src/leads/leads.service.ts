@@ -1,5 +1,6 @@
 import { Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { SupabaseService } from '../supabase/supabase.service';
+import { phoneVariants } from '../common/phone';
 
 /** Datos con los que se registra/actualiza un lead en el CRM. */
 export type RecordLeadInput = {
@@ -368,8 +369,14 @@ export class LeadsService {
       if (found) return found;
     }
     if (phone) {
-      const found = await pick('phone', phone);
-      if (found) return found;
+      const { data } = await this.supabase.admin
+        .from('leads')
+        .select(LEAD_COLUMNS)
+        .eq('organization_id', orgId)
+        .in('phone', phoneVariants(phone))
+        .order('created_at', { ascending: true })
+        .limit(1);
+      if (data?.[0]) return data[0];
     }
     if (email) {
       const found = await pick('email', email);

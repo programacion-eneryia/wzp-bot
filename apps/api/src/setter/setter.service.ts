@@ -9,6 +9,7 @@ import { effectiveBehavior, type Agent } from '../agents/agents.types';
 import { StagesService } from '../stages/stages.service';
 import { SetterConfigService } from './setter-config.service';
 import {
+  BUBBLE_SEPARATOR,
   buildSystemPrompt,
   humanDelayMs,
   humanizePunctuation,
@@ -176,11 +177,23 @@ export class SetterService {
       min_delay_ms: number;
       max_delay_ms: number;
     };
+    // En modo "un solo mensaje" el separador de burbujas no debe llegar al
+    // lead: las partes se juntan en un único texto (ocurrió en producción).
     const parts = behavior.multi_bubble
       ? splitBubbles(raw)
-      : [humanizePunctuation(stripEmojis(stripInternalDirectives(raw.trim())))].filter(
-          (p) => p.length > 0,
-        );
+      : [
+          humanizePunctuation(
+            stripEmojis(
+              stripInternalDirectives(
+                raw
+                  .split(BUBBLE_SEPARATOR)
+                  .map((p) => p.trim())
+                  .filter(Boolean)
+                  .join('\n'),
+              ),
+            ),
+          ),
+        ].filter((p) => p.length > 0);
     return parts.map((content) => ({
       content,
       delayMs: humanDelayMs(content, behavior.min_delay_ms, behavior.max_delay_ms),
@@ -247,7 +260,9 @@ export class SetterService {
       {
         role: 'system',
         content: buildSystemPrompt(
-          { business: cfg, agent, stageNames },
+          // El formato de salida (burbujas o un solo mensaje) debe ser el mismo
+          // que luego aplica toBubbles: el del agente si tiene ajustes propios.
+          { business: effectiveBehavior(cfg, agent), agent, stageNames },
           opts.contactName,
           availabilityText,
           leadContext,
