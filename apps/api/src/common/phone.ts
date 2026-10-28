@@ -27,19 +27,31 @@ export function phoneFromJid(raw?: string | null): string | null {
 }
 
 /**
- * Dígitos "canónicos" de un teléfono: sin el prefijo de móvil que WhatsApp
- * añade en México (`52 1 …`) y Argentina (`54 9 …`). GHL/formularios mandan
- * `+52 55 1234 5678` y WhatsApp lo expone como `521 55 1234 5678`: son el
- * mismo número y hay que reconocerlo como tal.
+ * Dígitos "canónicos" (E.164 tal y como lo guardan GHL y los formularios) de
+ * un teléfono, quitando lo que WhatsApp añade o cambia en algunos países:
+ *   - México: WhatsApp expone `52 1 + 10 dígitos`; E.164 es `52 + 10`.
+ *   - Argentina: WhatsApp expone `54 9 + 10 dígitos`; E.164 es `54 + 10`.
+ *   - Brasil: los móviles llevan un 9 delante (`55 DD 9 XXXX XXXX`); algunos
+ *     números antiguos siguen circulando sin él (`55 DD XXXX XXXX`). La forma
+ *     canónica es CON el 9 (es el número real desde 2016).
+ * `+52 55 1234 5678` y `521 55 1234 5678` son el mismo número.
  */
 export function canonicalDigits(raw: string): string {
   const d = raw.replace(/\D/g, '');
   if (/^521\d{10}$/.test(d)) return `52${d.slice(3)}`;
   if (/^549\d{10}$/.test(d)) return `54${d.slice(3)}`;
+  // Brasil sin el 9º dígito: 55 + DDD (2) + 8 dígitos que empiezan por 6-9 (móvil).
+  if (/^55\d{2}[6-9]\d{7}$/.test(d)) return `${d.slice(0, 4)}9${d.slice(4)}`;
   return d;
 }
 
-/** Mismo número aunque uno lleve el prefijo de móvil de México/Argentina. */
+/** Teléfono canónico `+E.164` (el formato con el que se escribe en el CRM). */
+export function canonicalE164(raw?: string | null): string | null {
+  const e = toE164(raw);
+  return e ? `+${canonicalDigits(e)}` : null;
+}
+
+/** Mismo número aunque uno lleve el prefijo de móvil de México/Argentina o le falte el 9 de Brasil. */
 export function samePhone(a?: string | null, b?: string | null): boolean {
   if (!a || !b) return false;
   const ca = canonicalDigits(a);
@@ -55,11 +67,14 @@ export function whatsappDigits(raw: string): string {
 }
 
 /**
- * Variantes con las que puede estar guardado un teléfono: con y sin `+`, y
- * con y sin el prefijo de móvil de México/Argentina.
+ * Variantes con las que puede estar guardado un teléfono: con y sin `+`, con y
+ * sin el prefijo de móvil de México/Argentina, y con y sin el 9 de Brasil.
  */
 export function phoneVariants(e164: string): string[] {
-  const set = new Set([e164.replace(/\D/g, ''), canonicalDigits(e164), whatsappDigits(e164)]);
+  const c = canonicalDigits(e164);
+  const set = new Set([e164.replace(/\D/g, ''), c, whatsappDigits(e164)]);
+  // Brasil: también la forma antigua sin el 9º dígito.
+  if (/^55\d{2}9[6-9]\d{7}$/.test(c)) set.add(`${c.slice(0, 4)}${c.slice(5)}`);
   return [...set].filter(Boolean).flatMap((d) => [`+${d}`, d]);
 }
 

@@ -5,7 +5,7 @@ import { CryptoService } from '../common/crypto.service';
 import { assertSafeWebhookUrl } from '../common/url-safety';
 
 const COLS =
-  'organization_id, intake_token, manychat_api_key, default_channel_id, proactive_enabled, ghl_webhook_url, ghl_api_token, ghl_location_id, ghl_setter_field, ghl_sync_chat_leads';
+  'organization_id, intake_token, manychat_api_key, default_channel_id, proactive_enabled, ghl_webhook_url, ghl_api_token, ghl_location_id, ghl_setter_field, ghl_sync_chat_leads, ghl_chat_tags, ghl_chat_source';
 
 export type Integration = {
   organization_id: string;
@@ -20,6 +20,10 @@ export type Integration = {
   ghl_location_id: string | null;
   ghl_setter_field: string | null;
   ghl_sync_chat_leads: boolean;
+  /** Etiquetas que el bot AÑADE en GHL a los leads que entran por chat. */
+  ghl_chat_tags: string[];
+  /** Origen (source) solo para contactos que el bot CREA en GHL. */
+  ghl_chat_source: string;
 };
 
 @Injectable()
@@ -68,6 +72,8 @@ export class IntegrationsService {
       ghl_location_id?: string;
       ghl_setter_field?: string;
       ghl_sync_chat_leads?: boolean;
+      ghl_chat_tags?: string[];
+      ghl_chat_source?: string;
     },
   ): Promise<Integration> {
     await this.getOrCreate(orgId);
@@ -98,6 +104,14 @@ export class IntegrationsService {
     }
     if (typeof patch.ghl_sync_chat_leads === 'boolean') {
       update.ghl_sync_chat_leads = patch.ghl_sync_chat_leads;
+    }
+    // Etiquetas limpias y sin repetir; lista vacía = las de por defecto.
+    if (Array.isArray(patch.ghl_chat_tags)) {
+      const tags = [...new Set(patch.ghl_chat_tags.map((t) => String(t).trim()).filter(Boolean))];
+      update.ghl_chat_tags = tags.length ? tags.slice(0, 20) : ['setter-ia'];
+    }
+    if (typeof patch.ghl_chat_source === 'string') {
+      update.ghl_chat_source = patch.ghl_chat_source.trim() || 'Setter IA (chat)';
     }
 
     const { data, error } = await this.supabase.admin

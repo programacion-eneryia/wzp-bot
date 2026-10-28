@@ -24,6 +24,8 @@ type Integration = {
   ghl_location_id?: string | null;
   ghl_setter_field?: string | null;
   ghl_sync_chat_leads?: boolean;
+  ghl_chat_tags?: string[];
+  ghl_chat_source?: string;
   urls: Urls;
 };
 
@@ -52,6 +54,8 @@ export default function Integrations({ isAdmin = true }: { isAdmin?: boolean }) 
   const [ghlLocation, setGhlLocation] = useState("");
   const [ghlSetterField, setGhlSetterField] = useState("");
   const [ghlSync, setGhlSync] = useState(true);
+  const [ghlTags, setGhlTags] = useState("setter-ia");
+  const [ghlSource, setGhlSource] = useState("Setter IA (chat)");
 
   useEffect(() => {
     Promise.all([
@@ -65,6 +69,8 @@ export default function Integrations({ isAdmin = true }: { isAdmin?: boolean }) 
         setGhlLocation(integ.ghl_location_id ?? "");
         setGhlSetterField(integ.ghl_setter_field ?? "");
         setGhlSync(integ.ghl_sync_chat_leads ?? true);
+        setGhlTags((integ.ghl_chat_tags ?? ["setter-ia"]).join(", "));
+        setGhlSource(integ.ghl_chat_source ?? "Setter IA (chat)");
         setChannels(Array.isArray(chs) ? chs : []);
       })
       .catch((e) => setError(e instanceof Error ? e.message : "Error al cargar"))
@@ -310,6 +316,30 @@ export default function Integrations({ isAdmin = true }: { isAdmin?: boolean }) 
                 />
                 Crear/actualizar en GHL los leads que entran por chat
               </label>
+              <label className={styles.field}>
+                <span className={styles.label}>Etiquetas que añade el bot (separadas por comas)</span>
+                <input
+                  className={styles.input}
+                  value={ghlTags}
+                  onChange={(e) => setGhlTags(e.target.value)}
+                  placeholder="setter-ia"
+                />
+              </label>
+              <label className={styles.field}>
+                <span className={styles.label}>Origen (source) de los contactos que crea el bot</span>
+                <input
+                  className={styles.input}
+                  value={ghlSource}
+                  onChange={(e) => setGhlSource(e.target.value)}
+                  placeholder="Setter IA (chat)"
+                />
+              </label>
+              <p className={styles.muted}>
+                En contactos que ya existen en GHL solo se añaden estas etiquetas y el{" "}
+                <code className={styles.code}>setter_id</code>: no se tocan su nombre, teléfono,
+                email, origen ni el resto de etiquetas. El teléfono se busca en todas sus formas
+                (p. ej. México +52 / +521) para no crear duplicados.
+              </p>
               <div className={styles.btnRow}>
                 <button
                   className={styles.saveBtn}
@@ -320,6 +350,8 @@ export default function Integrations({ isAdmin = true }: { isAdmin?: boolean }) 
                       ghl_location_id: ghlLocation.trim(),
                       ghl_setter_field: ghlSetterField.trim(),
                       ghl_sync_chat_leads: ghlSync,
+                      ghl_chat_tags: ghlTags.split(",").map((t) => t.trim()).filter(Boolean),
+                      ghl_chat_source: ghlSource.trim(),
                     });
                     setGhlToken("");
                   }}

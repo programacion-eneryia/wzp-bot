@@ -2,6 +2,12 @@ import { Injectable, Logger } from '@nestjs/common';
 import { SupabaseService } from '../supabase/supabase.service';
 import { CryptoService } from '../common/crypto.service';
 import { safeWebhookUrlOrNull } from '../common/url-safety';
+import { canonicalE164, phoneVariants } from '../common/phone';
+import { GhlApi, type GhlContact } from './ghl-api';
+
+/** Etiquetas y origen por defecto para los contactos que crea el bot. */
+export const DEFAULT_GHL_CHAT_TAGS = ['setter-ia'];
+export const DEFAULT_GHL_CHAT_SOURCE = 'Setter IA (chat)';
 
 /** Datos para el webhook de salida "lead registrado" hacia GHL. */
 export type PushLeadInput = {
@@ -13,9 +19,6 @@ export type PushLeadInput = {
   email?: string | null;
   source?: string | null;
 };
-
-const GHL_API = 'https://services.leadconnectorhq.com';
-const GHL_API_VERSION = '2021-07-28';
 
 /**
  * Salida hacia GoHighLevel, sin dependencias de mensajería (la usan tanto el
@@ -132,7 +135,9 @@ export class GhlSyncService {
     try {
       const { data: integ } = await this.supabase.admin
         .from('integrations')
-        .select('ghl_api_token, ghl_location_id, ghl_setter_field, ghl_sync_chat_leads, ghl_webhook_url')
+        .select(
+          'ghl_api_token, ghl_location_id, ghl_setter_field, ghl_sync_chat_leads, ghl_webhook_url, ghl_chat_tags, ghl_chat_source',
+        )
         .eq('organization_id', orgId)
         .maybeSingle();
       if (!integ || integ.ghl_sync_chat_leads === false) return;
@@ -155,22 +160,29 @@ export class GhlSyncService {
         .eq('conversation_id', conversationId)
         .maybeSingle();
 
-      const phone = phoneFrom((lead?.phone as string | null) ?? (conv.contact_handle as string | null));
+      // Al CRM siempre va el teléfono canónico E.164 (México +52…, nunca el
+      // +521… de WhatsApp): así GHL encuentra el contacto del formulario.
+      const phone =
+        canonicalE164(lead?.phone as string | null) ?? canonicalE164(conv.contact_handle as string | null);
       const email = ((lead?.email as string | null) ?? '').trim().toLowerCase() || null;
       const name = ((conv.contact_name as string | null) ?? '').trim() || null;
 
-      let contactId: string | null = null;
+      let contactId: string | null = (lead?.external_id as string | null) || null;
       if (token && locationId && (phone || email)) {
-        contactId = await this.upsertContact(token, {
+        const resolved = await this.resolveOrCreateContact(new GhlApi(token), {
           locationId,
+          knownContactId: contactId,
           name,
           phone,
           email,
           conversationId,
           provider: (conv.provider as string | null) ?? null,
           setterField: ((integ.ghl_setter_field as string | null) ?? '').trim() || null,
+          tags: normalizeTags(integ.ghl_chat_tags as string[] | null),
+          source: ((integ.ghl_chat_source as string | null) ?? '').trim() || DEFAULT_GHL_CHAT_SOURCE,
         });
-        if (contactId) {
+        if (resolved) {
+          contactId = resolved;
           await this.supabase.admin
             .from('conversations')
             .update({ ghl_contact_id: contactId })
@@ -195,71 +207,104 @@ export class GhlSyncService {
     }
   }
 
-  /** POST /contacts/upsert: GHL crea o actualiza (dedupe por email/teléfono). */
-  private async upsertContact(
-    token: string,
+  /**
+   * Resuelve el contacto de GHL para un lead de chat y le añade lo del bot:
+   *
+   *   1. id ya conocido (lead/intake) →
+   *   2. búsqueda en GHL por cualquier variante del teléfono (+52/+521, +54/+549,
+   *      Brasil con/sin 9) y por email →
+   *   3. solo si no existe ninguna, se CREA (teléfono canónico, nombre, origen
+   *      y etiquetas configurados).
+   *
+   * En contactos existentes NO se toca nombre, teléfono, email ni origen: solo
+   * se AÑADEN las etiquetas (POST /contacts/{id}/tags, nunca reemplaza) y se
+   * rellena el campo `setter_id`. Devuelve el id o null si GHL no respondió.
+   */
+  private async resolveOrCreateContact(
+    api: GhlApi,
     c: {
       locationId: string;
+      knownContactId: string | null;
       name: string | null;
       phone: string | null;
       email: string | null;
       conversationId: string;
       provider: string | null;
       setterField: string | null;
+      tags: string[];
+      source: string;
     },
   ): Promise<string | null> {
-    const body: Record<string, unknown> = {
-      locationId: c.locationId,
-      source: 'Setter IA (chat)',
-      tags: ['setter-ia', c.provider ? `setter-ia-${c.provider}` : null].filter(Boolean),
-    };
-    if (c.name) {
-      body.name = c.name;
-      const [first, ...rest] = c.name.split(/\s+/);
-      body.firstName = first;
-      if (rest.length) body.lastName = rest.join(' ');
+    const tags = [...c.tags, c.provider ? `setter-ia-${c.provider}` : null].filter(Boolean) as string[];
+    const customFields = c.setterField ? [setterFieldValue(c.setterField, c.conversationId)] : [];
+
+    let existing: GhlContact | null = null;
+    let how = 'id';
+    if (c.knownContactId) existing = await api.getContact(c.knownContactId);
+    if (!existing && c.phone) {
+      how = 'teléfono';
+      for (const variant of phoneVariants(c.phone).filter((v) => v.startsWith('+'))) {
+        existing = await api.findDuplicate(c.locationId, { phone: variant });
+        if (existing) break;
+      }
     }
-    if (c.phone) body.phone = c.phone;
-    if (c.email) body.email = c.email;
-    if (c.setterField) {
-      // Admite el id del campo personalizado o su clave ("contact.setter_id").
-      const looksLikeId = /^[A-Za-z0-9]{15,30}$/.test(c.setterField);
-      body.customFields = [
-        looksLikeId
-          ? { id: c.setterField, field_value: c.conversationId }
-          : { key: c.setterField.replace(/^contact\./, ''), field_value: c.conversationId },
-      ];
+    if (!existing && c.email) {
+      how = 'email';
+      existing = await api.findDuplicate(c.locationId, { email: c.email });
     }
 
-    try {
-      const res = await fetch(`${GHL_API}/contacts/upsert`, {
-        method: 'POST',
-        headers: {
-          authorization: `Bearer ${token}`,
-          version: GHL_API_VERSION,
-          'content-type': 'application/json',
-          accept: 'application/json',
-        },
-        body: JSON.stringify(body),
-        signal: AbortSignal.timeout(10_000),
-      });
-      const json = (await res.json().catch(() => ({}))) as Record<string, unknown>;
-      if (!res.ok) {
-        this.logger.warn(
-          `GHL upsert de contacto falló (${res.status}): ${JSON.stringify(json).slice(0, 300)}`,
-        );
-        return null;
-      }
-      const contact = (json.contact ?? {}) as Record<string, unknown>;
-      const id = typeof contact.id === 'string' ? contact.id : null;
+    if (existing) {
+      // Solo lo nuestro: etiquetas (añadir) y setter_id. Nada más se pisa.
+      await api.addTags(existing.id, tags);
+      const patch: Record<string, unknown> = {};
+      if (customFields.length) patch.customFields = customFields;
+      // Rellenamos huecos, nunca sustituimos: teléfono/email solo si están vacíos.
+      if (c.phone && !existing.phone) patch.phone = c.phone;
+      if (c.email && !existing.email) patch.email = c.email;
+      if (Object.keys(patch).length) await api.updateContact(existing.id, patch);
       this.logger.log(
-        `Contacto ${json.new ? 'creado' : 'actualizado'} en GHL (${id ?? 'sin id'}) para conv ${c.conversationId}`,
+        `Contacto de GHL encontrado por ${how} (${existing.id}) para conv ${c.conversationId}: etiquetas añadidas`,
       );
-      return id;
-    } catch (err) {
-      this.logger.warn(`GHL upsert de contacto error: ${String(err)}`);
-      return null;
+      return existing.id;
     }
+
+    if (api.searchUnavailable) {
+      // Sin permiso de lectura no podemos garantizar que no exista: usamos el
+      // upsert de GHL (dedupe por teléfono/email) SIN campos que pisen nada.
+      const body: Record<string, unknown> = { locationId: c.locationId };
+      if (c.phone) body.phone = c.phone;
+      if (c.email) body.email = c.email;
+      if (customFields.length) body.customFields = customFields;
+      const up = await api.upsertContact(body);
+      if (!up) return null;
+      if (up.isNew) await api.updateContact(up.id, { ...nameFields(c.name), source: c.source });
+      await api.addTags(up.id, tags);
+      this.logger.log(
+        `Contacto ${up.isNew ? 'creado' : 'actualizado'} en GHL vía upsert (${up.id}) para conv ${c.conversationId}`,
+      );
+      return up.id;
+    }
+
+    const body: Record<string, unknown> = {
+      locationId: c.locationId,
+      source: c.source,
+      tags,
+      ...nameFields(c.name),
+    };
+    if (c.phone) body.phone = c.phone;
+    if (c.email) body.email = c.email;
+    if (customFields.length) body.customFields = customFields;
+    const created = await api.createContact(body);
+    if (!created) return null;
+    if (created.duplicateOf) {
+      // GHL detectó un duplicado que nuestra búsqueda no vio: lo reutilizamos.
+      await api.addTags(created.duplicateOf, tags);
+      if (customFields.length) await api.updateContact(created.duplicateOf, { customFields });
+      this.logger.log(`GHL ya tenía el contacto (${created.duplicateOf}) para conv ${c.conversationId}`);
+      return created.duplicateOf;
+    }
+    this.logger.log(`Contacto creado en GHL (${created.id}) para conv ${c.conversationId}`);
+    return created.id;
   }
 
   private async conversationAgent(
@@ -287,12 +332,20 @@ export class GhlSyncService {
   }
 }
 
-/** Teléfono en formato internacional (+dígitos) si el identificador lo es. */
-function phoneFrom(raw: string | null): string | null {
-  if (!raw) return null;
-  const s = raw.replace(/@s\.whatsapp\.net$|@c\.us$/, '');
-  const digits = s.replace(/[^\d]/g, '');
-  if (digits.length < 7 || digits.length > 15) return null;
-  if (digits.length / s.replace(/\s/g, '').length < 0.7) return null;
-  return `+${digits}`;
+/** Etiquetas configuradas (limpias, sin vacíos ni repetidas) o las de por defecto. */
+export function normalizeTags(tags: string[] | null | undefined): string[] {
+  const clean = (tags ?? []).map((t) => String(t).trim()).filter(Boolean);
+  return clean.length ? [...new Set(clean)] : [...DEFAULT_GHL_CHAT_TAGS];
+}
+
+/** Campo personalizado del setter_id: admite el id del campo o su clave ("contact.setter_id"). */
+function setterFieldValue(field: string, value: string): Record<string, string> {
+  const looksLikeId = /^[A-Za-z0-9]{15,30}$/.test(field);
+  return looksLikeId ? { id: field, field_value: value } : { key: field.replace(/^contact\./, ''), field_value: value };
+}
+
+function nameFields(name: string | null): Record<string, string> {
+  if (!name) return {};
+  const [first, ...rest] = name.split(/\s+/);
+  return { name, firstName: first, ...(rest.length ? { lastName: rest.join(' ') } : {}) };
 }

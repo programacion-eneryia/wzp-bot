@@ -3,6 +3,7 @@ import { SupabaseService } from '../supabase/supabase.service';
 import { MessagingService } from '../messaging/messaging.service';
 import { StagesService } from '../stages/stages.service';
 import { AgentsService } from '../agents/agents.service';
+import { phoneVariants } from '../common/phone';
 
 type MatchKeys = {
   setterId?: string;
@@ -272,12 +273,12 @@ export class GhlService {
     }
 
     // Si hubiera varias, preferimos la que tiene chat (donde escribe el contacto).
-    const first = async (col: string, val: string) => {
+    const first = async (col: string, vals: string[]) => {
       const { data } = await this.supabase.admin
         .from('conversations')
         .select(sel)
         .eq('organization_id', orgId)
-        .eq(col, val)
+        .in(col, vals)
         .eq('is_test', false)
         .order('unipile_chat_id', { ascending: true, nullsFirst: false })
         .order('last_message_at', { ascending: false, nullsFirst: false })
@@ -286,12 +287,13 @@ export class GhlService {
     };
 
     if (keys.contactId) {
-      const found = await first('ghl_contact_id', keys.contactId);
+      const found = await first('ghl_contact_id', [keys.contactId]);
       if (found) return found;
     }
 
+    // Teléfono en cualquiera de sus formas: GHL manda +52…, WhatsApp usa +521….
     if (keys.phone) {
-      const found = await first('contact_handle', `+${keys.phone}`);
+      const found = await first('contact_handle', phoneVariants(`+${keys.phone}`));
       if (found) return found;
     }
 
@@ -314,27 +316,27 @@ export class GhlService {
     orgId: string,
     keys: MatchKeys,
   ): Promise<string | null> {
-    const pick = async (col: string, val: string) => {
+    const pick = async (col: string, vals: string[]) => {
       const { data } = await this.supabase.admin
         .from('leads')
         .select('conversation_id')
         .eq('organization_id', orgId)
-        .eq(col, val)
+        .in(col, vals)
         .not('conversation_id', 'is', null)
         .order('created_at', { ascending: true })
         .limit(1);
       return (data?.[0]?.conversation_id as string | null) ?? null;
     };
     if (keys.contactId) {
-      const c = await pick('external_id', keys.contactId);
+      const c = await pick('external_id', [keys.contactId]);
       if (c) return c;
     }
     if (keys.phone) {
-      const c = await pick('phone', `+${keys.phone}`);
+      const c = await pick('phone', phoneVariants(`+${keys.phone}`));
       if (c) return c;
     }
     if (keys.email) {
-      const c = await pick('email', keys.email);
+      const c = await pick('email', [keys.email]);
       if (c) return c;
     }
     return null;

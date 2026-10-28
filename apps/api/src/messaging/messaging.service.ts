@@ -26,6 +26,7 @@ import {
   toE164,
   whatsappDigits,
 } from '../common/phone';
+import { prefillCalendarLinksInText } from '../common/calendar-link';
 import { DEBOUNCE_MS, type OutgoingJob, type RespondJob } from './queues';
 
 /** Margen tras registrar un lead en el que su primer mensaje saliente se toma como la plantilla de GHL. */
@@ -842,6 +843,39 @@ export class MessagingService {
    * Si Unipile dice que la cuenta está desconectada, marca el canal para que se
    * vea en el panel.
    */
+  /**
+   * Si el texto lleva el enlace de agenda del agente, lo devuelve con nombre,
+   * email y teléfono del lead prellenados: así la cita cae en el MISMO contacto
+   * del CRM (si el lead teclea otro email, GHL crearía un duplicado). Si no hay
+   * enlace o algo falla, devuelve el texto tal cual.
+   */
+  private async withCalendarPrefill(
+    orgId: string,
+    conversationId: string,
+    conv: Record<string, unknown>,
+    agent: Agent,
+    text: string,
+  ): Promise<string> {
+    try {
+      const link = agent.calendar_mode === 'link' ? agent.calendar_link?.trim() : null;
+      if (!link || !normalizeLink(text).includes(normalizeLink(link))) return text;
+      const { data: lead } = await this.supabase.admin
+        .from('leads')
+        .select('name, email, phone')
+        .eq('organization_id', orgId)
+        .eq('conversation_id', conversationId)
+        .maybeSingle();
+      return prefillCalendarLinksInText(text, link, {
+        name: (lead?.name as string | null) ?? (conv.contact_name as string | null),
+        email: (lead?.email as string | null) ?? null,
+        phone: (lead?.phone as string | null) ?? (conv.contact_handle as string | null),
+      });
+    } catch (err) {
+      this.logger.warn(`No se pudo prellenar el enlace de agenda (${conversationId}): ${String(err)}`);
+      return text;
+    }
+  }
+
   private async deliverBotText(
     orgId: string,
     conversationId: string,
@@ -1158,8 +1192,10 @@ export class MessagingService {
         return;
       }
 
+      // Enlace de agenda con los datos del lead ya rellenos (misma ficha en el CRM).
+      const text = await this.withCalendarPrefill(orgId, conversationId, conv, agent, b.content);
       try {
-        target = await this.deliverBotText(orgId, conversationId, conv, target, b.content);
+        target = await this.deliverBotText(orgId, conversationId, conv, target, text);
       } catch (err) {
         // Se relanza para que generateAndSend reprograme la respuesta: si no,
         // el lead se queda sin contestar para siempre.
@@ -1170,7 +1206,7 @@ export class MessagingService {
         conversation_id: conversationId,
         organization_id: orgId,
         role: 'assistant',
-        content: b.content,
+        content: text,
       });
       await this.supabase.admin
         .from('conversations')
@@ -1497,12 +1533,13 @@ export class MessagingService {
     for (const b of bubbles) {
       if (await this.newerInboundExists(conversationId, watermark)) return stop('el lead escribió mientras tanto');
       await sleep(Math.min(b.delayMs, 8_000));
-      chatId = await this.deliverBotText(orgId, conversationId, conv, chatId, b.content);
+      const text = await this.withCalendarPrefill(orgId, conversationId, conv, agent, b.content);
+      chatId = await this.deliverBotText(orgId, conversationId, conv, chatId, text);
       await this.supabase.admin.from('messages').insert({
         conversation_id: conversationId,
         organization_id: orgId,
         role: 'assistant',
-        content: b.content,
+        content: text,
         metadata: { followup: nextStep },
       });
     }

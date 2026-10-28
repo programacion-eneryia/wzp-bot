@@ -8,6 +8,8 @@ import {
   UseGuards,
 } from '@nestjs/common';
 import {
+  ArrayMaxSize,
+  IsArray,
   IsBoolean,
   IsOptional,
   IsString,
@@ -38,6 +40,9 @@ class UpdateIntegrationDto {
   @IsOptional() @IsString() @MaxLength(64) ghl_location_id?: string;
   @IsOptional() @IsString() @MaxLength(120) ghl_setter_field?: string;
   @IsOptional() @IsBoolean() ghl_sync_chat_leads?: boolean;
+  @IsOptional() @IsArray() @ArrayMaxSize(20) @IsString({ each: true }) @MaxLength(60, { each: true })
+  ghl_chat_tags?: string[];
+  @IsOptional() @IsString() @MaxLength(80) ghl_chat_source?: string;
 }
 
 @Controller('integrations')

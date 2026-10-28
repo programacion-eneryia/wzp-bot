@@ -4,7 +4,7 @@ import { SetterConfigService } from '../setter/setter-config.service';
 import { MessagingService } from '../messaging/messaging.service';
 import { GhlSyncService } from '../ghl/ghl-sync.service';
 import { newConversationsStartPaused } from '../common/flags';
-import { betterName, phoneVariants } from '../common/phone';
+import { betterName, canonicalE164, phoneVariants } from '../common/phone';
 import { WorkflowEngineService } from '../workflows/workflow-engine.service';
 import { AgentsService } from '../agents/agents.service';
 import { LeadsService } from './leads.service';
@@ -200,7 +200,8 @@ export class LeadIntakeService {
       conversationId: conv.id,
       contactId: input.ghl_contact_id ?? input.external_id ?? null,
       name: input.name ?? null,
-      phone: phoneDigits ? `+${phoneDigits}` : input.phone ?? null,
+      // Al CRM siempre el E.164 canónico (nunca el +521… de WhatsApp).
+      phone: canonicalE164(phoneDigits ? `+${phoneDigits}` : input.phone) ?? input.phone ?? null,
       email: input.email ?? null,
       source: input.source ?? null,
     });
