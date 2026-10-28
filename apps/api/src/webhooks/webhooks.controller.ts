@@ -60,6 +60,26 @@ export class WebhooksController {
   }
 
   /**
+   * Webhook `account_status` de Unipile: la sesión de un número se cae (p. ej.
+   * cambio de teléfono → CREDENTIALS) o se recupera. Así el canal refleja el
+   * estado real sin esperar a que falle un envío.
+   */
+  @Post('account-status')
+  @HttpCode(200)
+  async accountStatus(
+    @Headers('unipile-auth') auth: string,
+    @Body() body: Record<string, unknown>,
+  ) {
+    if (!this.crypto.safeEqual(auth, this.secret)) {
+      throw new ForbiddenException('Secreto inválido');
+    }
+    const st = (body.AccountStatus ?? body) as Record<string, unknown>;
+    this.logger.log(`Webhook estado de cuenta: ${String(st.account_id)} → ${String(st.message ?? st.status)}`);
+    await this.channels.handleAccountStatus(body);
+    return { ok: true };
+  }
+
+  /**
    * Webhook de mensajería (mensajes nuevos). Guardamos el mensaje al vuelo y
    * respondemos 200; la GENERACIÓN de la respuesta IA (con retardos humanos) la
    * hace el cron cuando vence la ventana de debounce, para no bloquear el webhook.

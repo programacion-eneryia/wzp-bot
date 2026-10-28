@@ -165,6 +165,35 @@ export class UnipileService implements OnModuleInit {
     });
   }
 
+  /**
+   * Enlace hosted para RECONECTAR una cuenta existente (p. ej. WhatsApp cerró
+   * la sesión del dispositivo vinculado). Mantiene el mismo `account_id`, así
+   * que los chats y su histórico siguen siendo los mismos.
+   */
+  async createReconnectLink(
+    accountId: string,
+    params: Omit<HostedAuthLinkParams, 'providers'>,
+  ): Promise<{ url: string }> {
+    const expiresOn = new Date(Date.now() + 60 * 60 * 1000).toISOString();
+    return this.request<{ object: string; url: string }>('/hosted/accounts/link', {
+      method: 'POST',
+      body: JSON.stringify({
+        type: 'reconnect',
+        reconnect_account: accountId,
+        api_url: this.apiUrl,
+        expiresOn,
+        ...params,
+      }),
+    });
+  }
+
+  /** ¿La cuenta está operativa? (todas sus fuentes en OK o aún conectando). */
+  static isAccountHealthy(account: UnipileAccount): boolean {
+    const sources = account.sources ?? [];
+    if (sources.length === 0) return true;
+    return sources.every((s) => !s.status || s.status === 'OK' || s.status === 'CONNECTING');
+  }
+
   /** Lista todas las cuentas conectadas en esta cuenta de Unipile. */
   async listAccounts(): Promise<UnipileAccount[]> {
     const data = await this.request<{ items?: UnipileAccount[]; object?: string }>('/accounts');

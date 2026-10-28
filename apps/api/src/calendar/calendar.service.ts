@@ -8,6 +8,7 @@ import { ConfigService } from '@nestjs/config';
 import { SupabaseService } from '../supabase/supabase.service';
 import { UnipileService } from '../unipile/unipile.service';
 import type { AuthContext } from '../auth/auth.types';
+import { resolveWebUrl } from '../common/web-url';
 
 type CalProvider = 'google' | 'outlook';
 
@@ -63,7 +64,7 @@ export class CalendarService {
     if (error) throw error;
 
     const base = this.config.get<string>('WEBHOOK_BASE_URL') ?? this.config.get<string>('API_URL');
-    const webUrl = this.config.get<string>('WEB_URL') ?? 'http://localhost:3000';
+    const webUrl = resolveWebUrl(this.config);
     const secret = this.config.getOrThrow<string>('UNIPILE_WEBHOOK_SECRET');
 
     const { url } = await this.unipile.createCalendarHostedAuthLink({

@@ -3,6 +3,7 @@ import {
   Controller,
   Delete,
   Get,
+  Headers,
   Param,
   Post,
   UseGuards,
@@ -24,8 +25,22 @@ export class ChannelsController {
   }
 
   @Post('connect')
-  connect(@CurrentUser() user: AuthContext, @Body() dto: ConnectChannelDto) {
-    return this.channels.connect(user, dto.provider);
+  connect(
+    @CurrentUser() user: AuthContext,
+    @Body() dto: ConnectChannelDto,
+    @Headers('origin') origin?: string,
+  ) {
+    return this.channels.connect(user, dto.provider, origin);
+  }
+
+  /** Reconecta un número cuya sesión se cerró, conservando la misma cuenta y sus chats. */
+  @Post(':id/reconnect')
+  reconnect(
+    @CurrentUser() user: AuthContext,
+    @Param('id') id: string,
+    @Headers('origin') origin?: string,
+  ) {
+    return this.channels.reconnect(user, id, origin);
   }
 
   @Post('reconcile')

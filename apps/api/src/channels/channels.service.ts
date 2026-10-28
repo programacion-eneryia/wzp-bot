@@ -13,6 +13,7 @@ import {
 } from '../unipile/unipile.service';
 import { WhatsAppCloudService } from '../whatsapp-cloud/whatsapp-cloud.service';
 import { CryptoService } from '../common/crypto.service';
+import { resolveWebUrl } from '../common/web-url';
 import type { AuthContext } from '../auth/auth.types';
 import type { ConnectableProvider } from './dto/connect-channel.dto';
 
@@ -62,7 +63,7 @@ export class ChannelsService {
    *  2. Pide a Unipile un enlace de autenticación hosted (QR/login).
    *  3. Devuelve la URL a la que el frontend redirige al usuario.
    */
-  async connect(ctx: AuthContext, provider: ConnectableProvider) {
+  async connect(ctx: AuthContext, provider: ConnectableProvider, origin?: string | null) {
     this.assertAdmin(ctx);
 
     const { data: channel, error } = await this.supabase.admin
@@ -78,19 +79,51 @@ export class ChannelsService {
 
     if (error) throw error;
 
-    const webhookBase = this.config.get<string>('WEBHOOK_BASE_URL') ?? this.config.get<string>('API_URL');
-    const webUrl = this.config.get<string>('WEB_URL') ?? 'http://localhost:3000';
-    const secret = this.config.getOrThrow<string>('UNIPILE_WEBHOOK_SECRET');
-
     const { url } = await this.unipile.createHostedAuthLink({
       name: channel.id as string,
       providers: [TO_UNIPILE[provider]],
-      notify_url: `${webhookBase}/api/webhooks/unipile/account?secret=${encodeURIComponent(secret)}`,
-      success_redirect_url: `${webUrl}/dashboard/channels?connected=1`,
-      failure_redirect_url: `${webUrl}/dashboard/channels?error=1`,
+      ...this.hostedAuthUrls(origin),
     });
 
     return { channelId: channel.id as string, url };
+  }
+
+  /**
+   * Reconecta un canal cuya sesión se cerró (WhatsApp cerró el dispositivo
+   * vinculado, cambio de teléfono…). A diferencia de desconectar y volver a
+   * conectar, mantiene la misma cuenta en Unipile: los chats conservan su id y
+   * no hay que re-vincular nada.
+   */
+  async reconnect(ctx: AuthContext, channelId: string, origin?: string | null) {
+    this.assertAdmin(ctx);
+
+    const { data: channel } = await this.supabase.admin
+      .from('channels')
+      .select('id, unipile_account_id, transport')
+      .eq('id', channelId)
+      .eq('organization_id', ctx.organizationId)
+      .maybeSingle();
+    if (!channel) throw new NotFoundException('Canal no encontrado');
+    if (!channel.unipile_account_id || channel.transport !== 'unipile') {
+      throw new NotFoundException('Este canal no se puede reconectar: vuelve a conectarlo');
+    }
+
+    const { url } = await this.unipile.createReconnectLink(channel.unipile_account_id as string, {
+      name: channel.id as string,
+      ...this.hostedAuthUrls(origin),
+    });
+    return { channelId: channel.id as string, url };
+  }
+
+  private hostedAuthUrls(origin?: string | null) {
+    const webhookBase = this.config.get<string>('WEBHOOK_BASE_URL') ?? this.config.get<string>('API_URL');
+    const webUrl = resolveWebUrl(this.config, origin);
+    const secret = this.config.getOrThrow<string>('UNIPILE_WEBHOOK_SECRET');
+    return {
+      notify_url: `${webhookBase}/api/webhooks/unipile/account?secret=${encodeURIComponent(secret)}`,
+      success_redirect_url: `${webUrl}/dashboard/channels?connected=1`,
+      failure_redirect_url: `${webUrl}/dashboard/channels?error=1`,
+    };
   }
 
   /**
@@ -243,9 +276,14 @@ export class ChannelsService {
 
     for (const ch of orgLinked ?? []) {
       const acc = accounts.find((a) => a.id === ch.unipile_account_id);
-      if (acc) {
+      if (!acc) continue;
+      if (UnipileService.isAccountHealthy(acc)) {
         await this.markConnected(ch.id as string, acc);
         linked += 1;
+      } else {
+        // La cuenta existe pero la sesión está caída (CREDENTIALS/ERROR): no
+        // la damos por conectada; el usuario tiene que reconectarla.
+        await this.markSessionLost(ch.id as string, acc);
       }
     }
 
@@ -313,6 +351,63 @@ export class ChannelsService {
       // Si no podemos enriquecer, al menos guardamos el account_id.
       await this.markConnected(channelId, { id: payload.account_id });
     }
+  }
+
+  /**
+   * Webhook `account_status` de Unipile: cambios de estado de una cuenta ya
+   * conectada (sesión cerrada, recuperada, borrada…). Payload:
+   *   { AccountStatus: { account_id, account_type, message } }
+   * con message OK | CONNECTING | CREDENTIALS | ERROR | STOPPED | DELETED | …
+   */
+  async handleAccountStatus(payload: Record<string, unknown>) {
+    const st = (payload.AccountStatus ?? payload) as Record<string, unknown>;
+    const accountId = typeof st.account_id === 'string' ? st.account_id : null;
+    const message = String(st.message ?? st.status ?? '').toUpperCase();
+    if (!accountId || !message) return;
+
+    const { data: channel } = await this.supabase.admin
+      .from('channels')
+      .select('id, status')
+      .eq('unipile_account_id', accountId)
+      .maybeSingle();
+    if (!channel) return;
+
+    if (message === 'OK' || message === 'RECONNECTED' || message === 'CREATION_SUCCESS') {
+      if (channel.status !== 'connected') {
+        await this.supabase.admin
+          .from('channels')
+          .update({ status: 'connected', last_error: null, connected_at: new Date().toISOString() })
+          .eq('id', channel.id);
+        this.logger.log(`Canal ${channel.id as string} vuelve a estar conectado (${message})`);
+      }
+      return;
+    }
+    if (message === 'DELETED') {
+      await this.supabase.admin
+        .from('channels')
+        .update({ status: 'disconnected', unipile_account_id: null, last_error: 'La cuenta se eliminó en el proveedor' })
+        .eq('id', channel.id);
+      return;
+    }
+    if (['CREDENTIALS', 'ERROR', 'STOPPED', 'DISCONNECTED', 'PERMISSIONS'].includes(message)) {
+      await this.markSessionLost(channel.id as string, { id: accountId, sources: [{ status: message }] });
+    }
+  }
+
+  /** La sesión del número se ha cerrado: el canal queda en error hasta reconectar. */
+  private async markSessionLost(channelId: string, account: UnipileAccount) {
+    const reason = account.sources?.find((s) => s.status && s.status !== 'OK')?.status ?? 'CREDENTIALS';
+    const { data } = await this.supabase.admin
+      .from('channels')
+      .update({
+        status: 'error',
+        last_error:
+          'WhatsApp cerró la sesión de este número (p. ej. por cambio de teléfono). Pulsa "Reconectar" y escanea el código QR.',
+      })
+      .eq('id', channelId)
+      .neq('status', 'error')
+      .select('id');
+    if (data?.length) this.logger.warn(`Canal ${channelId} sin sesión (${reason}): requiere reconexión`);
   }
 
   private async markConnected(channelId: string, account: UnipileAccount) {

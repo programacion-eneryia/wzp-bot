@@ -230,6 +230,24 @@ export default function ChannelsManager({
     }
   }
 
+  // Reconecta el mismo número (misma cuenta y mismos chats): abre el QR de nuevo.
+  async function reconnect(id: string) {
+    setBusy(id);
+    setError(null);
+    try {
+      const res = await fetch(`${API_URL}/api/channels/${id}/reconnect`, {
+        method: "POST",
+        headers: await authHeaders(),
+      });
+      if (!res.ok) throw new Error((await res.json())?.message ?? "Error al reconectar");
+      const { url } = (await res.json()) as { url: string };
+      window.location.href = url;
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Error al reconectar");
+      setBusy(null);
+    }
+  }
+
   async function disconnect(id: string) {
     setBusy(id);
     setError(null);
@@ -343,11 +361,28 @@ export default function ChannelsManager({
                 <span className={`${styles.status} ${styles[`status_${c.status}`]}`}>
                   {STATUS_LABEL[c.status]}
                 </span>
+                {isAdmin && c.status === "error" && (
+                  <button
+                    className={styles.connectBtn}
+                    disabled={busy !== null}
+                    onClick={() => reconnect(c.id)}
+                  >
+                    {busy === c.id ? "Abriendo…" : "Reconectar"}
+                  </button>
+                )}
                 {isAdmin && (
                   <button
                     className={styles.disconnectBtn}
                     disabled={busy !== null}
-                    onClick={() => disconnect(c.id)}
+                    onClick={() => {
+                      if (
+                        confirm(
+                          "¿Desconectar este número? Si solo se ha cerrado la sesión, usa “Reconectar” para conservar los chats.",
+                        )
+                      ) {
+                        void disconnect(c.id);
+                      }
+                    }}
                   >
                     {busy === c.id ? "…" : "Desconectar"}
                   </button>
