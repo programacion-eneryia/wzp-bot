@@ -79,6 +79,13 @@ export class TransportService {
     const transport = asTransport(params.transport);
     switch (transport) {
       case 'unipile': {
+        // Si ya hay chat con ese teléfono (p.ej. tras reconectar el número, que
+        // cambia los ids de chat), escribimos en él en vez de "abrir" uno nuevo.
+        const existing = await this.unipile.findChatByPhone(params.accountId, params.recipientId);
+        if (existing) {
+          await this.unipile.sendMessageToChat(existing, params.text);
+          return { chatId: existing };
+        }
         const res = await this.unipile.startNewChat(params.accountId, params.recipientId, params.text);
         return { chatId: res.chat_id ?? null };
       }

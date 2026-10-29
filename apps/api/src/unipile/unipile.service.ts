@@ -32,10 +32,25 @@ export type UnipileChat = {
   name?: string;
   provider_id?: string;
   attendee_provider_id?: string;
+  account_id?: string;
+  /** 0 = privado, 1 = grupo. */
+  type?: number;
   timestamp?: string;
   unread_count?: number;
   [key: string]: unknown;
 };
+
+/** Margen para dar por "recién enviado" un mensaje al verificar un envío dudoso. */
+const JUST_SENT_MS = 3 * 60_000;
+
+function msgTimeMs(m: UnipileMessage): number {
+  const t = Date.parse(String(m.timestamp ?? m.date ?? ''));
+  return Number.isFinite(t) ? t : 0;
+}
+
+function normalizeText(text: string): string {
+  return text.replace(/\r\n?/g, '\n').replace(/[ \t]+/g, ' ').replace(/\s*\n\s*/g, '\n').trim();
+}
 
 export type UnipileAttachment = {
   id: string;
@@ -278,7 +293,36 @@ export class UnipileService implements OnModuleInit {
       if (detail.includes('disconnected_account')) {
         throw new HttpException('No se pudo enviar el mensaje: cuenta desconectada (disconnected_account)', res.status);
       }
+      // WhatsApp a veces entrega el mensaje y aun así Unipile responde con un
+      // error (p.ej. `account_restricted` al escribir a contactos nuevos desde
+      // un número recién vinculado). Si el último mensaje del chat ya es el
+      // nuestro, el envío fue bien: no lo damos por fallido (si no, se repetiría
+      // y su eco se tomaría por un mensaje manual que pausa la IA).
+      if (await this.wasJustSent(chatId, text)) {
+        this.logger.warn(`Unipile send → ${res.status} pero el mensaje consta como enviado en el chat ${chatId}`);
+        return;
+      }
       throw new HttpException(`No se pudo enviar el mensaje (${res.status})`, res.status);
+    }
+  }
+
+  /**
+   * Chat 1:1 que YA existe en la cuenta con un teléfono (dígitos E.164 sin
+   * `+`). `null` si no hay chat o WhatsApp no lo expone por teléfono.
+   */
+  async findChatByPhone(accountId: string, phoneDigits: string): Promise<string | null> {
+    const digits = phoneDigits.replace(/\D/g, '');
+    if (digits.length < 6) return null;
+    try {
+      const data = await this.request<{ items?: UnipileChat[] }>(
+        `/chat_attendees/${encodeURIComponent(`${digits}@s.whatsapp.net`)}/chats?account_id=${encodeURIComponent(accountId)}`,
+      );
+      const chat = (data.items ?? []).find(
+        (c) => c.id && (!c.account_id || c.account_id === accountId) && (c.type ?? 0) === 0,
+      );
+      return chat?.id ?? null;
+    } catch {
+      return null;
     }
   }
 
@@ -308,9 +352,30 @@ export class UnipileService implements OnModuleInit {
       if (body.includes('disconnected_account')) {
         throw new HttpException('No se pudo iniciar el chat: cuenta desconectada (disconnected_account)', res.status);
       }
+      // Mismo caso que en `sendMessageToChat`: el mensaje puede haber salido
+      // aunque Unipile devuelva error. Comprobamos el chat de ese teléfono.
+      const chatId = await this.findChatByPhone(accountId, attendeeId);
+      if (chatId && (await this.wasJustSent(chatId, text))) {
+        this.logger.warn(`Unipile startChat → ${res.status} pero el mensaje consta como enviado en el chat ${chatId}`);
+        return { chat_id: chatId };
+      }
       throw new HttpException(`No se pudo iniciar el chat (${res.status})`, res.status);
     }
     return (body ? safeJson(body) : {}) as { chat_id?: string };
+  }
+
+  /** ¿El último mensaje del chat es nuestro, con este texto y de hace un momento? */
+  private async wasJustSent(chatId: string, text: string): Promise<boolean> {
+    try {
+      const msgs = await this.listChatMessages(chatId, 3);
+      const latest = [...msgs].sort((a, b) => msgTimeMs(b) - msgTimeMs(a))[0];
+      if (!latest || !(latest.is_sender === 1 || latest.is_sender === true)) return false;
+      if (normalizeText(latest.text ?? '') !== normalizeText(text)) return false;
+      const at = msgTimeMs(latest);
+      return !Number.isFinite(at) || at === 0 || Date.now() - at < JUST_SENT_MS;
+    } catch {
+      return false;
+    }
   }
 
   // ---------------------------------------------------------------------------

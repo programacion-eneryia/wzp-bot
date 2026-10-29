@@ -511,9 +511,30 @@ export class InboxService {
    * El teléfono viene en `specifics.phone_number` o en `public_identifier`
    * (`<num>@s.whatsapp.net`); `provider_id` suele ser el id interno `@lid`.
    */
-  private async resolveAttendee(chatId: string): Promise<{ name?: string; handle?: string }> {
-    const { name, phone } = await this.messaging.chatContact(chatId);
-    return { name: name ?? undefined, handle: phone ?? undefined };
+  private async resolveAttendee(
+    chatId: string,
+  ): Promise<{ name?: string; handle?: string; selfOnly?: boolean }> {
+    const { name, phone, selfOnly } = await this.messaging.chatContact(chatId);
+    return { name: name ?? undefined, handle: phone ?? undefined, selfOnly };
+  }
+
+  /**
+   * Texto del primer mensaje del chat si TODOS los mensajes que hay son
+   * nuestros (es decir, aún no ha contestado nadie); `null` en otro caso.
+   */
+  private async firstOutboundIfOnlyOurs(chatId: string): Promise<string | null> {
+    try {
+      const msgs = await this.unipile.listChatMessages(chatId, 5);
+      const withText = msgs.filter((m) => (m.text ?? '').trim());
+      if (withText.length === 0) return null;
+      if (withText.some((m) => !(m.is_sender === 1 || m.is_sender === true))) return null;
+      const first = [...withText].sort(
+        (a, b) => Date.parse(String(a.timestamp ?? a.date ?? '')) - Date.parse(String(b.timestamp ?? b.date ?? '')),
+      )[0];
+      return (first.text ?? '').trim() || null;
+    } catch {
+      return null;
+    }
   }
 
   /**
@@ -542,6 +563,8 @@ export class InboxService {
 
       for (const chat of chats) {
         if (!chat.id) continue;
+        // Avisos del propio WhatsApp ("0@s.whatsapp.net"): no es un contacto.
+        if (String(chat.provider_id ?? '').startsWith('0@')) continue;
         chatsSeen += 1;
         // Solo creamos la conversación; el historial se carga al abrir el chat
         // (get → importMessages), igual que WhatsApp Web. Así el sync es rápido.
@@ -715,6 +738,7 @@ export class InboxService {
     let name = chat.name?.trim();
     let handle: string | null = null;
     const resolved = await this.resolveAttendee(chat.id);
+    if (resolved.selfOnly && !existing) return null; // chat con uno mismo
     if (!name && resolved.name) name = resolved.name;
     if (resolved.handle) handle = resolved.handle;
 
@@ -722,6 +746,14 @@ export class InboxService {
     // su conversación: así no aparece duplicado ni con la IA en pausa.
     if (!existing && handle) {
       existing = await this.messaging.linkIntakeConversation(orgId, channel, chat.id, handle, cols);
+    }
+    // Teléfono oculto (chat por LID): si lo único que hay es nuestro saludo,
+    // reconocemos al lead por el nombre.
+    if (!existing && !handle) {
+      const greeting = await this.firstOutboundIfOnlyOurs(chat.id);
+      if (greeting) {
+        existing = await this.messaging.linkLeadByOutboundName(orgId, channel, chat.id, greeting, cols);
+      }
     }
 
     if (existing) {

@@ -29,13 +29,18 @@ import {
 import { prefillCalendarLinksInText } from '../common/calendar-link';
 import { DEBOUNCE_MS, type OutgoingJob, type RespondJob } from './queues';
 
-/** Margen tras registrar un lead en el que su primer mensaje saliente se toma como la plantilla de GHL. */
-const FIRST_CONTACT_WINDOW_MS = 60 * 60_000;
-const ECHO_GRACE_MS = 5_000;
+/**
+ * Espera antes de tomar el eco de un mensaje nuestro como "manual": el envío
+ * se registra justo después de salir (y, si Unipile respondió con error pero el
+ * mensaje salió, tras comprobarlo en el chat), así que el eco puede adelantarse.
+ */
+const ECHO_GRACE_MS = 8_000;
 /** Reintentos (cada ECHO_GRACE_MS) esperando al lead cuando su plantilla llega antes. */
 const ECHO_LEAD_WAIT_TRIES = 3;
 /** Antigüedad máxima de un chat para vincularlo a un lead que acaba de entrar. */
 const RECENT_CHAT_MS = 30 * 60_000;
+/** Antigüedad máxima de un lead sin chat para reconocerlo por el nombre en nuestro saludo. */
+const LEAD_NAME_LINK_WINDOW_MS = 14 * 24 * 60 * 60_000;
 /** Una plantilla de primer contacto más antigua que esto ya no arranca seguimientos. */
 const FIRST_CONTACT_FOLLOWUP_WINDOW_MS = 24 * 60 * 60_000;
 const RESPOND_RETRY_MS = 10 * 60_000;
@@ -150,6 +155,7 @@ export class MessagingService {
       }
 
       const conv = await this.upsertConversation(orgId, channel, evt);
+      if (!conv) return;
 
       // Anti-duplicado: si ya guardamos este mensaje, no lo procesamos otra vez.
       if (evt.messageId && (await this.messageExists(conv.id, evt.messageId))) {
@@ -697,22 +703,18 @@ export class MessagingService {
 
       if (evt.messageId && (await this.messageExists(conv.id as string, evt.messageId))) return;
 
-      // La plantilla de primer contacto que GHL envía al registrar el lead no es
-      // una persona llevando el chat: si es el PRIMER mensaje NUESTRO de una
-      // conversación de lead recién creada, no pausamos (aunque el lead ya haya
-      // contestado: su respuesta puede llegarnos antes que el eco de la
-      // plantilla). Cualquier otro mensaje manual sí pausa.
+      // El PRIMER mensaje NUESTRO en la conversación de un lead (la plantilla
+      // que envía GHL al registrarlo, o el saludo que escribe una persona desde
+      // el móvil cuando esa plantilla falla) es el primer contacto, no alguien
+      // "quitándole" el chat al bot: no pausamos y arrancan los seguimientos
+      // (aunque el lead ya haya contestado: su respuesta puede llegarnos antes
+      // que el eco). Cualquier otro mensaje manual sí pausa.
       const { count: priorMsgs } = await this.supabase.admin
         .from('messages')
         .select('id', { count: 'exact', head: true })
         .eq('conversation_id', conv.id)
         .in('role', ['assistant', 'agent']);
-      const createdAt = new Date(String(conv.created_at ?? '')).getTime();
-      const firstContact =
-        (priorMsgs ?? 0) === 0 &&
-        Boolean(conv.mode_locked || conv.source) &&
-        Number.isFinite(createdAt) &&
-        Date.now() - createdAt < FIRST_CONTACT_WINDOW_MS;
+      const firstContact = (priorMsgs ?? 0) === 0 && Boolean(conv.mode_locked || conv.source);
 
       await this.supabase.admin.from('messages').insert({
         conversation_id: conv.id,
@@ -1964,15 +1966,70 @@ export class MessagingService {
   }
 
   /** Nombre y teléfono real del contacto de un chat (vía participantes). */
-  async chatContact(chatId: string): Promise<{ name: string | null; phone: string | null }> {
+  async chatContact(
+    chatId: string,
+  ): Promise<{ name: string | null; phone: string | null; selfOnly?: boolean }> {
     try {
       const attendees = await this.unipile.listChatAttendees(chatId);
       const other = attendees.find((a) => !(a.is_self === 1 || a.is_self === true));
       if (other) return { name: other.name?.trim() || null, phone: phoneOfAttendee(other) };
+      // Solo estamos nosotros: es el chat "mensajes a mí mismo" de WhatsApp.
+      if (attendees.length > 0) return { name: null, phone: null, selfOnly: true };
     } catch (err) {
       this.logger.warn(`No se pudieron leer los participantes del chat ${chatId}: ${String(err)}`);
     }
     return { name: null, phone: null };
+  }
+
+  /**
+   * WhatsApp oculta el teléfono de algunos contactos (chats por "LID", p.ej.
+   * cuando una persona escribe desde el móvil a un número que no tiene
+   * guardado). Si el primer mensaje del chat es NUESTRO saludo a un lead que
+   * entró por GHL/formulario y aún no tiene chat, lo reconocemos por el nombre
+   * ("Hola Sofía! …") y vinculamos el chat a su conversación. Solo si el nombre
+   * identifica a UN único lead reciente sin chat; si hay duda, no se vincula.
+   */
+  async linkLeadByOutboundName(
+    orgId: string,
+    channel: { id: string; provider: string },
+    chatId: string,
+    ourText: string,
+    cols = CONV_COLS,
+  ): Promise<Record<string, any> | null> {
+    const words = new Set(normalizeName(ourText).split(/[^a-z0-9]+/).filter(Boolean));
+    if (words.size === 0) return null;
+    const since = new Date(Date.now() - LEAD_NAME_LINK_WINDOW_MS).toISOString();
+    const { data } = await this.supabase.admin
+      .from('conversations')
+      .select(`${cols}, contact_name, last_outbound_at`)
+      .eq('organization_id', orgId)
+      .eq('provider', channel.provider)
+      .is('unipile_chat_id', null)
+      .is('contact_external_id', null)
+      .not('source', 'is', null)
+      .is('archived_at', null)
+      .eq('is_test', false)
+      .gte('created_at', since)
+      .limit(100);
+    let matches = ((data ?? []) as unknown as Record<string, any>[]).filter((c) => {
+      const first = normalizeName(String(c.contact_name ?? '')).split(/[^a-z0-9]+/)[0] ?? '';
+      return first.length >= 3 && words.has(first);
+    });
+    // Varios leads con ese nombre: un saludo va a quien aún no se ha escrito.
+    if (matches.length > 1) matches = matches.filter((c) => !c.last_outbound_at);
+    if (matches.length !== 1) return null;
+    const conv = matches[0];
+    const { data: linked } = await this.supabase.admin
+      .from('conversations')
+      .update({ unipile_chat_id: chatId, contact_external_id: chatId, channel_id: channel.id })
+      .eq('id', conv.id)
+      .is('unipile_chat_id', null)
+      .select(cols);
+    if (!linked?.length) return null;
+    this.logger.log(
+      `Chat ${chatId} (teléfono oculto) vinculado por nombre a la conversación ${conv.id as string}`,
+    );
+    return linked[0] as unknown as Record<string, any>;
   }
 
   /**
@@ -1989,20 +2046,27 @@ export class MessagingService {
     phone: string,
     cols = CONV_COLS,
   ) {
+    // Candidatas: mismo teléfono (en cualquiera de sus formas) y proveedor.
+    // Incluye las que YA tienen chat: al reconectar un número WhatsApp cambia el
+    // id de todos los chats, y el chat "nuevo" de ese teléfono es la misma
+    // conversación (un número = un chat 1:1 por cuenta). Las sin chat primero.
     const { data } = await this.supabase.admin
       .from('conversations')
-      .select(`${cols}, channel_id`)
+      .select(`${cols}, channel_id, unipile_chat_id, archived_at`)
       .eq('organization_id', orgId)
       .eq('provider', channel.provider)
       .in('contact_handle', phoneVariants(phone))
-      .is('unipile_chat_id', null)
-      .is('contact_external_id', null)
+      .or(`contact_external_id.is.null,contact_external_id.neq.${chatId}`)
       .eq('is_test', false)
-      .order('created_at', { ascending: false })
-      .limit(5);
+      .order('unipile_chat_id', { ascending: true, nullsFirst: true })
+      .order('archived_at', { ascending: true, nullsFirst: true })
+      .order('last_message_at', { ascending: false, nullsFirst: false })
+      .limit(6);
     const candidates = (data ?? []) as unknown as Record<string, any>[];
     // Vale la del mismo canal, sin canal, o en un canal que ya no está conectado
     // (p.ej. el lead de GHL se creó apuntando a un canal caído o sustituido).
+    // Una conversación con chat en OTRO canal conectado es otro número nuestro
+    // hablando con el mismo contacto: esa no se toca.
     let conv: Record<string, any> | undefined;
     for (const c of candidates) {
       if (!c.channel_id || c.channel_id === channel.id) {
@@ -2028,12 +2092,16 @@ export class MessagingService {
         contact_external_id: chatId,
         channel_id: channel.id,
         contact_handle: phone,
+        archived_at: null,
       })
       .eq('id', conv.id)
-      .is('unipile_chat_id', null)
+      .or(`contact_external_id.is.null,contact_external_id.neq.${chatId}`)
       .select(cols);
     if (!linked?.length) return this.findByChat(orgId, channel.id, chatId, cols);
-    this.logger.log(`Chat ${chatId} vinculado a la conversación existente ${conv.id as string}`);
+    this.logger.log(
+      `Chat ${chatId} vinculado a la conversación existente ${conv.id as string}` +
+        (conv.unipile_chat_id ? ` (sustituye al chat ${String(conv.unipile_chat_id)})` : ''),
+    );
     return linked[0] as unknown as Record<string, any>;
   }
 
@@ -2111,8 +2179,13 @@ export class MessagingService {
     const contact = fromJid
       ? { name: null, phone: fromJid }
       : await this.chatContact(evt.chatId);
+    if (contact.selfOnly) return null; // chat con uno mismo: no es un contacto
     if (contact.phone) {
       const linked = await this.linkIntakeConversation(orgId, channel, evt.chatId, contact.phone);
+      if (linked) return linked;
+    } else if (evt.fromSelf && evt.text) {
+      // Teléfono oculto y el mensaje es nuestro: ¿es el saludo a un lead sin chat?
+      const linked = await this.linkLeadByOutboundName(orgId, channel, evt.chatId, evt.text);
       if (linked) return linked;
     }
 
@@ -2297,6 +2370,14 @@ function randomSeconds(min: number, max: number): number {
 }
 
 /** Texto comparable entre lo que guardamos y lo que devuelve WhatsApp. */
+/** Minúsculas y sin acentos, para comparar nombres de forma laxa. */
+function normalizeName(text: string): string {
+  return text
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase();
+}
+
 export function normalizeForCompare(text: string): string {
   return text
     .replace(/\r\n?/g, '\n')
