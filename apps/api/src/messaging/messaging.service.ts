@@ -57,7 +57,7 @@ const FOLLOWUP_STOP_STAGES = new Set(['call_scheduled', 'won', 'lost']);
 const FOLLOWUP_RESET = { next_followup_at: null, followup_count: 0 } as const;
 
 const CONV_COLS =
-  'id, ai_enabled, mode, mode_locked, contact_name, contact_external_id, contact_handle, unread_count';
+  'id, ai_enabled, mode, mode_locked, contact_name, contact_external_id, contact_handle, unread_count, source';
 
 /** Lock obsoleto: si una respuesta/envío quedó "en curso" más de esto, se reclama. */
 const LOCK_STALE_MS = 3 * 60 * 1000;
@@ -156,13 +156,18 @@ export class MessagingService {
         return;
       }
 
-      const conv = await this.upsertConversation(orgId, channel, evt);
+      let conv = await this.upsertConversation(orgId, channel, evt);
       if (!conv) return;
 
       // Anti-duplicado: si ya guardamos este mensaje, no lo procesamos otra vez.
       if (evt.messageId && (await this.messageExists(conv.id, evt.messageId))) {
         return;
       }
+
+      // El teléfono del contacto puede aparecer solo ahora (WhatsApp lo oculta
+      // hasta que escribe). Si resulta ser un lead que ya teníamos sin chat, el
+      // chat es el suyo: fusionamos en su conversación (agente, GHL, IA).
+      conv = await this.adoptLeadByRevealedPhone(orgId, conv, phoneFromJid(evt.senderProviderId));
 
       await this.supabase.admin.from('messages').insert({
         conversation_id: conv.id,
@@ -1984,6 +1989,56 @@ export class MessagingService {
       this.logger.warn(`No se pudieron leer los participantes del chat ${chatId}: ${String(err)}`);
     }
     return { name: null, phone: null };
+  }
+
+  /**
+   * Una conversación creada desde un chat SIN teléfono visible resulta ser,
+   * ahora que el contacto escribe y WhatsApp revela su número, un lead que ya
+   * teníamos (GHL/formulario) sin chat: se fusiona en la conversación del lead
+   * (conserva su agente, su setter_id en GHL y su IA) y se sigue con esa.
+   */
+  private async adoptLeadByRevealedPhone(
+    orgId: string,
+    conv: Record<string, any>,
+    phone: string | null,
+  ): Promise<Record<string, any>> {
+    try {
+      if (!phone || conv.source) return conv;
+      const hadPhone = /^\+\d{6,15}$/.test(String(conv.contact_handle ?? ''));
+      if (hadPhone && samePhone(String(conv.contact_handle), phone.replace(/\D/g, ''))) return conv;
+      const { data: leads } = await this.supabase.admin
+        .from('conversations')
+        .select('id')
+        .eq('organization_id', orgId)
+        .in('contact_handle', phoneVariants(phone))
+        .is('unipile_chat_id', null)
+        .is('contact_external_id', null)
+        .not('source', 'is', null)
+        .is('archived_at', null)
+        .eq('is_test', false)
+        .neq('id', conv.id)
+        .order('created_at', { ascending: false })
+        .limit(1);
+      const lead = leads?.[0];
+      if (!lead) return conv;
+      const { error } = await this.supabase.admin.rpc('merge_conversations', {
+        p_keep: lead.id,
+        p_drop: conv.id,
+      });
+      if (error) throw error;
+      const { data: merged } = await this.supabase.admin
+        .from('conversations')
+        .select(CONV_COLS)
+        .eq('id', lead.id)
+        .maybeSingle();
+      this.logger.log(
+        `Chat ${String(conv.contact_external_id)} (${phone}) fusionado en la conversación del lead ${String(lead.id)}`,
+      );
+      return (merged as unknown as Record<string, any> | null) ?? conv;
+    } catch (err) {
+      this.logger.warn(`No se pudo fusionar el chat con su lead por teléfono: ${String(err)}`);
+      return conv;
+    }
   }
 
   /**
