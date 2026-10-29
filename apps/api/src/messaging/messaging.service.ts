@@ -2123,15 +2123,18 @@ export class MessagingService {
       .order('last_message_at', { ascending: false, nullsFirst: false })
       .limit(6);
     const candidates = (data ?? []) as unknown as Record<string, any>[];
-    // Vale la del mismo canal, sin canal, o en un canal que ya no está conectado
-    // (p.ej. el lead de GHL se creó apuntando a un canal caído o sustituido).
-    // Una conversación con chat en OTRO canal conectado es otro número nuestro
-    // hablando con el mismo contacto: esa no se toca.
+    // Vale la que no tiene chat (sin canal o en este canal) y la que tiene un
+    // chat de un canal que ya no está conectado (ids antiguos de antes de
+    // reconectar). Una conversación con chat vivo en este u OTRO canal
+    // conectado no se toca: sería otro chat distinto con el mismo contacto.
     let conv: Record<string, any> | undefined;
     for (const c of candidates) {
       if (!c.channel_id || c.channel_id === channel.id) {
-        conv = c;
-        break;
+        if (!c.unipile_chat_id) {
+          conv = c;
+          break;
+        }
+        continue;
       }
       const { data: other } = await this.supabase.admin
         .from('channels')
