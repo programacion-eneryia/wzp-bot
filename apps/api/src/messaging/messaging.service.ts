@@ -37,6 +37,8 @@ import { DEBOUNCE_MS, type OutgoingJob, type RespondJob } from './queues';
 const ECHO_GRACE_MS = 8_000;
 /** Reintentos (cada ECHO_GRACE_MS) esperando al lead cuando su plantilla llega antes. */
 const ECHO_LEAD_WAIT_TRIES = 3;
+/** Reintentos (cada ECHO_GRACE_MS) esperando a que un envío nuestro quede guardado. */
+const ECHO_OWN_WAIT_TRIES = 3;
 /** Antigüedad máxima de un chat para vincularlo a un lead que acaba de entrar. */
 const RECENT_CHAT_MS = 30 * 60_000;
 /** Antigüedad máxima de un lead sin chat para reconocerlo por el nombre en nuestro saludo. */
@@ -696,10 +698,13 @@ export class MessagingService {
         return (recent ?? []).some((m) => normalizeForCompare(String(m.content ?? '')) === wanted);
       };
       // Lo que enviamos nosotros se guarda justo después de enviarlo: si el eco
-      // llega antes, esperamos un momento antes de tomarlo como mensaje manual.
-      if (await isOurs()) return;
-      await sleep(ECHO_GRACE_MS);
-      if (await isOurs()) return;
+      // llega antes, esperamos antes de tomarlo como mensaje manual. Cuando
+      // Unipile responde con error a un envío que sí salió, comprobamos el chat
+      // y lo guardamos unos segundos más tarde: por eso se espera varias veces.
+      for (let i = 0; i <= ECHO_OWN_WAIT_TRIES; i++) {
+        if (i > 0) await sleep(ECHO_GRACE_MS);
+        if (await isOurs()) return;
+      }
 
       if (evt.messageId && (await this.messageExists(conv.id as string, evt.messageId))) return;
 

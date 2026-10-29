@@ -42,6 +42,8 @@ export type UnipileChat = {
 
 /** Margen para dar por "recién enviado" un mensaje al verificar un envío dudoso. */
 const JUST_SENT_MS = 3 * 60_000;
+const JUST_SENT_TRIES = 5;
+const JUST_SENT_POLL_MS = 2_000;
 
 function msgTimeMs(m: UnipileMessage): number {
   const t = Date.parse(String(m.timestamp ?? m.date ?? ''));
@@ -364,18 +366,29 @@ export class UnipileService implements OnModuleInit {
     return (body ? safeJson(body) : {}) as { chat_id?: string };
   }
 
-  /** ¿El último mensaje del chat es nuestro, con este texto y de hace un momento? */
+  /**
+   * ¿Hay en el chat un mensaje nuestro reciente con este texto? El mensaje
+   * tarda unos segundos en aparecer en la lista tras enviarse, así que se
+   * comprueba varias veces antes de darlo por no enviado.
+   */
   private async wasJustSent(chatId: string, text: string): Promise<boolean> {
-    try {
-      const msgs = await this.listChatMessages(chatId, 3);
-      const latest = [...msgs].sort((a, b) => msgTimeMs(b) - msgTimeMs(a))[0];
-      if (!latest || !(latest.is_sender === 1 || latest.is_sender === true)) return false;
-      if (normalizeText(latest.text ?? '') !== normalizeText(text)) return false;
-      const at = msgTimeMs(latest);
-      return !Number.isFinite(at) || at === 0 || Date.now() - at < JUST_SENT_MS;
-    } catch {
-      return false;
+    const wanted = normalizeText(text);
+    for (let i = 0; i < JUST_SENT_TRIES; i++) {
+      if (i > 0) await new Promise((r) => setTimeout(r, JUST_SENT_POLL_MS));
+      try {
+        const msgs = await this.listChatMessages(chatId, 5);
+        const hit = msgs.some((m) => {
+          if (!(m.is_sender === 1 || m.is_sender === true)) return false;
+          if (normalizeText(m.text ?? '') !== wanted) return false;
+          const at = msgTimeMs(m);
+          return at === 0 || Date.now() - at < JUST_SENT_MS;
+        });
+        if (hit) return true;
+      } catch {
+        // seguimos intentando
+      }
     }
+    return false;
   }
 
   // ---------------------------------------------------------------------------
