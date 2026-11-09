@@ -16,6 +16,7 @@ import { StagesService } from '../stages/stages.service';
 import { GhlSyncService } from '../ghl/ghl-sync.service';
 import { ErrorLogService } from '../platform/error-log.service';
 import { newConversationsStartPaused } from '../common/flags';
+import { greetingName, templateSkeleton } from '../common/template';
 import {
   betterName,
   isPlaceholderName,
@@ -57,7 +58,11 @@ const FOLLOWUP_STOP_STAGES = new Set(['call_scheduled', 'won', 'lost']);
 const FOLLOWUP_RESET = { next_followup_at: null, followup_count: 0, resume_at: null } as const;
 
 const CONV_COLS =
-  'id, ai_enabled, mode, mode_locked, contact_name, contact_external_id, contact_handle, unread_count, source';
+  'id, ai_enabled, mode, mode_locked, contact_name, contact_external_id, contact_handle, unread_count, source, last_outbound_at';
+
+/** Plantilla de primer contacto: con cuántos leads recientes debe coincidir y hasta cuándo se mira. */
+const FIRST_CONTACT_TEMPLATE_MIN_MATCHES = 2;
+const FIRST_CONTACT_TEMPLATE_LOOKBACK_MS = 60 * 24 * 60 * 60_000;
 
 /** Lock obsoleto: si una respuesta/envío quedó "en curso" más de esto, se reclama. */
 const LOCK_STALE_MS = 3 * 60 * 1000;
@@ -694,15 +699,24 @@ export class MessagingService {
         }
       }
       if (!conv) {
-        // Nadie tenía este chat: una persona del equipo ha escrito desde el móvil
-        // a un contacto nuevo. Si el texto es de un envío nuestro reciente en
+        // Nadie tenía este chat. Si el texto es de un envío nuestro reciente en
         // otra conversación (carrera con startChat), no es manual: fuera.
         if (await this.sentByUsRecently(orgId, text)) return;
-        conv = await this.createFromManualEcho(orgId, channel, evt, contact);
+        // ¿Es la plantilla de primer contacto que GHL manda a cada lead nuevo?
+        // A veces GHL envía el WhatsApp pero no llega a avisarnos del lead: si
+        // el texto es el mismo que el de los últimos leads, es un lead más (IA
+        // activa y seguimientos), no una persona escribiendo desde el móvil.
+        const templateSource = await this.firstContactTemplateSource(orgId, text);
+        conv = await this.createFromManualEcho(orgId, channel, evt, contact, templateSource);
         if (!conv) return;
         this.logger.log(
-          `Chat ${evt.chatId} abierto a mano desde el móvil: conversación ${conv.id as string} creada con la IA ${conv.ai_enabled ? 'activa' : 'en pausa'}`,
+          templateSource
+            ? `Chat ${evt.chatId}: plantilla de primer contacto sin aviso de lead; conversación ${conv.id as string} creada como lead (${templateSource}) con la IA ${conv.ai_enabled ? 'activa' : 'en pausa'}`
+            : `Chat ${evt.chatId} abierto a mano desde el móvil: conversación ${conv.id as string} creada con la IA ${conv.ai_enabled ? 'activa' : 'en pausa'}`,
         );
+        if (templateSource && conv.ai_enabled) {
+          await this.startFollowUpsAfterFirstContact(conv.id as string, conv.last_outbound_at as string);
+        }
         return;
       }
 
@@ -797,20 +811,62 @@ export class MessagingService {
   }
 
   /**
-   * Conversación para un chat que una persona del equipo ha abierto desde el
-   * móvil (no existía en el sistema). El mensaje se guarda como manual y la IA
-   * arranca en pausa si la cuenta pausa al escribir a mano: quien escribe quiere
-   * llevar ese chat; si no, el bot contestaría al contacto en cuanto respondiera.
+   * ¿Este texto es la plantilla de primer contacto que la cuenta manda a sus
+   * leads nuevos? Se compara con los primeros mensajes de los últimos leads
+   * (los que llegaron con aviso): quitando la primera línea (el saludo con el
+   * nombre), el cuerpo tiene que ser idéntico al de al menos dos de ellos.
+   * Devuelve el origen de esos leads (p. ej. `ghl`) o null si no es la plantilla.
+   */
+  private async firstContactTemplateSource(orgId: string, text: string): Promise<string | null> {
+    const skeleton = templateSkeleton(text);
+    if (!skeleton) return null;
+    const since = new Date(Date.now() - FIRST_CONTACT_TEMPLATE_LOOKBACK_MS).toISOString();
+    const { data } = await this.supabase.admin
+      .from('messages')
+      .select('content, conversations!inner(source)')
+      .eq('organization_id', orgId)
+      .eq('metadata->>source', 'external_first_contact')
+      .gte('created_at', since)
+      .order('created_at', { ascending: false })
+      .limit(150);
+    const bySource = new Map<string, number>();
+    for (const m of data ?? []) {
+      if (templateSkeleton(String(m.content ?? '')) !== skeleton) continue;
+      const source = (m.conversations as unknown as { source: string | null } | null)?.source;
+      if (!source) continue;
+      bySource.set(source, (bySource.get(source) ?? 0) + 1);
+    }
+    const best = [...bySource.entries()].sort((a, b) => b[1] - a[1])[0];
+    return best && best[1] >= FIRST_CONTACT_TEMPLATE_MIN_MATCHES ? best[0] : null;
+  }
+
+  /**
+   * Conversación para un chat que no existía en el sistema cuando llegó el eco
+   * de un mensaje nuestro.
+   *
+   *   - Sin `templateSource`: una persona del equipo ha escrito desde el móvil.
+   *     El mensaje se guarda como manual y la IA arranca en pausa si la cuenta
+   *     pausa al escribir a mano: quien escribe quiere llevar ese chat.
+   *   - Con `templateSource`: es la plantilla de primer contacto de los leads
+   *     (GHL la envió pero no nos avisó del lead). Se crea igual que un lead
+   *     que entra por el webhook: agente de leads, IA activa y seguimientos.
    */
   private async createFromManualEcho(
     orgId: string,
     channel: { id: string; provider: string },
     evt: IncomingEvent,
     contact: { name: string | null; phone: string | null } | null,
+    templateSource: string | null = null,
   ): Promise<Record<string, any> | null> {
-    const initial = await this.agents.initialForConversation(orgId, channel.id);
-    const pauseOnManual = (await this.setterConfig.getOrCreate(orgId)).pause_on_manual !== false;
+    const initial = templateSource
+      ? await this.agents.initialForLead(orgId)
+      : await this.agents.initialForConversation(orgId, channel.id);
+    const pauseOnManual =
+      !templateSource && (await this.setterConfig.getOrCreate(orgId)).pause_on_manual !== false;
     const now = new Date().toISOString();
+    const name =
+      [contact?.name, templateSource ? greetingName(evt.text) : null].find((n) => !isPlaceholderName(n)) ??
+      'Lead';
     const { data: created, error } = await this.supabase.admin
       .from('conversations')
       .insert({
@@ -820,10 +876,14 @@ export class MessagingService {
         contact_external_id: evt.chatId,
         unipile_chat_id: evt.chatId,
         contact_handle: contact?.phone ?? null,
-        contact_name: !isPlaceholderName(contact?.name) ? contact!.name : 'Lead',
+        contact_name: name,
         is_test: false,
         ai_enabled: pauseOnManual ? false : initial.ai_enabled && !newConversationsStartPaused(),
+        agent_id: initial.agent_id,
         stage: initial.stage,
+        ...(templateSource
+          ? { source: templateSource, mode: 'setter', mode_locked: true, consent_optin: true }
+          : {}),
         last_outbound_at: now,
         last_message_at: now,
       })
@@ -840,8 +900,12 @@ export class MessagingService {
       organization_id: orgId,
       role: 'agent',
       content: evt.text.trim(),
-      metadata: { message_id: evt.messageId ?? null, source: 'manual_echo' },
+      metadata: {
+        message_id: evt.messageId ?? null,
+        source: templateSource ? 'external_first_contact' : 'manual_echo',
+      },
     });
+    if (templateSource) await this.ensureLeadForConversation(orgId, created.id as string);
     void this.workflowTrigger.fire(orgId, created.id as string, 'conversation_created');
     return created as unknown as Record<string, any>;
   }
