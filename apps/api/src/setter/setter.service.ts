@@ -9,6 +9,14 @@ import { effectiveBehavior, type Agent } from '../agents/agents.types';
 import { StagesService } from '../stages/stages.service';
 import { SetterConfigService } from './setter-config.service';
 import {
+  RESUME_DIRECTIVE_RE,
+  extractResumeDirective,
+  formatDateTimeEs,
+  formatShortEs,
+  safeTz,
+  timezoneForPhone,
+} from '../common/time';
+import {
   BUBBLE_SEPARATOR,
   buildSystemPrompt,
   humanDelayMs,
@@ -65,14 +73,27 @@ export class SetterService {
     const persist = opts.persist ?? true;
     const ctx = await this.buildContext(orgId, conversationId, opts);
     if (!ctx) return [];
-    const { cfg, agent, messages } = ctx;
+    const { cfg, agent, messages, timezone } = ctx;
 
-    const raw = await this.openrouter.chat(messages, {
+    const rawModel = await this.openrouter.chat(messages, {
       model: this.modelFor(agent, cfg),
       orgId,
       conversationId,
       purpose: 'respond',
     });
+
+    // La persona pidió hablar más tarde: el modelo lo marca y el sistema
+    // retoma la conversación a esa hora (sin seguimientos antes).
+    const { text: raw, resumeAt } = extractResumeDirective(rawModel, timezone);
+    if (resumeAt) {
+      await this.supabase.admin
+        .from('conversations')
+        .update({ resume_at: resumeAt.toISOString() })
+        .eq('id', conversationId);
+      this.logger.log(`Conversación ${conversationId}: retomar el ${resumeAt.toISOString()} (${timezone})`);
+    } else if (RESUME_DIRECTIVE_RE.test(rawModel)) {
+      this.logger.warn(`Conversación ${conversationId}: marca RETOMAR inválida ignorada`);
+    }
 
     const bubbles = this.toBubbles(raw, cfg, agent);
 
@@ -111,11 +132,35 @@ export class SetterService {
       silentMinutes: number;
       /** Textos de los seguimientos ya enviados en esta racha de silencio. */
       previous?: string[];
+      /** La persona pidió que le escribiéramos más tarde y ya es el momento. */
+      resume?: boolean;
     },
   ): Promise<Bubble[]> {
     const ctx = await this.buildContext(orgId, conversationId, opts);
     if (!ctx) return [];
-    const { cfg, agent, messages } = ctx;
+    const { cfg, agent, messages, nowText } = ctx;
+
+    if (opts.resume) {
+      messages.push({
+        role: 'user',
+        content:
+          `[INSTRUCCIÓN DEL SISTEMA — RETOMAR LA CONVERSACIÓN. Este texto NO lo ha escrito la persona.]\n` +
+          `La persona te pidió que le escribieras más tarde y quedaste en hacerlo. Ya es el momento acordado (ahora es ${nowText}).\n` +
+          `- Escribe un mensaje breve y natural retomando donde lo dejasteis, como quien cumple lo prometido ("buenas, ¿qué tal? ya con más calma, te cuento…"). Sin reproches, sin decir cuánto tiempo ha pasado y sin repetir lo ya dicho.\n` +
+          `- Si tenía pendiente ver algo (un vídeo, un enlace), pregúntale si pudo verlo; si quedó una pregunta en el aire, retómala de forma ligera.\n` +
+          `- Muy breve: una o dos frases, una sola burbuja salvo que sea imprescindible.\n` +
+          `- Si en el historial la persona ya se despidió del todo, dijo que no le interesa o pidió que no le escribas, responde EXACTAMENTE: NO_SEGUIMIENTO`,
+      });
+      const rawResume = await this.openrouter.chat(messages, {
+        model: this.modelFor(agent, cfg),
+        orgId,
+        conversationId,
+        purpose: 'followup',
+        temperature: 0.7,
+      });
+      if (/NO_SEGUIMIENTO/i.test(rawResume) || !rawResume.trim()) return [];
+      return this.toBubbles(extractResumeDirective(rawResume, ctx.timezone).text, cfg, agent).slice(0, 2);
+    }
 
     const n = opts.step + 1;
     const last = n >= opts.total;
@@ -208,10 +253,18 @@ export class SetterService {
     // la de cualificación), para que el bot adapte el trato desde el inicio.
     const { data: conv } = await this.supabase.admin
       .from('conversations')
-      .select('lead_context, agent_id, channel_id, mode')
+      .select('lead_context, agent_id, channel_id, mode, contact_handle')
       .eq('id', conversationId)
       .maybeSingle();
     const leadContext = (conv?.lead_context as string | null) ?? null;
+
+    // Reloj para el modelo, en la hora de la persona (por el prefijo de su
+    // teléfono; si no se reconoce, la del negocio).
+    const timezone = safeTz(
+      timezoneForPhone(conv?.contact_handle as string | null) ?? cfg.timezone,
+    );
+    const nowMs = Date.now();
+    const nowText = formatDateTimeEs(nowMs, timezone);
 
     // Qué agente atiende: el que nos pasan, el forzado por id o el resuelto por
     // conversación → canal → setter por defecto.
@@ -262,21 +315,27 @@ export class SetterService {
         content: buildSystemPrompt(
           // El formato de salida (burbujas o un solo mensaje) debe ser el mismo
           // que luego aplica toBubbles: el del agente si tiene ajustes propios.
-          { business: effectiveBehavior(cfg, agent), agent, stageNames },
+          { business: effectiveBehavior(cfg, agent), agent, stageNames, now: { text: nowText, timezone } },
           opts.contactName,
           availabilityText,
           leadContext,
           globalBasePrompt,
         ),
       },
+      // Cada mensaje lleva su fecha/hora: así el modelo sabe cuánto tiempo ha
+      // pasado y no confunde "mañana" con "dentro de diez minutos".
       ...(history ?? [])
         .filter((m: StoredMessage) => m.role !== 'system')
-        .map((m: StoredMessage): ChatMessage => ({
-          role: m.role === 'contact' ? 'user' : 'assistant',
-          content: m.content,
-        })),
+        .map((m: StoredMessage): ChatMessage => {
+          const at = Date.parse(m.created_at);
+          const stamp = Number.isFinite(at) ? `[${formatShortEs(at, timezone)}] ` : '';
+          return {
+            role: m.role === 'contact' ? 'user' : 'assistant',
+            content: `${stamp}${m.content}`,
+          };
+        }),
     ];
 
-    return { cfg, agent, messages };
+    return { cfg, agent, messages, timezone, nowText };
   }
 }

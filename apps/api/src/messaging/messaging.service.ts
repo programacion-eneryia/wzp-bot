@@ -54,7 +54,7 @@ const FOLLOWUP_BATCH = 10;
 // insistir, el modelo responde NO_SEGUIMIENTO con el contexto delante.
 const FOLLOWUP_STOP_STAGES = new Set(['call_scheduled', 'won', 'lost']);
 /** Al recibir un mensaje del lead, el ciclo de seguimiento se reinicia. */
-const FOLLOWUP_RESET = { next_followup_at: null, followup_count: 0 } as const;
+const FOLLOWUP_RESET = { next_followup_at: null, followup_count: 0, resume_at: null } as const;
 
 const CONV_COLS =
   'id, ai_enabled, mode, mode_locked, contact_name, contact_external_id, contact_handle, unread_count, source';
@@ -667,24 +667,44 @@ export class MessagingService {
       const text = evt.text.trim();
       if (!text) return;
 
-      // No creamos chats a partir de ecos, pero sí vinculamos el de un lead que
-      // ya teníamos por teléfono (p.ej. la plantilla que GHL envía al entrar).
       const cols = 'id, ai_enabled, source, mode_locked, created_at';
       let conv = await this.findByChat(orgId, channel.id, evt.chatId, cols);
+      let contact: { name: string | null; phone: string | null; selfOnly?: boolean } | null = null;
       if (!conv) {
-        const { phone } = await this.chatContact(evt.chatId);
-        if (phone) {
+        contact = await this.chatContact(evt.chatId);
+        if (contact.selfOnly) return; // chat con uno mismo
+        if (contact.phone) {
           // GHL envía la plantilla y avisa del lead casi a la vez: si el eco llega
           // antes que el lead, esperamos a que exista su conversación.
           for (let i = 0; i <= ECHO_LEAD_WAIT_TRIES && !conv; i++) {
             if (i > 0) await sleep(ECHO_GRACE_MS);
             conv =
-              (await this.linkIntakeConversation(orgId, channel, evt.chatId, phone, cols)) ??
+              (await this.linkIntakeConversation(orgId, channel, evt.chatId, contact.phone, cols)) ??
+              (await this.findByChat(orgId, channel.id, evt.chatId, cols));
+          }
+        } else {
+          // Teléfono oculto: ¿es nuestro saludo a un lead sin chat? Si no, damos
+          // tiempo a que el envío del bot (startChat) asocie el chat a su conversación.
+          for (let i = 0; i <= ECHO_LEAD_WAIT_TRIES && !conv; i++) {
+            if (i > 0) await sleep(ECHO_GRACE_MS);
+            conv =
+              (await this.linkLeadByOutboundName(orgId, channel, evt.chatId, text, cols)) ??
               (await this.findByChat(orgId, channel.id, evt.chatId, cols));
           }
         }
       }
-      if (!conv) return;
+      if (!conv) {
+        // Nadie tenía este chat: una persona del equipo ha escrito desde el móvil
+        // a un contacto nuevo. Si el texto es de un envío nuestro reciente en
+        // otra conversación (carrera con startChat), no es manual: fuera.
+        if (await this.sentByUsRecently(orgId, text)) return;
+        conv = await this.createFromManualEcho(orgId, channel, evt, contact);
+        if (!conv) return;
+        this.logger.log(
+          `Chat ${evt.chatId} abierto a mano desde el móvil: conversación ${conv.id as string} creada con la IA ${conv.ai_enabled ? 'activa' : 'en pausa'}`,
+        );
+        return;
+      }
 
       // WhatsApp devuelve el eco con saltos de línea \r\n y espacios distintos a
       // los que guardamos: se compara normalizado, o un mensaje del bot pasaría
@@ -759,6 +779,71 @@ export class MessagingService {
     } catch (err) {
       this.logger.warn(`No se pudo procesar el eco saliente: ${String(err)}`);
     }
+  }
+
+  /** ¿Este texto lo ha enviado el sistema hace un momento en alguna conversación de la org? */
+  private async sentByUsRecently(orgId: string, text: string): Promise<boolean> {
+    const since = new Date(Date.now() - 10 * 60_000).toISOString();
+    const { data } = await this.supabase.admin
+      .from('messages')
+      .select('content')
+      .eq('organization_id', orgId)
+      .eq('role', 'assistant')
+      .gte('created_at', since)
+      .order('created_at', { ascending: false })
+      .limit(100);
+    const wanted = normalizeForCompare(text);
+    return (data ?? []).some((m) => normalizeForCompare(String(m.content ?? '')) === wanted);
+  }
+
+  /**
+   * Conversación para un chat que una persona del equipo ha abierto desde el
+   * móvil (no existía en el sistema). El mensaje se guarda como manual y la IA
+   * arranca en pausa si la cuenta pausa al escribir a mano: quien escribe quiere
+   * llevar ese chat; si no, el bot contestaría al contacto en cuanto respondiera.
+   */
+  private async createFromManualEcho(
+    orgId: string,
+    channel: { id: string; provider: string },
+    evt: IncomingEvent,
+    contact: { name: string | null; phone: string | null } | null,
+  ): Promise<Record<string, any> | null> {
+    const initial = await this.agents.initialForConversation(orgId, channel.id);
+    const pauseOnManual = (await this.setterConfig.getOrCreate(orgId)).pause_on_manual !== false;
+    const now = new Date().toISOString();
+    const { data: created, error } = await this.supabase.admin
+      .from('conversations')
+      .insert({
+        organization_id: orgId,
+        channel_id: channel.id,
+        provider: channel.provider,
+        contact_external_id: evt.chatId,
+        unipile_chat_id: evt.chatId,
+        contact_handle: contact?.phone ?? null,
+        contact_name: !isPlaceholderName(contact?.name) ? contact!.name : 'Lead',
+        is_test: false,
+        ai_enabled: pauseOnManual ? false : initial.ai_enabled && !newConversationsStartPaused(),
+        stage: initial.stage,
+        last_outbound_at: now,
+        last_message_at: now,
+      })
+      .select(CONV_COLS)
+      .single();
+    if (error) {
+      // Carrera: otro proceso la creó mientras tanto. Nos quedamos con la suya.
+      const existing = await this.findByChat(orgId, channel.id, evt.chatId);
+      if (!existing) throw error;
+      return existing;
+    }
+    await this.supabase.admin.from('messages').insert({
+      conversation_id: created.id,
+      organization_id: orgId,
+      role: 'agent',
+      content: evt.text.trim(),
+      metadata: { message_id: evt.messageId ?? null, source: 'manual_echo' },
+    });
+    void this.workflowTrigger.fire(orgId, created.id as string, 'conversation_created');
+    return created as unknown as Record<string, any>;
   }
 
   private async messageExists(convId: string, messageId: string): Promise<boolean> {
@@ -1174,7 +1259,11 @@ export class MessagingService {
       contactName: conv.contact_name,
       persist: false,
     });
-    if (bubbles.length === 0) return;
+    if (bubbles.length === 0) {
+      // Sin texto que enviar, pero si quedó en retomar más tarde, se programa.
+      await this.scheduleFollowUp(conversationId, agent, conv.stage as string | null, { onlyResume: true });
+      return;
+    }
 
     // Enlace de agenda del agente (modo enlace): si lo manda, la conversación
     // pasa a "Calendario enviado". "Llamada agendada" solo la pone la cita
@@ -1257,7 +1346,29 @@ export class MessagingService {
    * Tras una respuesta del bot: si el agente tiene seguimiento activado y el
    * lead no está en una etapa final, programa el primer seguimiento.
    */
-  private async scheduleFollowUp(conversationId: string, agent: Agent, stage: string | null) {
+  private async scheduleFollowUp(
+    conversationId: string,
+    agent: Agent,
+    stage: string | null,
+    opts: { onlyResume?: boolean } = {},
+  ) {
+    // Si la persona pidió hablar más tarde, el siguiente toque es a ESA hora
+    // (aunque el agente no tenga seguimientos): es lo que se le prometió.
+    const { data: conv } = await this.supabase.admin
+      .from('conversations')
+      .select('resume_at')
+      .eq('id', conversationId)
+      .maybeSingle();
+    const resumeMs = conv?.resume_at ? Date.parse(conv.resume_at as string) : NaN;
+    if (Number.isFinite(resumeMs) && resumeMs > Date.now()) {
+      await this.supabase.admin
+        .from('conversations')
+        .update({ followup_count: 0, next_followup_at: new Date(resumeMs).toISOString() })
+        .eq('id', conversationId);
+      return;
+    }
+    if (opts.onlyResume) return;
+
     const delays = agent.followup_delays_min ?? [];
     if (!agent.followup_enabled || delays.length === 0) return;
     if (stage && FOLLOWUP_STOP_STAGES.has(stage)) return;
@@ -1402,10 +1513,14 @@ export class MessagingService {
     const { data: conv } = await this.supabase.admin
       .from('conversations')
       .select(
-        'id, ai_enabled, blocked, archived_at, is_test, stage, mode, contact_name, contact_handle, contact_external_id, unipile_chat_id, transport, provider, channel_id, agent_id, last_inbound_at, last_outbound_at, followup_count, followups_paused, window_expires_at',
+        'id, ai_enabled, blocked, archived_at, is_test, stage, mode, contact_name, contact_handle, contact_external_id, unipile_chat_id, transport, provider, channel_id, agent_id, last_inbound_at, last_outbound_at, followup_count, followups_paused, window_expires_at, resume_at',
       )
       .eq('id', conversationId)
       .maybeSingle();
+    // ¿Es el momento de retomar que se acordó con la persona? Se cumple aunque
+    // el agente no tenga seguimientos o la secuencia esté agotada.
+    const resumeMs = conv?.resume_at ? Date.parse(conv.resume_at as string) : NaN;
+    const resuming = Number.isFinite(resumeMs) && resumeMs <= Date.now() + 5 * 60_000;
     // El lock ya vació next_followup_at. Las condiciones DEFINITIVAS (el lead
     // contestó, etapa final, IA apagada…) cierran la cadena; las TRANSITORIAS
     // (workflow en marcha, IA de la org pausada, tope de tokens) la aplazan
@@ -1444,8 +1559,11 @@ export class MessagingService {
     });
     const delays = agent?.followup_delays_min ?? [];
     const step = (conv.followup_count as number) ?? 0;
-    if (!agent || !agent.followup_enabled) return stop('agente sin seguimiento activado');
-    if (step >= delays.length) return stop('secuencia completada');
+    if (!agent) return stop('sin agente');
+    if (!resuming) {
+      if (!agent.followup_enabled) return stop('agente sin seguimiento activado');
+      if (step >= delays.length) return stop('secuencia completada');
+    }
 
     // Solo si el lead sigue sin contestar: el último mensaje debe ser nuestro.
     const { data: last } = await this.supabase.admin
@@ -1455,7 +1573,8 @@ export class MessagingService {
       .order('created_at', { ascending: false })
       .limit(1)
       .maybeSingle();
-    if (!last || last.role === 'contact') return stop('el lead ya contestó');
+    // (Al retomar sí puede ser suyo: "hablamos mañana" fue lo último que dijo.)
+    if (!last || (last.role === 'contact' && !resuming)) return stop('el lead ya contestó');
 
     // Si un workflow está persiguiendo AHORA a este lead (run activo), no
     // duplicamos: lo volvemos a mirar en un rato. Los runs pausados no cuentan:
@@ -1528,14 +1647,17 @@ export class MessagingService {
       total: delays.length,
       silentMinutes,
       previous,
+      resume: resuming,
     });
 
-    const nextStep = step + 1;
+    // Al retomar no se gasta un paso de la secuencia: tras el mensaje de
+    // retomar, la secuencia normal empieza de cero (si el agente la tiene).
+    const nextStep = resuming ? 0 : step + 1;
     if (bubbles.length === 0) {
       // El modelo decidió no insistir: cerramos el ciclo para este chat.
       await this.supabase.admin
         .from('conversations')
-        .update({ followup_count: delays.length, next_followup_at: null })
+        .update({ followup_count: delays.length, next_followup_at: null, resume_at: null })
         .eq('id', conversationId);
       this.logger.log(`Seguimiento omitido por el modelo (conv ${conversationId})`);
       return false;
@@ -1552,12 +1674,15 @@ export class MessagingService {
         organization_id: orgId,
         role: 'assistant',
         content: text,
-        metadata: { followup: nextStep },
+        metadata: resuming ? { resume: true } : { followup: nextStep },
       });
     }
 
+    const chainOn = agent.followup_enabled && delays.length > 0;
     const nextAt =
-      nextStep < delays.length ? new Date(Date.now() + delays[nextStep] * 60_000).toISOString() : null;
+      chainOn && nextStep < delays.length
+        ? new Date(Date.now() + delays[nextStep] * 60_000).toISOString()
+        : null;
     await this.supabase.admin
       .from('conversations')
       .update({
@@ -1565,9 +1690,14 @@ export class MessagingService {
         last_message_at: new Date().toISOString(),
         followup_count: nextStep,
         next_followup_at: nextAt,
+        ...(resuming ? { resume_at: null } : {}),
       })
       .eq('id', conversationId);
-    this.logger.log(`Seguimiento ${nextStep}/${delays.length} enviado (conv ${conversationId})`);
+    this.logger.log(
+      resuming
+        ? `Conversación retomada a la hora acordada (conv ${conversationId})`
+        : `Seguimiento ${nextStep}/${delays.length} enviado (conv ${conversationId})`,
+    );
     return true;
   }
 

@@ -127,8 +127,8 @@ export default function Integrations({ isAdmin = true }: { isAdmin?: boolean }) 
     {
       id: "ghl",
       name: "GoHighLevel",
-      text: "Registra leads en el CRM, recibe citas agendadas y controla el bot desde tus workflows de GHL.",
-      status: data.ghl_webhook_url || data.ghl_api_token_set ? "Conectado" : "Disponible",
+      text: "Los leads entran desde tus workflows de GHL (webhook saliente); también citas agendadas y control del bot.",
+      status: data.ghl_webhook_url || data.ghl_api_token_set ? "Configurado" : "Disponible",
       ok: Boolean(data.ghl_webhook_url || data.ghl_api_token_set),
       mark: "GHL",
     },
@@ -190,6 +190,14 @@ export default function Integrations({ isAdmin = true }: { isAdmin?: boolean }) 
             <p className={styles.muted}>Solo un administrador puede ver los tokens y las URLs.</p>
           ) : (
             <>
+              <p className={styles.muted}>
+                <strong>Importante:</strong> los contactos de GHL <strong>no</strong> se importan
+                solos. El token de API (más abajo) sirve solo para el sentido contrario: que los leads
+                que escriben por chat se creen en GHL. Para que un lead de GHL entre aquí (y reciba el
+                primer mensaje), crea en GHL un Workflow con trigger <strong>“Contact Created”</strong>{" "}
+                o <strong>“Form Submitted”</strong> y una acción{" "}
+                <strong>“Webhook (Outbound)”</strong> (POST) a la URL ①. Sin ese workflow, nada llega.
+              </p>
               <p className={styles.muted}>
                 Pega estas URLs en tus workflows de GHL como acción “Webhook (Outbound)” (POST).
                 Llevan tu token secreto; trátalas como una contraseña.

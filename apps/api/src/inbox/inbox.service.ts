@@ -644,7 +644,7 @@ export class InboxService {
     const rows: Array<{
       conversation_id: string;
       organization_id: string;
-      role: 'assistant' | 'contact';
+      role: 'agent' | 'contact';
       content: string;
       created_at: string;
       metadata: Record<string, unknown>;
@@ -683,13 +683,16 @@ export class InboxService {
         continue;
       }
 
+      // Todo lo que envía el bot se guarda al enviarlo, así que un mensaje
+      // nuestro que NO teníamos lo escribió una persona (desde el móvil o antes
+      // de conectar el sistema): se guarda como manual, no como "respuesta de IA".
       rows.push({
         conversation_id: convId,
         organization_id: orgId,
-        role: isFromUs(m) ? ('assistant' as const) : ('contact' as const),
+        role: isFromUs(m) ? ('agent' as const) : ('contact' as const),
         content: text,
         created_at: timestampOf(m),
-        metadata: { message_id: id, imported: true },
+        metadata: { message_id: id, imported: true, ...(isFromUs(m) ? { source: 'imported' } : {}) },
       });
     }
 
@@ -716,7 +719,7 @@ export class InboxService {
       .update({ last_message_at: latest.created_at })
       .eq('id', convId);
 
-    const outgoing = rows.filter((r) => r.role === 'assistant');
+    const outgoing = rows.filter((r) => r.role === 'agent');
     if (outgoing.length > 0 && outgoing.length === rows.length) {
       const sentAt = outgoing.reduce((a, b) => (a.created_at > b.created_at ? a : b)).created_at;
       await this.messaging.startFollowUpsAfterFirstContact(convId, sentAt);

@@ -14,7 +14,12 @@ export type PromptContext = {
   agent: Agent;
   /** Nombres de las etapas del pipeline de la org (para que la IA las conozca). */
   stageNames?: string[] | null;
+  /** Fecha y hora actual para la persona ("lunes 10 de noviembre de 2026, 16:05") y su zona. */
+  now?: { text: string; timezone: string } | null;
 };
+
+/** Marca con la que el modelo pide retomar la conversación más tarde (se extrae antes de enviar). */
+export const RESUME_DIRECTIVE_EXAMPLE = '[[RETOMAR: AAAA-MM-DD HH:MM]]';
 
 /**
  * Construye el system prompt: la Base de Conocimiento del negocio (común a
@@ -76,6 +81,26 @@ export function buildSystemPrompt(
   if (cleanName) {
     sections.push(
       `# CON QUIÉN HABLAS\nLa persona se llama ${cleanName}. Puedes llamarla por su nombre de vez en cuando para que sea cercano, pero SIN abusar (no en cada mensaje).`,
+    );
+  }
+
+  // El modelo no tiene reloj: sin esto se inventa la hora ("ya son las 7") y
+  // no sabe calcular "mañana" o "en unas horas". Ocurrió en producción.
+  if (ctx.now) {
+    sections.push(
+      `# FECHA Y HORA ACTUAL\n` +
+        `Ahora mismo, en la zona horaria de la persona (${ctx.now.timezone}), es ${ctx.now.text}. ` +
+        `Usa SIEMPRE este dato para cualquier referencia temporal (hoy, mañana, esta tarde, fin de semana, "ya es la hora"…). ` +
+        `Nunca supongas qué hora es: si no cuadra con este dato, no menciones la hora. ` +
+        `Cada mensaje del historial va precedido de su fecha y hora entre corchetes (p. ej. "[lun 10/11 16:05]"): te sirve para saber cuánto tiempo ha pasado entre mensajes. Tú NUNCA escribas esas marcas.`,
+    );
+    sections.push(
+      `# SI LA PERSONA PIDE HABLAR MÁS TARDE\n` +
+        `Si te dice que le escribas más tarde, mañana, otro día, a una hora concreta, que ahora está ocupada, descansando, de viaje o que ya hablaréis:\n` +
+        `- Respóndele SOLO con una confirmación breve y natural ("vale, hablamos mañana", "perfecto, te escribo sobre las 7"), sin preguntas, sin insistir y sin seguir con el guion.\n` +
+        `- Y añade al final de tu respuesta, en una línea aparte, EXACTAMENTE esta marca: ${RESUME_DIRECTIVE_EXAMPLE} con la fecha y hora LOCAL de la persona a la que retomar (formato 24 h). Calcúlala a partir de la fecha y hora actual de arriba: "mañana" sin hora → 10:00 del día siguiente; "por la mañana" → 10:00; "al mediodía" → 13:00; "esta tarde" / "por la tarde" → 17:00; "esta noche" → 20:30; "en un rato" → +1 h 30 min; "en unas horas" → +3 h; "a las 7" (de la tarde) → 19:00 de hoy, o de mañana si ya ha pasado; "el lunes" → ese lunes a las 10:00; "la semana que viene" → el lunes siguiente a las 10:00; "después de las fiestas / el mes que viene" → el primer día laborable de ese periodo a las 10:00. Si da un día y una hora concretos, usa exactamente esos.\n` +
+        `- Ejemplo: la persona dice "estoy descansando, hablamos mañana" y ahora es domingo 9 de noviembre de 2026 a las 18:20 → respondes "claro, descansa, hablamos mañana" y en la línea siguiente [[RETOMAR: 2026-11-10 10:00]].\n` +
+        `- No le vuelvas a escribir antes de esa hora. El sistema te avisará cuando llegue el momento de retomar.`,
     );
   }
 
