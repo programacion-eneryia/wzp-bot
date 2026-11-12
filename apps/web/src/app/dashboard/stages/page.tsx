@@ -1,7 +1,10 @@
+import { getActiveRole } from "@/lib/role";
 import Stages from "./Stages";
 import styles from "../tags/tags.module.css";
 
-export default function StagesPage() {
+export default async function StagesPage() {
+  // Solo los admins editan pipelines y etapas; un closer los consulta.
+  const { isAdmin } = await getActiveRole();
   return (
     <div>
       <span className={styles.eyebrow}>Gestión de agentes</span>
@@ -15,7 +18,7 @@ export default function StagesPage() {
         agendada, Ganado…) las usan la IA y las integraciones, así que se pueden renombrar pero no
         borrar.
       </p>
-      <Stages />
+      <Stages isAdmin={isAdmin} />
     </div>
   );
 }

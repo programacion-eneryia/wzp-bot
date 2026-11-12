@@ -159,19 +159,27 @@ export default function Agents({ isAdmin = true }: { isAdmin?: boolean }) {
     <div className={styles.wrap}>
       {error && <div className={styles.error}>{error}</div>}
 
+      {!isAdmin && (
+        <p className={styles.muted}>
+          Solo un administrador puede crear o modificar agentes. Aquí puedes consultarlos.
+        </p>
+      )}
+
       <GeneralSettings agents={agents} isAdmin={isAdmin} onSetDefault={setDefault} />
 
-      <div className={styles.toolbar}>
-        <button className={styles.primaryBtn} onClick={() => create("setter")} disabled={busy}>
-          + Nuevo Setter
-        </button>
-        <button className={styles.ghostBtn} onClick={() => create("support")} disabled={busy}>
-          + Nuevo Soporte
-        </button>
-        <button className={styles.ghostBtn} onClick={() => create("custom")} disabled={busy}>
-          + Agente personalizado
-        </button>
-      </div>
+      {isAdmin && (
+        <div className={styles.toolbar}>
+          <button className={styles.primaryBtn} onClick={() => create("setter")} disabled={busy}>
+            + Nuevo Setter
+          </button>
+          <button className={styles.ghostBtn} onClick={() => create("support")} disabled={busy}>
+            + Nuevo Soporte
+          </button>
+          <button className={styles.ghostBtn} onClick={() => create("custom")} disabled={busy}>
+            + Agente personalizado
+          </button>
+        </div>
+      )}
 
       {loading && agents.length === 0 && <p className={styles.muted}>Cargando agentes…</p>}
 
@@ -224,18 +232,22 @@ export default function Agents({ isAdmin = true }: { isAdmin?: boolean }) {
             </div>
             <div className={styles.actions}>
               <button className={styles.ghostBtn} onClick={() => setEditing(a)} disabled={busy}>
-                Editar
+                {isAdmin ? "Editar" : "Ver"}
               </button>
-              <button className={styles.ghostBtn} onClick={() => toggleActive(a)} disabled={busy}>
-                {a.is_active ? "Desactivar" : "Activar"}
-              </button>
-              <button className={styles.ghostBtn} onClick={() => duplicate(a)} disabled={busy}>
-                Duplicar
-              </button>
-              {agents.length > 1 && (
-                <button className={styles.dangerBtn} onClick={() => remove(a)} disabled={busy}>
-                  Eliminar
-                </button>
+              {isAdmin && (
+                <>
+                  <button className={styles.ghostBtn} onClick={() => toggleActive(a)} disabled={busy}>
+                    {a.is_active ? "Desactivar" : "Activar"}
+                  </button>
+                  <button className={styles.ghostBtn} onClick={() => duplicate(a)} disabled={busy}>
+                    Duplicar
+                  </button>
+                  {agents.length > 1 && (
+                    <button className={styles.dangerBtn} onClick={() => remove(a)} disabled={busy}>
+                      Eliminar
+                    </button>
+                  )}
+                </>
               )}
             </div>
           </div>
@@ -550,6 +562,7 @@ function AgentEditor({
           value={agent.name}
           onChange={(e) => set("name", e.target.value)}
           placeholder="Nombre del agente"
+          disabled={!isAdmin}
         />
         <span className={`${styles.chip} ${KIND_CHIP[agent.kind]}`}>{AGENT_KIND_LABEL[agent.kind]}</span>
         <label className={styles.checkRow} style={{ marginLeft: "auto" }}>
@@ -557,11 +570,15 @@ function AgentEditor({
             type="checkbox"
             checked={agent.is_active}
             onChange={(e) => set("is_active", e.target.checked)}
+            disabled={!isAdmin}
           />
           Activo
         </label>
       </div>
 
+      {!isAdmin && (
+        <p className={styles.muted}>Solo lectura: únicamente un administrador puede modificar este agente.</p>
+      )}
       {error && <div className={styles.error}>{error}</div>}
 
       <div className={styles.tabs}>
@@ -576,6 +593,8 @@ function AgentEditor({
         ))}
       </div>
 
+      {/* Un closer consulta pero no toca: el fieldset deshabilita todo lo de dentro. */}
+      <fieldset disabled={!isAdmin} className={styles.fieldset}>
       {tab === "identity" && (
         <>
           {isAdmin && (
@@ -1034,12 +1053,15 @@ function AgentEditor({
         </section>
       )}
 
-      <div className={styles.footer}>
-        <button className={styles.primaryBtn} onClick={save} disabled={saving}>
-          {saving ? "Guardando…" : "Guardar cambios"}
-        </button>
-        {saved && <span className={styles.savedMsg}>Guardado ✓</span>}
-      </div>
+      {isAdmin && (
+        <div className={styles.footer}>
+          <button className={styles.primaryBtn} onClick={save} disabled={saving}>
+            {saving ? "Guardando…" : "Guardar cambios"}
+          </button>
+          {saved && <span className={styles.savedMsg}>Guardado ✓</span>}
+        </div>
+      )}
+      </fieldset>
     </div>
   );
 }

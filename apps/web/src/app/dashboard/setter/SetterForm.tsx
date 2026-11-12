@@ -47,7 +47,7 @@ type BriefResult = {
   files?: number;
 };
 
-export default function SetterForm() {
+export default function SetterForm({ isAdmin = true }: { isAdmin?: boolean }) {
   const [cfg, setCfg] = useState<SetterConfig | null>(null);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -186,8 +186,15 @@ export default function SetterForm() {
   );
 
   return (
-    <div className={styles.form}>
+    // Un closer consulta pero no toca: el fieldset deshabilita todo lo de dentro.
+    <fieldset disabled={!isAdmin} className={styles.form}>
+      {!isAdmin && (
+        <p className={styles.muted}>
+          Solo lectura: únicamente un administrador puede modificar la Base de Conocimiento.
+        </p>
+      )}
       {/* Panel de generación con IA */}
+      {isAdmin && (
       <section className={styles.aiPanel}>
         <div className={styles.aiHead}>
           <h2 className={styles.cardTitle}>✨ Generar todo desde tu brief</h2>
@@ -245,6 +252,7 @@ export default function SetterForm() {
           </p>
         )}
       </section>
+      )}
 
       {error && <div className={styles.error}>{error}</div>}
 
@@ -296,12 +304,14 @@ export default function SetterForm() {
             )}
           </section>
 
-      <div className={styles.actions}>
-        <button className={styles.saveBtn} onClick={save} disabled={saving}>
-          {saving ? "Guardando…" : "Guardar cambios"}
-        </button>
-        {saved && <span className={styles.savedMsg}>Guardado ✓</span>}
-      </div>
-    </div>
+      {isAdmin && (
+        <div className={styles.actions}>
+          <button className={styles.saveBtn} onClick={save} disabled={saving}>
+            {saving ? "Guardando…" : "Guardar cambios"}
+          </button>
+          {saved && <span className={styles.savedMsg}>Guardado ✓</span>}
+        </div>
+      )}
+    </fieldset>
   );
 }

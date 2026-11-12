@@ -40,6 +40,10 @@
   flex-direction: column;
   gap: 18px;
   max-width: 820px;
+  /* Es un fieldset (para poder dejarlo en solo lectura): sin el marco por defecto. */
+  border: none;
+  padding: 0;
+  min-width: 0;
 }
 
 .card {

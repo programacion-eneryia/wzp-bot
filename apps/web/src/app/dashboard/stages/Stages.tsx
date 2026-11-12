@@ -9,7 +9,7 @@ import own from "./stages.module.css";
 
 const PRESET_COLORS = ["#64748b", "#0ea5e9", "#6366f1", "#f59e0b", "#22c55e", "#16a34a", "#a1a1aa", "#ef4444", "#a855f7", "#14b8a6"];
 
-export default function Stages() {
+export default function Stages({ isAdmin = true }: { isAdmin?: boolean }) {
   const { pipelines, loading, reload } = useStages();
   const { agents } = useAgents();
   const [pipelineId, setPipelineId] = useState<string | null>(null);
@@ -136,7 +136,13 @@ export default function Stages() {
   }
 
   return (
-    <div className={styles.wrap}>
+    // Un closer consulta pero no toca: el fieldset deshabilita todo lo de dentro.
+    <fieldset disabled={!isAdmin} className={`${styles.wrap} ${own.fieldset}`}>
+      {!isAdmin && (
+        <p className={styles.lead}>
+          Solo lectura: únicamente un administrador puede modificar pipelines y etapas.
+        </p>
+      )}
       {error && <div className={styles.error}>{error}</div>}
 
       <div className={own.tabs}>
@@ -328,7 +334,7 @@ export default function Stages() {
           </li>
         ))}
       </ul>
-    </div>
+    </fieldset>
   );
 }
 

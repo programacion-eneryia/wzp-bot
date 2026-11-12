@@ -19,6 +19,21 @@
   flex-direction: column;
   gap: 16px;
 }
+
+/* Contenedor sin estilo propio: solo sirve para deshabilitar todo lo de dentro (solo lectura). */
+.fieldset {
+  display: contents;
+  border: none;
+  margin: 0;
+  padding: 0;
+  min-width: 0;
+}
+.fieldset:disabled {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  opacity: 0.85;
+}
 .muted {
   color: var(--muted, #9a9a9a);
   font-size: 13px;

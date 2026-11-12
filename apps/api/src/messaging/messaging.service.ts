@@ -83,7 +83,23 @@ type IncomingEvent = {
   senderProviderId?: string;
   /** El mensaje salió de NUESTRA cuenta (eco): bot, agente o humano en el móvil. */
   fromSelf?: boolean;
+  /** Cuándo se envió de verdad (según WhatsApp), ISO. El webhook puede llegar bastante después. */
+  sentAt?: string;
 };
+
+/**
+ * Fecha real de envío para guardar un eco: la del mensaje en WhatsApp si es
+ * creíble (no futura, no más vieja que un día); si no, ahora. Importa porque el
+ * eco se procesa con retraso y, si se guardara con la hora de proceso, quedaría
+ * por debajo de la respuesta del lead y el bot creería que el último en hablar
+ * fuimos nosotros.
+ */
+function echoCreatedAt(evt: IncomingEvent): string {
+  const t = evt.sentAt ? Date.parse(evt.sentAt) : NaN;
+  const now = Date.now();
+  if (Number.isFinite(t) && t <= now + 60_000 && now - t <= 24 * 60 * 60_000) return new Date(t).toISOString();
+  return new Date(now).toISOString();
+}
 
 @Injectable()
 export class MessagingService {
@@ -509,6 +525,7 @@ export class MessagingService {
     // Si el propio webhook indica que el mensaje lo enviamos NOSOTROS, no
     // respondemos (evita bucles), pero lo devolvemos marcado como eco: puede
     // ser un humano escribiendo desde el móvil (human takeover).
+    const sentAt = extractTimestamp(payload);
     if (isFromSelf(payload)) {
       const echoText = extractText(payload);
       if (!echoText) return null;
@@ -520,6 +537,7 @@ export class MessagingService {
         senderName,
         senderProviderId,
         fromSelf: true,
+        sentAt,
       };
     }
 
@@ -602,6 +620,7 @@ export class MessagingService {
         senderName,
         senderProviderId,
         fromSelf: true,
+        sentAt,
       };
     }
 
@@ -612,6 +631,7 @@ export class MessagingService {
       messageId: payloadId ?? latestId,
       senderName,
       senderProviderId,
+      sentAt,
     };
   }
 
@@ -760,11 +780,13 @@ export class MessagingService {
         .in('role', ['assistant', 'agent']);
       const firstContact = (priorMsgs ?? 0) === 0 && Boolean(conv.mode_locked || conv.source);
 
+      const sentAt = echoCreatedAt(evt);
       await this.supabase.admin.from('messages').insert({
         conversation_id: conv.id,
         organization_id: orgId,
         role: 'agent',
         content: text,
+        created_at: sentAt,
         metadata: {
           message_id: evt.messageId ?? null,
           source: firstContact ? 'external_first_contact' : 'manual_echo',
@@ -772,7 +794,7 @@ export class MessagingService {
       });
 
       const update: Record<string, unknown> = {
-        last_outbound_at: new Date().toISOString(),
+        last_outbound_at: sentAt,
         last_message_at: new Date().toISOString(),
       };
       if (
@@ -863,7 +885,7 @@ export class MessagingService {
       : await this.agents.initialForConversation(orgId, channel.id);
     const pauseOnManual =
       !templateSource && (await this.setterConfig.getOrCreate(orgId)).pause_on_manual !== false;
-    const now = new Date().toISOString();
+    const now = echoCreatedAt(evt);
     const name =
       [contact?.name, templateSource ? greetingName(evt.text) : null].find((n) => !isPlaceholderName(n)) ??
       'Lead';
@@ -900,6 +922,7 @@ export class MessagingService {
       organization_id: orgId,
       role: 'agent',
       content: evt.text.trim(),
+      created_at: now,
       metadata: {
         message_id: evt.messageId ?? null,
         source: templateSource ? 'external_first_contact' : 'manual_echo',
@@ -1281,14 +1304,18 @@ export class MessagingService {
     }
 
     // Solo respondemos si el último mensaje es del contacto (no contestar a lo
-    // nuestro ni a tandas ya respondidas).
-    const { data: last } = await this.supabase.admin
+    // nuestro ni a tandas ya respondidas). La plantilla de bienvenida que manda
+    // GHL no cuenta: su eco nos llega con retraso y puede quedar guardada después
+    // de la respuesta del lead; esa respuesta hay que contestarla igual.
+    const { data: lastFew } = await this.supabase.admin
       .from('messages')
-      .select('role')
+      .select('role, metadata')
       .eq('conversation_id', conversationId)
       .order('created_at', { ascending: false })
-      .limit(1)
-      .maybeSingle();
+      .limit(5);
+    const last = (lastFew ?? []).find(
+      (m) => (m.metadata as { source?: string } | null)?.source !== 'external_first_contact',
+    );
     if (!last || last.role !== 'contact') return;
 
     // Clasificación (una vez) por si aún no tiene modo. La IA solo APLICA
@@ -2541,6 +2568,14 @@ function isFromSelf(payload: Record<string, unknown>): boolean {
   const event = String(payload.event ?? payload.event_type ?? '').toLowerCase();
   if (event.includes('message_sent')) return true;
   return false;
+}
+
+/** Fecha de envío que trae el webhook (Unipile: `timestamp` ISO; a veces `date`). */
+function extractTimestamp(payload: Record<string, unknown>): string | undefined {
+  const message = (payload.message ?? {}) as Record<string, unknown>;
+  const raw = payload.timestamp ?? payload.date ?? (typeof message === 'object' ? message.timestamp : undefined);
+  const t = Date.parse(String(raw ?? ''));
+  return Number.isFinite(t) ? new Date(t).toISOString() : undefined;
 }
 
 function extractText(payload: Record<string, unknown>): string {

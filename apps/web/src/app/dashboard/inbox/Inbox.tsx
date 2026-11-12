@@ -56,14 +56,25 @@ type Message = {
   role: "contact" | "assistant" | "agent" | "system";
   content: string;
   created_at: string;
+  /** Origen de un mensaje nuestro: plantilla de bienvenida, manual desde el móvil, importado… */
+  source?: string | null;
 };
+
+/** Etiqueta que acompaña a cada mensaje nuestro según quién lo envió. */
+function messageTag(m: Message): string | null {
+  if (m.role === "assistant") return "Respuesta de IA";
+  if (m.role !== "agent") return null;
+  if (m.source === "external_first_contact") return "Mensaje de bienvenida";
+  if (m.source === "imported") return "Historial";
+  return "Manual";
+}
 
 /** ¿Dos listas de mensajes son equivalentes? (para evitar renders/scroll inútiles) */
 function sameMessages(a: Message[], b: Message[]): boolean {
   if (a === b) return true;
   if (a.length !== b.length) return false;
   for (let i = 0; i < a.length; i++) {
-    if (a[i].id !== b[i].id || a[i].content !== b[i].content) return false;
+    if (a[i].id !== b[i].id || a[i].content !== b[i].content || a[i].role !== b[i].role) return false;
   }
   return true;
 }
@@ -1116,12 +1127,7 @@ export default function Inbox() {
                 const prev = messages[i - 1];
                 const showDay =
                   !prev || dayLabel(prev.created_at) !== dayLabel(m.created_at);
-                const tag =
-                  m.role === "assistant"
-                    ? "Respuesta de IA"
-                    : m.role === "agent"
-                    ? "Manual"
-                    : null;
+                const tag = messageTag(m);
                 return (
                   <Fragment key={m.id}>
                     {showDay && (

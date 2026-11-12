@@ -47,3 +47,11 @@
   gap: 12px;
   flex-wrap: wrap;
 }
+
+/* Es un fieldset (para poder dejarlo en solo lectura): sin el marco por defecto. */
+.fieldset {
+  border: none;
+  padding: 0;
+  margin: 0;
+  min-width: 0;
+}

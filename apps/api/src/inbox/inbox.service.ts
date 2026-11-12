@@ -191,11 +191,18 @@ export class InboxService {
     // chats largos; el orden final es ascendente para pintarlos de arriba a abajo.
     const { data: recent } = await this.supabase.admin
       .from('messages')
-      .select('id, role, content, created_at')
+      .select('id, role, content, created_at, metadata')
       .eq('conversation_id', id)
       .order('created_at', { ascending: false })
       .limit(200);
-    const messages = (recent ?? []).reverse();
+    // Al front solo va el origen del mensaje (plantilla de bienvenida, manual
+    // desde el móvil, importado…), no el resto de metadatos.
+    const messages = (recent ?? [])
+      .reverse()
+      .map(({ metadata, ...m }) => ({
+        ...m,
+        source: ((metadata as { source?: string } | null)?.source ?? null) as string | null,
+      }));
 
     if ((conv.unread_count ?? 0) > 0) {
       await this.supabase.admin

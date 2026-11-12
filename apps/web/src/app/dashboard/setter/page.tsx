@@ -1,8 +1,11 @@
 import Link from "next/link";
+import { getActiveRole } from "@/lib/role";
 import SetterForm from "./SetterForm";
 import styles from "./setter.module.css";
 
-export default function SetterPage() {
+export default async function SetterPage() {
+  // Solo los admins editan la Base de Conocimiento; un closer la consulta.
+  const { isAdmin } = await getActiveRole();
   return (
     <div>
       <span className={styles.eyebrow}>Gestión de agentes · Base de Conocimiento</span>
@@ -20,7 +23,7 @@ export default function SetterPage() {
         .
       </p>
 
-      <SetterForm />
+      <SetterForm isAdmin={isAdmin} />
     </div>
   );
 }
