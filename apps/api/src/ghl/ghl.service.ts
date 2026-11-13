@@ -5,6 +5,13 @@ import { StagesService } from '../stages/stages.service';
 import { AgentsService } from '../agents/agents.service';
 import { phoneVariants } from '../common/phone';
 
+type FoundConv = {
+  id: string;
+  stage: string;
+  last_outbound_at: string | null;
+  last_inbound_at: string | null;
+};
+
 type MatchKeys = {
   setterId?: string;
   contactId?: string;
@@ -193,19 +200,26 @@ export class GhlService {
     }
 
     // Al reactivar, si el contacto ya escribió y nadie le contestó, el bot le
-    // responde en el próximo tick; si el último mensaje es nuestro, espera.
+    // responde en el próximo tick; si el último mensaje es nuestro, espera. La
+    // plantilla de bienvenida no cuenta como "nuestro": si el lead la contestó,
+    // hay que responderle.
     let resume: Record<string, unknown> = { ai_enabled: true };
+    let leadWaiting = false;
     if (action === 'resume') {
-      const { data: last } = await this.supabase.admin
+      const { data: lastFew } = await this.supabase.admin
         .from('messages')
-        .select('role')
+        .select('role, metadata')
         .eq('conversation_id', conv.id)
         .in('role', ['contact', 'assistant', 'agent'])
         .order('created_at', { ascending: false })
-        .limit(1);
+        .limit(5);
+      const last = (lastFew ?? []).find(
+        (m) => (m.metadata as { source?: string } | null)?.source !== 'external_first_contact',
+      );
+      leadWaiting = last?.role === 'contact';
       resume = {
         ai_enabled: true,
-        respond_after: last?.[0]?.role === 'contact' ? new Date().toISOString() : null,
+        respond_after: leadWaiting ? new Date().toISOString() : null,
       };
     }
     await this.supabase.admin
@@ -213,8 +227,16 @@ export class GhlService {
       .update(action === 'resume' ? resume : { ai_enabled: false, respond_after: null })
       .eq('id', conv.id)
       .eq('organization_id', orgId);
+    // Cuentas que activan el setter con esta orden (tras mandar la plantilla):
+    // la plantilla ya salió, así que aquí arrancan los seguimientos si el lead
+    // aún no ha contestado (si contestó, el bot le responde y siguen desde ahí).
+    if (action === 'resume' && !leadWaiting && conv.last_outbound_at && !conv.last_inbound_at) {
+      await this.messaging.startFollowUpsAfterFirstContact(conv.id, conv.last_outbound_at);
+    }
     this.logger.log(
-      `GHL → bot ${action === 'resume' ? 'REACTIVADO' : 'PAUSADO'} (conv ${conv.id}${agentName ? `, agente ${agentName}` : ''})`,
+      `GHL → bot ${action === 'resume' ? 'REACTIVADO' : 'PAUSADO'} (conv ${conv.id}${agentName ? `, agente ${agentName}` : ''}${
+        action === 'resume' && leadWaiting ? ', el lead ya había escrito: se le responde' : ''
+      })`,
     );
     return { ok: true, matched: true, action, ...(agentName ? { agent: agentName } : {}) };
   }
@@ -259,8 +281,8 @@ export class GhlService {
   private async findConversation(
     orgId: string,
     keys: MatchKeys,
-  ): Promise<{ id: string; stage: string } | null> {
-    const sel = 'id, stage';
+  ): Promise<FoundConv | null> {
+    const sel = 'id, stage, last_outbound_at, last_inbound_at';
 
     if (keys.setterId && isUuid(keys.setterId)) {
       const { data } = await this.supabase.admin
@@ -269,7 +291,7 @@ export class GhlService {
         .eq('organization_id', orgId)
         .eq('id', keys.setterId)
         .maybeSingle();
-      if (data) return data as { id: string; stage: string };
+      if (data) return data as FoundConv;
     }
 
     // Si hubiera varias, preferimos la que tiene chat (donde escribe el contacto).
@@ -283,7 +305,7 @@ export class GhlService {
         .order('unipile_chat_id', { ascending: true, nullsFirst: false })
         .order('last_message_at', { ascending: false, nullsFirst: false })
         .limit(1);
-      return (data?.[0] as { id: string; stage: string } | undefined) ?? null;
+      return (data?.[0] as FoundConv | undefined) ?? null;
     };
 
     if (keys.contactId) {
@@ -306,7 +328,7 @@ export class GhlService {
         .eq('organization_id', orgId)
         .eq('id', leadConvId)
         .maybeSingle();
-      if (data) return data as { id: string; stage: string };
+      if (data) return data as FoundConv;
     }
 
     return null;

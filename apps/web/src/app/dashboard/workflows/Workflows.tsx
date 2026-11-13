@@ -11,7 +11,7 @@ const STARTER_DEF = {
   edges: [],
 };
 
-export default function Workflows() {
+export default function Workflows({ isAdmin = true }: { isAdmin?: boolean }) {
   const [items, setItems] = useState<Workflow[]>([]);
   const [editing, setEditing] = useState<Workflow | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -97,6 +97,14 @@ export default function Workflows() {
     <div className={styles.wrap}>
       {error && <div className={styles.error}>{error}</div>}
 
+      {!isAdmin && (
+        <p className={styles.hint}>
+          Solo un administrador puede crear o modificar workflows. Aquí puedes ver cuáles hay y si
+          están activos.
+        </p>
+      )}
+
+      {isAdmin && (
       <section className={styles.card}>
         <h2 className={styles.cardTitle}>Nuevo workflow</h2>
         <div className={styles.formRow}>
@@ -122,6 +130,7 @@ export default function Workflows() {
           </button>
         </div>
       </section>
+      )}
 
       <ul className={styles.list}>
         {items.length === 0 && <p className={styles.hint}>Aún no tienes workflows.</p>}
@@ -140,17 +149,19 @@ export default function Workflows() {
                 {TRIGGER_LABEL[wf.trigger]} · {wf.definition?.nodes?.length ?? 0} nodos
               </span>
             </div>
-            <div className={styles.actions}>
-              <button className={styles.ghostBtn} onClick={() => setEditing(wf)} disabled={busy}>
-                Editar
-              </button>
-              <button className={styles.ghostBtn} onClick={() => toggleActive(wf)} disabled={busy}>
-                {wf.is_active ? "Desactivar" : "Activar"}
-              </button>
-              <button className={styles.dangerBtn} onClick={() => remove(wf)} disabled={busy}>
-                Eliminar
-              </button>
-            </div>
+            {isAdmin && (
+              <div className={styles.actions}>
+                <button className={styles.ghostBtn} onClick={() => setEditing(wf)} disabled={busy}>
+                  Editar
+                </button>
+                <button className={styles.ghostBtn} onClick={() => toggleActive(wf)} disabled={busy}>
+                  {wf.is_active ? "Desactivar" : "Activar"}
+                </button>
+                <button className={styles.dangerBtn} onClick={() => remove(wf)} disabled={busy}>
+                  Eliminar
+                </button>
+              </div>
+            )}
           </li>
         ))}
       </ul>

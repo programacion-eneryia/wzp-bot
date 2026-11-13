@@ -5,7 +5,7 @@ import { CryptoService } from '../common/crypto.service';
 import { assertSafeWebhookUrl } from '../common/url-safety';
 
 const COLS =
-  'organization_id, intake_token, manychat_api_key, default_channel_id, proactive_enabled, ghl_webhook_url, ghl_api_token, ghl_location_id, ghl_setter_field, ghl_sync_chat_leads, ghl_chat_tags, ghl_chat_source';
+  'organization_id, intake_token, manychat_api_key, default_channel_id, proactive_enabled, ghl_webhook_url, ghl_api_token, ghl_location_id, ghl_setter_field, ghl_sync_chat_leads, ghl_chat_tags, ghl_chat_source, lead_activation';
 
 export type Integration = {
   organization_id: string;
@@ -24,7 +24,16 @@ export type Integration = {
   ghl_chat_tags: string[];
   /** Origen (source) solo para contactos que el bot CREA en GHL. */
   ghl_chat_source: string;
+  /**
+   * Cuándo se activa el setter para los leads que entran por webhook:
+   * `auto` en cuanto entra; `webhook` solo con la orden de activación
+   * ({"action":"resume"} en la URL de control) o a mano.
+   */
+  lead_activation: LeadActivation;
 };
+
+export type LeadActivation = 'auto' | 'webhook';
+export const LEAD_ACTIVATIONS: LeadActivation[] = ['auto', 'webhook'];
 
 @Injectable()
 export class IntegrationsService {
@@ -74,6 +83,7 @@ export class IntegrationsService {
       ghl_sync_chat_leads?: boolean;
       ghl_chat_tags?: string[];
       ghl_chat_source?: string;
+      lead_activation?: LeadActivation;
     },
   ): Promise<Integration> {
     await this.getOrCreate(orgId);
@@ -112,6 +122,9 @@ export class IntegrationsService {
     }
     if (typeof patch.ghl_chat_source === 'string') {
       update.ghl_chat_source = patch.ghl_chat_source.trim() || 'Setter IA (chat)';
+    }
+    if (patch.lead_activation && LEAD_ACTIVATIONS.includes(patch.lead_activation)) {
+      update.lead_activation = patch.lead_activation;
     }
 
     const { data, error } = await this.supabase.admin

@@ -731,7 +731,7 @@ export class MessagingService {
         if (!conv) return;
         this.logger.log(
           templateSource
-            ? `Chat ${evt.chatId}: plantilla de primer contacto sin aviso de lead; conversación ${conv.id as string} creada como lead (${templateSource}) con la IA ${conv.ai_enabled ? 'activa' : 'en pausa'}`
+            ? `Chat ${evt.chatId}: plantilla de primer contacto sin aviso de lead; conversación ${conv.id as string} creada como lead (${templateSource}) con la IA ${conv.ai_enabled ? 'activa' : 'en pausa (a la espera de la orden de activación o sin agente de leads)'}`
             : `Chat ${evt.chatId} abierto a mano desde el móvil: conversación ${conv.id as string} creada con la IA ${conv.ai_enabled ? 'activa' : 'en pausa'}`,
         );
         if (templateSource && conv.ai_enabled) {
@@ -817,6 +817,16 @@ export class MessagingService {
     }
   }
 
+  /** ¿La cuenta activa el setter de los leads solo con la orden de activación (webhook de control)? */
+  private async leadActivationIsWebhook(orgId: string): Promise<boolean> {
+    const { data } = await this.supabase.admin
+      .from('integrations')
+      .select('lead_activation')
+      .eq('organization_id', orgId)
+      .maybeSingle();
+    return data?.lead_activation === 'webhook';
+  }
+
   /** ¿Este texto lo ha enviado el sistema hace un momento en alguna conversación de la org? */
   private async sentByUsRecently(orgId: string, text: string): Promise<boolean> {
     const since = new Date(Date.now() - 10 * 60_000).toISOString();
@@ -883,8 +893,12 @@ export class MessagingService {
     const initial = templateSource
       ? await this.agents.initialForLead(orgId)
       : await this.agents.initialForConversation(orgId, channel.id);
+    // Plantilla de un lead: igual que si hubiera entrado por el webhook, lo que
+    // incluye esperar la orden de activación si la cuenta funciona así.
+    const waitForActivation = Boolean(templateSource) && (await this.leadActivationIsWebhook(orgId));
     const pauseOnManual =
-      !templateSource && (await this.setterConfig.getOrCreate(orgId)).pause_on_manual !== false;
+      waitForActivation ||
+      (!templateSource && (await this.setterConfig.getOrCreate(orgId)).pause_on_manual !== false);
     const now = echoCreatedAt(evt);
     const name =
       [contact?.name, templateSource ? greetingName(evt.text) : null].find((n) => !isPlaceholderName(n)) ??

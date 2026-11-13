@@ -19,6 +19,8 @@ type Integration = {
   manychat_api_key: string | null;
   default_channel_id: string | null;
   proactive_enabled: boolean;
+  /** Cuándo se activa el setter de los leads: en cuanto entran o solo con la orden de activación. */
+  lead_activation?: "auto" | "webhook";
   ghl_webhook_url: string | null;
   ghl_api_token_set?: boolean;
   ghl_location_id?: string | null;
@@ -247,6 +249,38 @@ export default function Integrations({ isAdmin = true }: { isAdmin?: boolean }) 
                 copied={copied === "ghl_send"}
                 onCopy={() => copy(data.urls.ghl_send, "ghl_send")}
               />
+
+              <h3 className={styles.subTitle}>¿Cuándo se activa el setter?</h3>
+              <label className={styles.field}>
+                <span className={styles.label}>Activación del setter para los leads</span>
+                <select
+                  className={styles.input}
+                  value={data.lead_activation ?? "auto"}
+                  onChange={(e) => patch({ lead_activation: e.target.value })}
+                  disabled={saving}
+                >
+                  <option value="auto">Automática: en cuanto el lead entra por la URL ①</option>
+                  <option value="webhook">
+                    Solo con la orden de activación (URL ③ con &quot;resume&quot;) o a mano
+                  </option>
+                </select>
+              </label>
+              {(data.lead_activation ?? "auto") === "webhook" ? (
+                <p className={styles.muted}>
+                  El lead entra <strong>con la IA en pausa</strong>, aunque ya le hayas mandado la
+                  plantilla desde GHL. Orden recomendado en tu workflow de GHL: ① registrar el lead →
+                  enviar la plantilla → ③ activar con{" "}
+                  <code className={styles.code}>{'{"action": "resume"}'}</code>. Al activarse, si el
+                  lead ya contestó se le responde; si no, arrancan los seguimientos. También puedes
+                  activarlo a mano desde Chats.
+                </p>
+              ) : (
+                <p className={styles.muted}>
+                  El setter queda activo desde que el lead entra. Si GHL manda la plantilla después,
+                  el bot la reconoce como mensaje de bienvenida y sigue activo; si alguien escribe a
+                  mano desde el móvil, se pausa (salvo que lo desactives en Setter).
+                </p>
+              )}
 
               <h3 className={styles.subTitle}>Respuesta de salida (setter_id)</h3>
               <p className={styles.muted}>

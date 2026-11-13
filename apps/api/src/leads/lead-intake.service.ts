@@ -39,6 +39,8 @@ type OrgIntake = {
   organization_id: string;
   default_channel_id: string | null;
   proactive_enabled: boolean;
+  /** `webhook`: el lead entra con la IA en pausa hasta la orden de activación. */
+  lead_activation: 'auto' | 'webhook';
 };
 
 /** El lead entra desde el trigger "Recibe un webhook" de un workflow concreto. */
@@ -70,7 +72,7 @@ export class LeadIntakeService {
     if (!token) throw new ForbiddenException('Falta el token de integración');
     const { data } = await this.supabase.admin
       .from('integrations')
-      .select('organization_id, default_channel_id, proactive_enabled')
+      .select('organization_id, default_channel_id, proactive_enabled, lead_activation')
       .eq('intake_token', token)
       .maybeSingle();
     if (!data) throw new ForbiddenException('Token de integración inválido');
@@ -81,7 +83,7 @@ export class LeadIntakeService {
   private async orgIntake(orgId: string): Promise<OrgIntake> {
     const { data } = await this.supabase.admin
       .from('integrations')
-      .select('organization_id, default_channel_id, proactive_enabled')
+      .select('organization_id, default_channel_id, proactive_enabled, lead_activation')
       .eq('organization_id', orgId)
       .maybeSingle();
     return (
@@ -89,6 +91,7 @@ export class LeadIntakeService {
         organization_id: orgId,
         default_channel_id: null,
         proactive_enabled: false,
+        lead_activation: 'auto',
       }
     );
   }
@@ -174,7 +177,7 @@ export class LeadIntakeService {
     const channel = await this.pickChannel(orgId, org.default_channel_id, provider);
 
     // Buscamos conversación existente por teléfono/subscriber para no duplicar.
-    const conv = await this.findOrCreateConversation(orgId, channel, provider, phoneDigits, input);
+    const conv = await this.findOrCreateConversation(org, channel, provider, phoneDigits, input);
     if (channel && provider === 'whatsapp' && phoneDigits && !conv.unipile_chat_id) {
       const chatId = await this.messaging.linkRecentChatByPhone(orgId, channel, phoneDigits);
       if (chatId) {
@@ -358,7 +361,7 @@ export class LeadIntakeService {
   }
 
   private async findOrCreateConversation(
-    orgId: string,
+    org: OrgIntake,
     channel: { id: string; provider: string } | null,
     provider: string,
     phoneDigits: string | null,
@@ -369,6 +372,10 @@ export class LeadIntakeService {
     unipile_chat_id: string | null;
     contact_external_id: string | null;
   }> {
+    const orgId = org.organization_id;
+    // Con activación por webhook el lead entra con la IA EN PAUSA: solo la
+    // orden explícita (URL de control con "resume", o una persona) la enciende.
+    const waitForActivation = org.lead_activation === 'webhook';
     const handle = phoneDigits ? `+${phoneDigits}` : null;
 
     // 1) Por subscriber externo (ManyChat, etc.)
@@ -384,7 +391,7 @@ export class LeadIntakeService {
         .then((r) => ({ data: r.data?.[0] ?? null }));
       if (data) {
         await this.attachChannelIfMissing(data, channel);
-        await this.applyExplicitAgent(orgId, data.id as string, input.agent);
+        await this.applyExplicitAgent(orgId, data.id as string, input.agent, waitForActivation);
         return data;
       }
     }
@@ -422,7 +429,7 @@ export class LeadIntakeService {
             mode: 'setter',
           })
           .eq('id', data.id);
-        await this.applyExplicitAgent(orgId, data.id as string, input.agent);
+        await this.applyExplicitAgent(orgId, data.id as string, input.agent, waitForActivation);
         return data;
       }
     }
@@ -447,7 +454,7 @@ export class LeadIntakeService {
         // Origen de campaña/lead → siempre setter, y fijado (no reclasificar).
         mode: 'setter',
         mode_locked: true,
-        ai_enabled: initial.ai_enabled && !newConversationsStartPaused(),
+        ai_enabled: initial.ai_enabled && !newConversationsStartPaused() && !waitForActivation,
         agent_id: initial.agent_id,
         is_test: false,
         stage: initial.stage,
@@ -455,15 +462,29 @@ export class LeadIntakeService {
       .select('id, proactive_sent, unipile_chat_id, contact_external_id')
       .single();
     if (error) throw error;
+    if (waitForActivation) {
+      this.logger.log(
+        `Lead ${created.id} registrado con la IA en pausa: se activará con la orden de activación (webhook de control)`,
+      );
+    }
     return created;
   }
 
-  /** Lead que vuelve a entrar con un agente explícito: pasa a ese agente con la IA activa. */
-  private async applyExplicitAgent(orgId: string, conversationId: string, ref?: string) {
+  /**
+   * Lead que vuelve a entrar con un agente explícito: pasa a ese agente con la
+   * IA activa (salvo que la cuenta active solo con la orden de activación).
+   */
+  private async applyExplicitAgent(
+    orgId: string,
+    conversationId: string,
+    ref: string | undefined,
+    waitForActivation: boolean,
+  ) {
     if (!ref) return;
     const agent = await this.agents.findActiveByRef(orgId, ref);
     if (!agent) return;
     await this.agents.setConversationAgent(orgId, conversationId, agent.id);
+    if (waitForActivation) return;
     await this.supabase.admin
       .from('conversations')
       .update({ ai_enabled: true })

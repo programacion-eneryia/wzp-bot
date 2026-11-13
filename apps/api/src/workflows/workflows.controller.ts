@@ -2,6 +2,7 @@ import {
   Body,
   Controller,
   Delete,
+  ForbiddenException,
   Get,
   Param,
   Patch,
@@ -31,6 +32,7 @@ export class WorkflowsController {
 
   @Post()
   create(@CurrentUser() user: AuthContext, @Body() dto: CreateWorkflowDto) {
+    this.assertAdmin(user);
     return this.workflows.create(user.organizationId, user.userId, {
       name: dto.name,
       trigger: dto.trigger,
@@ -48,6 +50,7 @@ export class WorkflowsController {
 
   @Patch(':id')
   update(@CurrentUser() user: AuthContext, @Param('id') id: string, @Body() dto: UpdateWorkflowDto) {
+    this.assertAdmin(user);
     return this.workflows.update(user.organizationId, id, {
       name: dto.name,
       trigger: dto.trigger,
@@ -61,11 +64,13 @@ export class WorkflowsController {
 
   @Post(':id/webhook-token')
   rotateWebhook(@CurrentUser() user: AuthContext, @Param('id') id: string) {
+    this.assertAdmin(user);
     return this.workflows.rotateWebhookToken(user.organizationId, id);
   }
 
   @Delete(':id')
   remove(@CurrentUser() user: AuthContext, @Param('id') id: string) {
+    this.assertAdmin(user);
     return this.workflows.remove(user.organizationId, id);
   }
 
@@ -78,5 +83,12 @@ export class WorkflowsController {
   ) {
     const started = await this.engine.enrollById(user.organizationId, id, dto.conversationId);
     return { started };
+  }
+
+  /** Los workflows (automatizaciones) solo los gestiona un administrador; un closer los consulta. */
+  private assertAdmin(user: AuthContext) {
+    if (user.role !== 'admin') {
+      throw new ForbiddenException('Solo un administrador puede crear o modificar workflows');
+    }
   }
 }

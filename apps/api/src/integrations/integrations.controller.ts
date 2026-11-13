@@ -11,6 +11,7 @@ import {
   ArrayMaxSize,
   IsArray,
   IsBoolean,
+  IsIn,
   IsOptional,
   IsString,
   IsUrl,
@@ -21,7 +22,7 @@ import {
 import { AuthGuard } from '../auth/auth.guard';
 import { CurrentUser } from '../auth/current-user.decorator';
 import type { AuthContext } from '../auth/auth.types';
-import { IntegrationsService } from './integrations.service';
+import { IntegrationsService, LEAD_ACTIVATIONS, type LeadActivation } from './integrations.service';
 
 class UpdateIntegrationDto {
   @IsOptional() @IsString() @MaxLength(300) manychat_api_key?: string;
@@ -43,6 +44,7 @@ class UpdateIntegrationDto {
   @IsOptional() @IsArray() @ArrayMaxSize(20) @IsString({ each: true }) @MaxLength(60, { each: true })
   ghl_chat_tags?: string[];
   @IsOptional() @IsString() @MaxLength(80) ghl_chat_source?: string;
+  @IsOptional() @IsIn(LEAD_ACTIVATIONS) lead_activation?: LeadActivation;
 }
 
 @Controller('integrations')
@@ -60,6 +62,7 @@ export class IntegrationsController {
         organization_id: cfg.organization_id,
         default_channel_id: cfg.default_channel_id,
         proactive_enabled: cfg.proactive_enabled,
+        lead_activation: cfg.lead_activation,
         manychat_api_key: cfg.manychat_api_key ? '••••••••' : null,
       };
     }
