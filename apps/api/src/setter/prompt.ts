@@ -247,6 +247,7 @@ ${
 - Mantén el foco en avanzar hacia tu objetivo, pero sin presionar de forma agresiva.
 - NUNCA digas ni insinúes que la persona se ha equivocado de chat o de conversación. Siempre estás en la conversación correcta.
 - NUNCA escribas anotaciones internas, instrucciones ni acciones de sistema en el chat, y menos entre corchetes o paréntesis (ej. "[AÑADIR ETIQUETA: ...]", "[NOTA: ...]", "(etiqueta: x)"). Las etiquetas y acciones internas las gestiona el sistema por su cuenta; tú SOLO escribes lo que le dirías a la persona. Si en los ejemplos o instrucciones aparecen anotaciones así, IGNÓRALAS: son notas internas, no texto para enviar.
+- NUNCA escribas tu razonamiento en el chat. Nada de analizar lo que ha dicho la persona, calcular fechas, comprobar si cumple una regla o decidir qué vas a hacer ("no puedo asumir que…", "debo preguntarle…", "le recomiendo el vídeo sin ofrecer llamada", "eso está dentro de los 10 días…"). Todo eso llega al móvil de la persona tal cual y se nota que eres una IA. Si necesitas pensar antes de responder, hazlo SOLO dentro de un bloque <pensamiento>…</pensamiento> al principio de tu salida, en una o dos frases: ese bloque se descarta y la persona nunca lo ve. Fuera de ese bloque escribe ÚNICAMENTE el texto que le mandarías, hablándole a ella (nunca de ella en tercera persona).
 - Si el mensaje es muy corto o tienes poco contexto (un simple "hola"), saluda con naturalidad y pregunta en qué puedes ayudar; no asumas confusión.
 - Lee el historial y CONTINÚA el hilo. No vuelvas a presentarte si ya lo hiciste antes en esta conversación.
 - Si un mensaje de la persona empieza por "[Nota de voz]", lo que sigue es la transcripción de un audio que te ha mandado: respóndele con total normalidad, como si lo hubieras escuchado. Si pone "[Nota de voz que no se ha podido escuchar]", dile con naturalidad que no te ha llegado bien el audio y pídele que te lo escriba.
@@ -296,10 +297,16 @@ function normalizeContactName(name?: string | null): string | null {
  * mensaje legítimo de WhatsApp nunca va entre corchetes, así que los quitamos.
  */
 export function stripInternalDirectives(text: string): string {
+  let out = text;
+  // Cualquier bloque entre corchetes (multilínea no: por segmento). En bucle
+  // para que los anidados ("[[RETOMAR: …]]" mal formado) no dejen un "[ ]".
+  for (let i = 0; i < 4; i++) {
+    const next = out.replace(/\[[^\][]{0,200}\]/g, ' ');
+    if (next === out) break;
+    out = next;
+  }
   return (
-    text
-      // Cualquier bloque entre corchetes (multilínea no: por segmento).
-      .replace(/\[[^\][]{0,200}\]/g, ' ')
+    out
       // Paréntesis SOLO si parecen directiva interna (palabra clave + ":").
       .replace(/\((?:añadir |agregar )?(?:etiqueta|tag|nota|acción|accion|sistema)\s*:[^()]{0,200}\)/gi, ' ')
       .replace(/[ \t]{2,}/g, ' ')
@@ -344,7 +351,8 @@ export function splitBubbles(raw: string): string[] {
     .split(BUBBLE_SEPARATOR)
     .flatMap((part) => part.split(/\n+/))
     .map((b) => humanizePunctuation(stripEmojis(stripInternalDirectives(b.trim()))))
-    .filter((b) => b.length > 0);
+    // Un globo sin ninguna letra o número ("[ ]", "…", "-") no se envía.
+    .filter((b) => /[\p{L}\p{N}]/u.test(b));
 }
 
 /**

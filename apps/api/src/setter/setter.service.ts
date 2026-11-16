@@ -16,6 +16,7 @@ import {
   safeTz,
   timezoneForPhone,
 } from '../common/time';
+import { dropInternalReasoning, stripThinkingBlocks } from '../common/reasoning';
 import {
   BUBBLE_SEPARATOR,
   buildSystemPrompt,
@@ -75,11 +76,13 @@ export class SetterService {
     if (!ctx) return [];
     const { cfg, agent, messages, timezone } = ctx;
 
-    const rawModel = await this.openrouter.chat(messages, {
+    let rawModel = await this.openrouter.chat(messages, {
       model: this.modelFor(agent, cfg),
       orgId,
       conversationId,
       purpose: 'respond',
+      // Margen para el bloque privado de razonamiento sin recortar el mensaje.
+      maxTokens: 800,
     });
 
     // La persona pidió hablar más tarde: el modelo lo marca y el sistema
@@ -95,7 +98,26 @@ export class SetterService {
       this.logger.warn(`Conversación ${conversationId}: marca RETOMAR inválida ignorada`);
     }
 
-    const bubbles = this.toBubbles(raw, cfg, agent);
+    let bubbles = this.toBubbles(raw, cfg, agent);
+
+    // Si TODA la salida era razonamiento interno (toBubbles lo filtra), no
+    // dejamos a la persona sin respuesta: se lo pedimos otra vez, más claro.
+    if (bubbles.length === 0 && rawModel.trim()) {
+      this.logger.warn(`Conversación ${conversationId}: la respuesta era solo razonamiento interno; se vuelve a generar`);
+      rawModel = await this.openrouter.chat(
+        [
+          ...messages,
+          { role: 'assistant', content: rawModel },
+          {
+            role: 'user',
+            content:
+              '[INSTRUCCIÓN DEL SISTEMA. Este texto NO lo ha escrito la persona.] Eso era tu razonamiento, no un mensaje: la persona NO lo ha recibido. Escribe ahora ÚNICAMENTE lo que le dirías a ella, en segunda persona, breve y natural. Sin analizar, sin explicar qué vas a hacer.',
+          },
+        ],
+        { model: this.modelFor(agent, cfg), orgId, conversationId, purpose: 'respond' },
+      );
+      bubbles = this.toBubbles(extractResumeDirective(rawModel, timezone).text, cfg, agent);
+    }
 
     // Persistimos cada burbuja como un mensaje del asistente (salvo que el
     // llamador prefiera persistir él mismo según se vayan enviando).
@@ -216,15 +238,17 @@ export class SetterService {
     );
   }
 
-  private toBubbles(raw: string, cfg: Parameters<typeof effectiveBehavior>[0], agent: Agent): Bubble[] {
+  private toBubbles(rawModel: string, cfg: Parameters<typeof effectiveBehavior>[0], agent: Agent): Bubble[] {
     const behavior = effectiveBehavior(cfg, agent) as {
       multi_bubble: boolean;
       min_delay_ms: number;
       max_delay_ms: number;
     };
+    // Primero fuera el bloque privado de razonamiento (<pensamiento>…), si lo hay.
+    const raw = stripThinkingBlocks(rawModel);
     // En modo "un solo mensaje" el separador de burbujas no debe llegar al
     // lead: las partes se juntan en un único texto (ocurrió en producción).
-    const parts = behavior.multi_bubble
+    const candidates = behavior.multi_bubble
       ? splitBubbles(raw)
       : [
           humanizePunctuation(
@@ -238,7 +262,17 @@ export class SetterService {
               ),
             ),
           ),
-        ].filter((p) => p.length > 0);
+        ].filter((p) => /[\p{L}\p{N}]/u.test(p));
+    // Y fuera cualquier globo que sea el modelo pensando en voz alta sobre la
+    // persona ("le recomiendo el vídeo sin ofrecer llamada"): llegó a enviarse.
+    const { kept: parts, dropped } = dropInternalReasoning(candidates);
+    if (dropped.length > 0) {
+      this.logger.warn(
+        `Descartado razonamiento interno del modelo (${dropped.length} globo/s): ${dropped
+          .map((d) => JSON.stringify(d.slice(0, 160)))
+          .join(' · ')}`,
+      );
+    }
     return parts.map((content) => ({
       content,
       delayMs: humanDelayMs(content, behavior.min_delay_ms, behavior.max_delay_ms),
