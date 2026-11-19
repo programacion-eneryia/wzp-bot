@@ -15,6 +15,8 @@ export type NavItem = {
   badge?: string;
   /** Visible también en móvil (en móvil solo se usan Chats y CRM). */
   mobile?: boolean;
+  /** Punto rojo de alerta (p. ej. un canal desconectado). */
+  alert?: boolean;
 };
 export type NavGroup = { label?: string; items: NavItem[] };
 
@@ -25,6 +27,8 @@ type Props = {
   isAdmin: boolean;
   onboardingDone: boolean;
   homeHref: string;
+  /** Nº de canales desconectados: marca Configuración / Canales con un punto rojo. */
+  channelAlerts?: number;
 };
 
 /** Rutas que viven dentro de "Configuración" (barra lateral propia). */
@@ -109,6 +113,7 @@ export default function Sidebar({
   isAdmin,
   onboardingDone,
   homeHref,
+  channelAlerts = 0,
 }: Props) {
   const pathname = usePathname() ?? "";
   const router = useRouter();
@@ -139,8 +144,21 @@ export default function Sidebar({
     router.refresh();
   }
 
-  const groups = isPlatformAdmin ? ADMIN_NAV : inSettings ? SETTINGS_NAV : mainNav(onboardingDone);
-  const bottom = isPlatformAdmin || inSettings ? [] : bottomNav(isAdmin);
+  const withAlert = (gs: NavGroup[]): NavGroup[] =>
+    channelAlerts > 0
+      ? gs.map((g) => ({
+          ...g,
+          items: g.items.map((it) =>
+            it.href === "/dashboard/channels" ? { ...it, alert: true } : it,
+          ),
+        }))
+      : gs;
+  const groups = withAlert(
+    isPlatformAdmin ? ADMIN_NAV : inSettings ? SETTINGS_NAV : mainNav(onboardingDone),
+  );
+  const bottom = (isPlatformAdmin || inSettings ? [] : bottomNav(isAdmin)).map((it) =>
+    it.href === "/dashboard/channels" && channelAlerts > 0 ? { ...it, alert: true } : it,
+  );
 
   const isActive = (href: string) => {
     const [path, query] = href.split("?");
@@ -163,6 +181,13 @@ export default function Sidebar({
       {item.icon && <span className={styles.icon}>{item.icon}</span>}
       <span className={styles.itemLabel}>{item.label}</span>
       {item.badge && <span className={styles.badge}>{item.badge}</span>}
+      {item.alert && (
+        <span
+          className={styles.alertDot}
+          title={channelAlerts === 1 ? "Un canal desconectado" : `${channelAlerts} canales desconectados`}
+          aria-label="Canal desconectado"
+        />
+      )}
     </Link>
   );
 

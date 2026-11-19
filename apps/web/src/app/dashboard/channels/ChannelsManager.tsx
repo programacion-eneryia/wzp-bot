@@ -26,8 +26,8 @@ const PROVIDERS: { id: ConnectableProvider; label: string; hint: string }[] = [
 const STATUS_LABEL: Record<Channel["status"], string> = {
   pending: "Pendiente",
   connected: "Conectado",
-  error: "Error",
-  disconnected: "Desconectado",
+  error: "Desconectado",
+  disconnected: "Sin conexión",
 };
 
 const PROVIDER_LABEL: Record<Channel["provider"], string> = {
@@ -353,7 +353,7 @@ export default function ChannelsManager({
                 <span className={styles.channelName}>
                   {c.display_name ?? "Sin nombre"}
                 </span>
-                {c.status === "error" && c.last_error && (
+                {(c.status === "error" || c.status === "disconnected") && c.last_error && (
                   <span className={styles.channelError}>{c.last_error}</span>
                 )}
               </div>

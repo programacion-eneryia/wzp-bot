@@ -33,6 +33,35 @@ const FROM_UNIPILE: Record<string, ChannelProvider> = {
   TELEGRAM: 'telegram',
 };
 
+const PROVIDER_LABEL: Record<ChannelProvider, string> = {
+  whatsapp: 'WhatsApp',
+  instagram: 'Instagram',
+  messenger: 'Messenger',
+  linkedin: 'LinkedIn',
+  telegram: 'Telegram',
+};
+
+/** Texto que ve el usuario cuando la sesión de un canal se cae. */
+export function sessionLostMessage(provider: string | null | undefined): string {
+  const label = PROVIDER_LABEL[(provider ?? 'whatsapp') as ChannelProvider] ?? 'La cuenta';
+  return provider === 'whatsapp'
+    ? 'WhatsApp cerró la sesión de este número (p. ej. por cambio de teléfono o al cerrar el dispositivo vinculado). Pulsa "Reconectar" y escanea el código QR.'
+    : `${label} cerró la sesión de esta cuenta. Pulsa "Reconectar" y vuelve a iniciar sesión.`;
+}
+
+/** Canal que estuvo conectado y ya no lo está: lo que mostramos en la alerta global. */
+export type ChannelAlert = {
+  id: string;
+  provider: ChannelProvider;
+  status: 'error' | 'disconnected';
+  display_name: string | null;
+  last_error: string | null;
+  /** Desde cuándo está caído. */
+  since: string;
+  /** `true`: se puede reconectar con el mismo número (QR); `false`: hay que conectarlo de nuevo. */
+  can_reconnect: boolean;
+};
+
 @Injectable()
 export class ChannelsService {
   private readonly logger = new Logger(ChannelsService.name);
@@ -49,12 +78,98 @@ export class ChannelsService {
   async list(orgId: string) {
     const { data, error } = await this.supabase.admin
       .from('channels')
-      .select('id, provider, status, display_name, agent_id, unipile_account_id, last_error, created_at, connected_at')
+      .select(
+        'id, provider, status, display_name, agent_id, unipile_account_id, last_error, created_at, connected_at, status_changed_at',
+      )
       .eq('organization_id', orgId)
       .order('created_at', { ascending: false });
 
     if (error) throw error;
     return data ?? [];
+  }
+
+  /**
+   * Canales que ESTUVIERON conectados y se han caído (sesión cerrada, cuenta
+   * borrada en el proveedor…). Es lo que dispara la alerta en toda la app. Los
+   * canales que nunca llegaron a conectarse (pendientes, intentos fallidos) o
+   * que el propio usuario desconectó a propósito no cuentan.
+   */
+  async alerts(orgId: string): Promise<ChannelAlert[]> {
+    const { data, error } = await this.supabase.admin
+      .from('channels')
+      .select('id, provider, status, display_name, last_error, unipile_account_id, transport, status_changed_at, metadata')
+      .eq('organization_id', orgId)
+      .in('status', ['error', 'disconnected'])
+      .not('connected_at', 'is', null)
+      .order('status_changed_at', { ascending: false });
+    if (error) throw error;
+    return (data ?? [])
+      .filter((c) => {
+        // Desconexión voluntaria desde la app: no es una alerta.
+        const meta = (c.metadata ?? {}) as { disconnected_by_user?: boolean };
+        return !(c.status === 'disconnected' && meta.disconnected_by_user);
+      })
+      .map((c) => ({
+        id: c.id as string,
+        provider: c.provider as ChannelProvider,
+        status: c.status as 'error' | 'disconnected',
+        display_name: (c.display_name as string | null) ?? null,
+        last_error: (c.last_error as string | null) ?? null,
+        since: c.status_changed_at as string,
+        can_reconnect: Boolean(c.unipile_account_id) && c.transport === 'unipile',
+      }));
+  }
+
+  /**
+   * Comprueba contra el proveedor el estado REAL de todos los canales
+   * vinculados (todas las organizaciones) y corrige los que estén desfasados.
+   * Lo llama el cron cada pocos minutos: así, aunque se pierda un webhook de
+   * estado, el usuario ve la alerta (o deja de verla) en minutos.
+   */
+  async reconcileAll(): Promise<{ checked: number; changed: number }> {
+    const accounts = await this.unipile.listAccounts();
+    const byId = new Map(accounts.map((a) => [a.id, a]));
+    const { data: channels } = await this.supabase.admin
+      .from('channels')
+      .select('id, provider, status, unipile_account_id, display_name')
+      .eq('transport', 'unipile')
+      .not('unipile_account_id', 'is', null)
+      .in('status', ['connected', 'error']);
+
+    let changed = 0;
+    for (const ch of channels ?? []) {
+      const id = ch.id as string;
+      const acc = byId.get(ch.unipile_account_id as string);
+      if (!acc) {
+        // La cuenta ya no existe en el proveedor: no se puede reconectar con el
+        // mismo número, hay que conectarlo de nuevo.
+        await this.supabase.admin
+          .from('channels')
+          .update({
+            status: 'disconnected',
+            unipile_account_id: null,
+            last_error: 'La cuenta ya no existe en el proveedor de mensajería: conéctala de nuevo.',
+          })
+          .eq('id', id);
+        this.logger.warn(`Canal ${id} (${String(ch.display_name)}): la cuenta ya no existe en el proveedor`);
+        changed += 1;
+        continue;
+      }
+      if (UnipileService.isAccountHealthy(acc)) {
+        if (ch.status !== 'connected') {
+          await this.supabase.admin
+            .from('channels')
+            .update({ status: 'connected', last_error: null, connected_at: new Date().toISOString() })
+            .eq('id', id);
+          this.logger.log(`Canal ${id} (${String(ch.display_name)}) vuelve a estar conectado según el proveedor`);
+          changed += 1;
+        }
+      } else if (ch.status === 'connected') {
+        await this.markSessionLost(id, acc, ch.provider as string);
+        changed += 1;
+      }
+    }
+    return { checked: channels?.length ?? 0, changed };
   }
 
   /**
@@ -188,7 +303,7 @@ export class ChannelsService {
 
     const { data: channel } = await this.supabase.admin
       .from('channels')
-      .select('id, unipile_account_id')
+      .select('id, unipile_account_id, metadata')
       .eq('id', channelId)
       .eq('organization_id', ctx.organizationId)
       .maybeSingle();
@@ -204,9 +319,12 @@ export class ChannelsService {
       }
     }
 
+    // Lo desconectó una persona a propósito: no debe saltar la alerta de
+    // "canal caído" (esa es solo para desconexiones que nos avisa el proveedor).
+    const metadata = { ...((channel.metadata as Record<string, unknown> | null) ?? {}), disconnected_by_user: true };
     const { error } = await this.supabase.admin
       .from('channels')
-      .update({ status: 'disconnected', unipile_account_id: null })
+      .update({ status: 'disconnected', unipile_account_id: null, last_error: null, metadata })
       .eq('id', channelId)
       .eq('organization_id', ctx.organizationId);
 
@@ -367,7 +485,7 @@ export class ChannelsService {
 
     const { data: channel } = await this.supabase.admin
       .from('channels')
-      .select('id, status')
+      .select('id, status, provider')
       .eq('unipile_account_id', accountId)
       .maybeSingle();
     if (!channel) return;
@@ -390,19 +508,19 @@ export class ChannelsService {
       return;
     }
     if (['CREDENTIALS', 'ERROR', 'STOPPED', 'DISCONNECTED', 'PERMISSIONS'].includes(message)) {
-      await this.markSessionLost(channel.id as string, { id: accountId, sources: [{ status: message }] });
+      await this.markSessionLost(channel.id as string, { id: accountId, sources: [{ status: message }] }, channel.provider as string);
     }
   }
 
   /** La sesión del número se ha cerrado: el canal queda en error hasta reconectar. */
-  private async markSessionLost(channelId: string, account: UnipileAccount) {
+  private async markSessionLost(channelId: string, account: UnipileAccount, provider?: string | null) {
     const reason = account.sources?.find((s) => s.status && s.status !== 'OK')?.status ?? 'CREDENTIALS';
+    const prov = provider ?? (account.type ? FROM_UNIPILE[account.type] : null) ?? null;
     const { data } = await this.supabase.admin
       .from('channels')
       .update({
         status: 'error',
-        last_error:
-          'WhatsApp cerró la sesión de este número (p. ej. por cambio de teléfono). Pulsa "Reconectar" y escanea el código QR.',
+        last_error: sessionLostMessage(prov),
       })
       .eq('id', channelId)
       .neq('status', 'error')

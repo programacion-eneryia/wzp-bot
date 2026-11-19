@@ -1,6 +1,7 @@
 import { Module } from '@nestjs/common';
 import { MessagingModule } from '../messaging/messaging.module';
 import { WorkflowsModule } from '../workflows/workflows.module';
+import { ChannelsModule } from '../channels/channels.module';
 import { CronController } from './cron.controller';
 import { LocalSchedulerService } from './local-scheduler.service';
 
@@ -10,7 +11,7 @@ import { LocalSchedulerService } from './local-scheduler.service';
  *   - `LocalSchedulerService` hace el mismo trabajo en desarrollo local.
  */
 @Module({
-  imports: [MessagingModule, WorkflowsModule],
+  imports: [MessagingModule, WorkflowsModule, ChannelsModule],
   controllers: [CronController],
   providers: [LocalSchedulerService],
 })

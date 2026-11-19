@@ -211,10 +211,20 @@ export class UnipileService implements OnModuleInit {
     return sources.every((s) => !s.status || s.status === 'OK' || s.status === 'CONNECTING');
   }
 
-  /** Lista todas las cuentas conectadas en esta cuenta de Unipile. */
+  /** Lista TODAS las cuentas conectadas en esta cuenta de Unipile (sigue la paginación). */
   async listAccounts(): Promise<UnipileAccount[]> {
-    const data = await this.request<{ items?: UnipileAccount[]; object?: string }>('/accounts');
-    return data.items ?? [];
+    const all: UnipileAccount[] = [];
+    let cursor: string | null = null;
+    for (let page = 0; page < 20; page++) {
+      const qs = `limit=250${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ''}`;
+      const data: { items?: UnipileAccount[]; cursor?: string | null } = await this.request(
+        `/accounts?${qs}`,
+      );
+      all.push(...(data.items ?? []));
+      cursor = data.cursor ?? null;
+      if (!cursor) break;
+    }
+    return all;
   }
 
   async getAccount(accountId: string): Promise<UnipileAccount> {

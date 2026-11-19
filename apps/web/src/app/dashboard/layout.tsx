@@ -4,6 +4,7 @@ import Sidebar from "@/components/Sidebar/Sidebar";
 import OrgSwitcher from "@/components/OrgSwitcher/OrgSwitcher";
 import ImpersonationBanner from "@/components/ImpersonationBanner/ImpersonationBanner";
 import MobileGate from "@/components/MobileGate/MobileGate";
+import ChannelAlerts, { type ChannelAlert } from "@/components/ChannelAlerts/ChannelAlerts";
 import { createClient } from "@/lib/supabase/server";
 import styles from "./dashboard.module.css";
 
@@ -67,6 +68,35 @@ export default async function DashboardLayout({
 
   const homeHref = isPlatformAdmin ? "/dashboard/admin" : "/dashboard";
 
+  // Canales que estuvieron conectados y se han caído: alerta global + punto
+  // rojo en la barra lateral. Solo de la organización activa.
+  let channelAlerts: ChannelAlert[] = [];
+  if (active) {
+    const { data: down } = await supabase
+      .from("channels")
+      .select(
+        "id, provider, status, display_name, last_error, status_changed_at, unipile_account_id, transport, metadata",
+      )
+      .eq("organization_id", active.organization_id)
+      .in("status", ["error", "disconnected"])
+      .not("connected_at", "is", null)
+      .order("status_changed_at", { ascending: false });
+    channelAlerts = (down ?? [])
+      .filter((c) => {
+        const meta = (c.metadata ?? {}) as { disconnected_by_user?: boolean };
+        return !(c.status === "disconnected" && meta.disconnected_by_user);
+      })
+      .map((c) => ({
+        id: c.id as string,
+        provider: c.provider as ChannelAlert["provider"],
+        status: c.status as ChannelAlert["status"],
+        display_name: (c.display_name as string | null) ?? null,
+        last_error: (c.last_error as string | null) ?? null,
+        since: c.status_changed_at as string,
+        can_reconnect: Boolean(c.unipile_account_id) && c.transport === "unipile",
+      }));
+  }
+
   return (
     <div className={styles.shell} data-app-shell>
       <Sidebar
@@ -76,6 +106,7 @@ export default async function DashboardLayout({
         isAdmin={role === "admin"}
         onboardingDone={onboardingDone}
         homeHref={homeHref}
+        channelAlerts={channelAlerts.length}
       />
 
       <div className={styles.main}>
@@ -95,6 +126,7 @@ export default async function DashboardLayout({
         </header>
         <div className={styles.content}>
           <ImpersonationBanner />
+          <ChannelAlerts initial={channelAlerts} isAdmin={role === "admin"} />
           <MobileGate enabled={!isPlatformAdmin}>{children}</MobileGate>
         </div>
       </div>

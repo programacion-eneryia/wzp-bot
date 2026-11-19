@@ -12,6 +12,10 @@ import { SkipThrottle } from '@nestjs/throttler';
 import { CryptoService } from '../common/crypto.service';
 import { MessagingService } from '../messaging/messaging.service';
 import { WorkflowEngineService } from '../workflows/workflow-engine.service';
+import { ChannelsService } from '../channels/channels.service';
+
+/** Cada cuántos minutos se comprueba contra el proveedor el estado real de los canales. */
+const CHANNEL_RECONCILE_EVERY_MIN = 5;
 
 /**
  * Cron de procesamiento asíncrono. En Vercel se configura en `vercel.json`
@@ -31,6 +35,7 @@ export class CronController {
     private readonly crypto: CryptoService,
     private readonly messaging: MessagingService,
     private readonly workflows: WorkflowEngineService,
+    private readonly channels: ChannelsService,
   ) {}
 
   @Get('tick')
@@ -73,6 +78,20 @@ export class CronController {
         `Cron tick: ${responses} respuestas, ${proactive} proactivos, ${followups} seguimientos, ${workflows} workflows`,
       );
     }
-    return { ok: true, responses, proactive, followups, workflows };
+
+    // Estado real de los canales según el proveedor (por si se perdió algún
+    // webhook de estado): así la alerta de "canal desconectado" aparece y
+    // desaparece sola en pocos minutos.
+    let channelsChanged = 0;
+    if (new Date().getMinutes() % CHANNEL_RECONCILE_EVERY_MIN === 0) {
+      try {
+        const r = await this.channels.reconcileAll();
+        channelsChanged = r.changed;
+        if (r.changed) this.logger.log(`Canales reconciliados con el proveedor: ${r.changed} de ${r.checked} corregidos`);
+      } catch (err) {
+        this.logger.warn(`No se pudo comprobar el estado de los canales: ${String(err)}`);
+      }
+    }
+    return { ok: true, responses, proactive, followups, workflows, channelsChanged };
   }
 }

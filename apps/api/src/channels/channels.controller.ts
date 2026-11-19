@@ -24,6 +24,12 @@ export class ChannelsController {
     return this.channels.list(user.organizationId);
   }
 
+  /** Canales que estuvieron conectados y se han caído (para la alerta global). Lo ven todos los miembros. */
+  @Get('alerts')
+  alerts(@CurrentUser() user: AuthContext) {
+    return this.channels.alerts(user.organizationId);
+  }
+
   @Post('connect')
   connect(
     @CurrentUser() user: AuthContext,
