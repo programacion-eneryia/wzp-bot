@@ -212,6 +212,8 @@ export default function Inbox() {
   const [members, setMembers] = useState<Member[]>([]);
   const [tagDefs, setTagDefs] = useState<TagDef[]>([]);
   const [tagMenuOpen, setTagMenuOpen] = useState(false);
+  // Solo visual: con muchas etiquetas, la fila se compacta y se puede desplegar.
+  const [tagsExpanded, setTagsExpanded] = useState(false);
   const [tagBusy, setTagBusy] = useState(false);
   const [exampleBusy, setExampleBusy] = useState(false);
 
@@ -1072,7 +1074,17 @@ export default function Inbox() {
             </div>
 
             {conv.tags && conv.tags.length > 0 && (
-              <div className={styles.tagPills}>
+              <div className={`${styles.tagPills} ${tagsExpanded ? styles.tagPillsExpanded : ""}`}>
+                {conv.tags.length > 3 && (
+                  <button
+                    type="button"
+                    className={styles.tagPillsToggle}
+                    onClick={() => setTagsExpanded((v) => !v)}
+                    title={tagsExpanded ? "Compactar etiquetas" : "Ver todas las etiquetas"}
+                  >
+                    {tagsExpanded ? "Menos" : `Ver todas (${conv.tags.length})`}
+                  </button>
+                )}
                 {conv.tags.map((t) => (
                   <span
                     key={t.tag_id}
