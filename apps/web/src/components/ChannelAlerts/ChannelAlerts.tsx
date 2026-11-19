@@ -25,6 +25,7 @@ const PROVIDER_LABEL: Record<ChannelAlert["provider"], string> = {
   telegram: "Telegram",
 };
 
+/** Cada cuánto se consulta al servidor si hay canales caídos. */
 const POLL_MS = 60_000;
 
 function sinceText(iso: string): string {
