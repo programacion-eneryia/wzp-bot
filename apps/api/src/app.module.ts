@@ -29,6 +29,7 @@ import { UnipileModule } from './unipile/unipile.module';
 import { WhatsAppCloudModule } from './whatsapp-cloud/whatsapp-cloud.module';
 import { WebhooksModule } from './webhooks/webhooks.module';
 import { WorkflowsModule } from './workflows/workflows.module';
+import { MediaModule } from './media/media.module';
 
 @Module({
   imports: [
@@ -67,6 +68,7 @@ import { WorkflowsModule } from './workflows/workflows.module';
     GhlModule,
     WebhooksModule,
     WorkflowsModule,
+    MediaModule,
   ],
   controllers: [HealthController],
   providers: [{ provide: APP_GUARD, useClass: ThrottlerGuard }],

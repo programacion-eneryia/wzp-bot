@@ -10,9 +10,10 @@ import { SetterConfigService } from './setter-config.service';
 import { SetterController } from './setter.controller';
 import { SetterService } from './setter.service';
 import { SilencedContactsService } from './silenced-contacts.service';
+import { MediaModule } from '../media/media.module';
 
 @Module({
-  imports: [CalendarModule, AgentsModule, StagesModule],
+  imports: [CalendarModule, AgentsModule, StagesModule, MediaModule],
   controllers: [SetterController],
   providers: [
     SetterConfigService,

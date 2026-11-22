@@ -96,6 +96,7 @@ function mainNav(onboardingDone: boolean): NavGroup[] {
         { label: "Workflows", href: "/dashboard/workflows", icon: "⤳" },
         { label: "Pipelines y Stages", href: "/dashboard/stages", icon: "⋯" },
         { label: "Etiquetas", href: "/dashboard/tags", icon: "◈" },
+        { label: "Archivos", href: "/dashboard/media", icon: "▣" },
       ],
     },
     {

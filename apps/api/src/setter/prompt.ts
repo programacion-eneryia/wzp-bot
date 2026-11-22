@@ -1,3 +1,4 @@
+import { MEDIA_DIRECTIVE_EXAMPLE } from './media-directive';
 import type { SetterConfig } from './setter-config.types';
 import type { Agent } from '../agents/agents.types';
 
@@ -16,6 +17,8 @@ export type PromptContext = {
   stageNames?: string[] | null;
   /** Fecha y hora actual para la persona ("lunes 10 de noviembre de 2026, 16:05") y su zona. */
   now?: { text: string; timezone: string } | null;
+  /** Archivos de la biblioteca que la IA puede enviar (con su "cuándo"). */
+  mediaAssets?: { name: string; kind: string; description?: string | null }[] | null;
 };
 
 /** Marca con la que el modelo pide retomar la conversación más tarde (se extrae antes de enviar). */
@@ -101,6 +104,29 @@ export function buildSystemPrompt(
         `- Y añade al final de tu respuesta, en una línea aparte, EXACTAMENTE esta marca: ${RESUME_DIRECTIVE_EXAMPLE} con la fecha y hora LOCAL de la persona a la que retomar (formato 24 h). Calcúlala a partir de la fecha y hora actual de arriba: "mañana" sin hora → 10:00 del día siguiente; "por la mañana" → 10:00; "al mediodía" → 13:00; "esta tarde" / "por la tarde" → 17:00; "esta noche" → 20:30; "en un rato" → +1 h 30 min; "en unas horas" → +3 h; "a las 7" (de la tarde) → 19:00 de hoy, o de mañana si ya ha pasado; "el lunes" → ese lunes a las 10:00; "la semana que viene" → el lunes siguiente a las 10:00; "después de las fiestas / el mes que viene" → el primer día laborable de ese periodo a las 10:00. Si da un día y una hora concretos, usa exactamente esos.\n` +
         `- Ejemplo: la persona dice "estoy descansando, hablamos mañana" y ahora es domingo 9 de noviembre de 2026 a las 18:20 → respondes "claro, descansa, hablamos mañana" y en la línea siguiente [[RETOMAR: 2026-11-10 10:00]].\n` +
         `- No le vuelvas a escribir antes de esa hora. El sistema te avisará cuando llegue el momento de retomar.`,
+    );
+  }
+
+  // Biblioteca: audios, vídeos, imágenes y documentos que el negocio quiere que
+  // el bot envíe cuando se cumpla la condición que describe cada uno.
+  const assets = (ctx.mediaAssets ?? []).filter((a) => a.name.trim());
+  if (assets.length) {
+    const kindLabel: Record<string, string> = { audio: 'audio', video: 'vídeo', image: 'imagen', document: 'documento' };
+    sections.push(
+      `# ARCHIVOS QUE PUEDES ENVIAR\n` +
+        `El negocio ha guardado estos archivos para que se los envíes a la persona cuando se dé la situación indicada:\n` +
+        assets
+          .map(
+            (a) =>
+              `- "${a.name}" (${kindLabel[a.kind] ?? a.kind})` +
+              (a.description?.trim() ? ` → cuándo enviarlo: ${a.description.trim()}` : ''),
+          )
+          .join('\n') +
+        `\n\nCómo enviarlos:\n` +
+        `- Para enviar uno, añade en una línea aparte, justo después del texto con el que lo presentas, EXACTAMENTE esta marca: ${MEDIA_DIRECTIVE_EXAMPLE} (con el nombre tal cual aparece arriba). El sistema la sustituye por el archivo real; la persona NO ve la marca.\n` +
+        `- Envíalo SOLO cuando se cumpla su condición y encaje con naturalidad en la conversación. Como mucho un archivo por respuesta.\n` +
+        `- NO repitas un archivo que ya aparece en el historial como enviado (verás "[Audio: …]", "[Vídeo: …]", etc.), salvo que la persona te lo pida.\n` +
+        `- Preséntalo como lo haría una persona ("te paso un audio donde lo explico mejor", "mira este vídeo"), sin decir "archivo" ni "adjunto".`,
     );
   }
 

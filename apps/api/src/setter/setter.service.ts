@@ -8,6 +8,8 @@ import { AgentsService } from '../agents/agents.service';
 import { effectiveBehavior, type Agent } from '../agents/agents.types';
 import { StagesService } from '../stages/stages.service';
 import { SetterConfigService } from './setter-config.service';
+import { MediaService, mediaMessageContent, type MediaAsset } from '../media/media.service';
+import { extractMediaDirectives, type MediaRef } from './media-directive';
 import {
   RESUME_DIRECTIVE_RE,
   extractResumeDirective,
@@ -27,7 +29,12 @@ import {
   stripInternalDirectives,
 } from './prompt';
 
-export type Bubble = { content: string; delayMs: number };
+export type Bubble = {
+  content: string;
+  delayMs: number;
+  /** Archivo de la biblioteca que se envía justo después de este texto. */
+  media?: { id: string; name: string; kind: string };
+};
 
 export type RespondOptions = {
   /** Agente ya resuelto por el llamador (evita resolverlo dos veces). */
@@ -58,6 +65,7 @@ export class SetterService {
     private readonly config: ConfigService,
     private readonly agents: AgentsService,
     private readonly stages: StagesService,
+    private readonly media: MediaService,
   ) {}
 
   /**
@@ -74,7 +82,7 @@ export class SetterService {
     const persist = opts.persist ?? true;
     const ctx = await this.buildContext(orgId, conversationId, opts);
     if (!ctx) return [];
-    const { cfg, agent, messages, timezone } = ctx;
+    const { cfg, agent, messages, timezone, mediaAssets } = ctx;
 
     let rawModel = await this.openrouter.chat(messages, {
       model: this.modelFor(agent, cfg),
@@ -98,7 +106,7 @@ export class SetterService {
       this.logger.warn(`Conversación ${conversationId}: marca RETOMAR inválida ignorada`);
     }
 
-    let bubbles = this.toBubbles(raw, cfg, agent);
+    let bubbles = this.toBubblesWithMedia(raw, cfg, agent, mediaAssets, conversationId);
 
     // Si TODA la salida era razonamiento interno (toBubbles lo filtra), no
     // dejamos a la persona sin respuesta: se lo pedimos otra vez, más claro.
@@ -116,7 +124,13 @@ export class SetterService {
         ],
         { model: this.modelFor(agent, cfg), orgId, conversationId, purpose: 'respond' },
       );
-      bubbles = this.toBubbles(extractResumeDirective(rawModel, timezone).text, cfg, agent);
+      bubbles = this.toBubblesWithMedia(
+        extractResumeDirective(rawModel, timezone).text,
+        cfg,
+        agent,
+        mediaAssets,
+        conversationId,
+      );
     }
 
     // Persistimos cada burbuja como un mensaje del asistente (salvo que el
@@ -126,7 +140,10 @@ export class SetterService {
         conversation_id: conversationId,
         organization_id: orgId,
         role: 'assistant' as const,
-        content: b.content,
+        content:
+          b.content ||
+          (b.media ? mediaMessageContent({ kind: b.media.kind as MediaAsset['kind'], name: b.media.name }) : ''),
+        ...(b.media ? { metadata: { media: b.media, source: 'ai' } } : {}),
       }));
       const { error } = await this.supabase.admin.from('messages').insert(rows);
       if (error) this.logger.error(`No se pudieron guardar las respuestas: ${error.message}`);
@@ -238,6 +255,38 @@ export class SetterService {
     );
   }
 
+  /**
+   * Como `toBubbles`, pero respetando las marcas `[[ARCHIVO: …]]`: el archivo
+   * se engancha a la última burbuja del texto que lo precede (o va solo si no
+   * hay texto antes). Primero quitamos el bloque de razonamiento para que una
+   * marca dentro de él no dispare un envío.
+   */
+  private toBubblesWithMedia(
+    rawModel: string,
+    cfg: Parameters<typeof effectiveBehavior>[0],
+    agent: Agent,
+    assets: MediaRef[],
+    conversationId: string,
+  ): Bubble[] {
+    if (assets.length === 0) return this.toBubbles(rawModel, cfg, agent);
+    const { segments, unknown, hasMedia } = extractMediaDirectives(stripThinkingBlocks(rawModel), assets);
+    if (unknown.length) {
+      this.logger.warn(`Conversación ${conversationId}: archivo desconocido en la respuesta: ${unknown.join(' · ')}`);
+    }
+    if (!hasMedia) return this.toBubbles(segments.map((seg) => seg.text).join('\n'), cfg, agent);
+    const out: Bubble[] = [];
+    for (const seg of segments) {
+      const part = this.toBubbles(seg.text, cfg, agent);
+      out.push(...part);
+      if (seg.media) {
+        const lastBubble = part.length ? out[out.length - 1] : null;
+        if (lastBubble) lastBubble.media = seg.media;
+        else out.push({ content: '', delayMs: 1500, media: seg.media });
+      }
+    }
+    return out;
+  }
+
   private toBubbles(rawModel: string, cfg: Parameters<typeof effectiveBehavior>[0], agent: Agent): Bubble[] {
     const behavior = effectiveBehavior(cfg, agent) as {
       multi_bubble: boolean;
@@ -343,13 +392,26 @@ export class SetterService {
     // Entrenamiento base común (definido por el super-admin) que hereda esta org.
     const globalBasePrompt = await this.platformSettings.getBasePrompt();
 
+    // Archivos que este agente puede enviar (biblioteca de la organización).
+    let mediaAssets: (MediaRef & { description: string | null })[] = [];
+    try {
+      mediaAssets = (await this.media.forAi(orgId, agent.id)).map((a) => ({
+        id: a.id,
+        name: a.name,
+        kind: a.kind,
+        description: a.description,
+      }));
+    } catch (err) {
+      this.logger.warn(`No se pudo cargar la biblioteca de archivos: ${String(err)}`);
+    }
+
     const messages: ChatMessage[] = [
       {
         role: 'system',
         content: buildSystemPrompt(
           // El formato de salida (burbujas o un solo mensaje) debe ser el mismo
           // que luego aplica toBubbles: el del agente si tiene ajustes propios.
-          { business: effectiveBehavior(cfg, agent), agent, stageNames, now: { text: nowText, timezone } },
+          { business: effectiveBehavior(cfg, agent), agent, stageNames, now: { text: nowText, timezone }, mediaAssets },
           opts.contactName,
           availabilityText,
           leadContext,
@@ -370,6 +432,6 @@ export class SetterService {
         }),
     ];
 
-    return { cfg, agent, messages, timezone, nowText };
+    return { cfg, agent, messages, timezone, nowText, mediaAssets };
   }
 }

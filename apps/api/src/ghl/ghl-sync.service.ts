@@ -2,7 +2,7 @@ import { Injectable, Logger } from '@nestjs/common';
 import { SupabaseService } from '../supabase/supabase.service';
 import { CryptoService } from '../common/crypto.service';
 import { safeWebhookUrlOrNull } from '../common/url-safety';
-import { canonicalE164, phoneVariants } from '../common/phone';
+import { canonicalE164, phoneVariants, contactPhone } from '../common/phone';
 import { GhlApi, type GhlContact } from './ghl-api';
 
 /** Etiquetas y origen por defecto para los contactos que crea el bot. */
@@ -163,7 +163,8 @@ export class GhlSyncService {
       // Al CRM siempre va el teléfono canónico E.164 (México +52…, nunca el
       // +521… de WhatsApp): así GHL encuentra el contacto del formulario.
       const phone =
-        canonicalE164(lead?.phone as string | null) ?? canonicalE164(conv.contact_handle as string | null);
+        canonicalE164(lead?.phone as string | null) ??
+        canonicalE164(contactPhone(conv as { contact_handle?: string | null; provider?: string | null }));
       const email = ((lead?.email as string | null) ?? '').trim().toLowerCase() || null;
       const name = ((conv.contact_name as string | null) ?? '').trim() || null;
 

@@ -66,6 +66,34 @@ export class TransportService {
   }
 
   /**
+   * Envía un archivo (audio, vídeo, imagen, documento) a una conversación
+   * EXISTENTE. Solo Unipile (WhatsApp, Instagram…) por ahora.
+   */
+  async sendMedia(params: {
+    transport?: Transport | string | null;
+    chatId?: string | null;
+    provider?: string | null;
+    file: { data: Buffer; filename: string; mime: string };
+    text?: string | null;
+    voiceNote?: boolean;
+  }): Promise<void> {
+    const transport = asTransport(params.transport);
+    switch (transport) {
+      case 'unipile': {
+        if (!params.chatId) throw new Error('Falta chatId para enviar el archivo');
+        await this.unipile.sendAttachmentToChat(params.chatId, params.file, {
+          text: params.text ?? undefined,
+          voiceNote: params.voiceNote,
+          provider: params.provider,
+        });
+        return;
+      }
+      default:
+        throw new Error(`El envío de archivos por "${transport}" aún no está disponible`);
+    }
+  }
+
+  /**
    * Abre una conversación NUEVA (primer mensaje proactivo) por su transporte.
    * Devuelve el id de chat creado, si el proveedor lo expone.
    */

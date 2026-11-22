@@ -8,6 +8,7 @@ import { StagesModule } from '../stages/stages.module';
 import { GhlSyncModule } from '../ghl/ghl-sync.module';
 import { MessagingService } from './messaging.service';
 import { TransportService } from './transport.service';
+import { MediaModule } from '../media/media.module';
 
 /**
  * Mensajería sin colas persistentes: el procesamiento asíncrono (respuestas
@@ -24,6 +25,7 @@ import { TransportService } from './transport.service';
     AgentsModule,
     StagesModule,
     GhlSyncModule,
+    MediaModule,
   ],
   providers: [MessagingService, TransportService],
   exports: [MessagingService, TransportService],

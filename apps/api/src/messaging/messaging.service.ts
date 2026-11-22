@@ -15,6 +15,7 @@ import { effectiveBehavior, type Agent } from '../agents/agents.types';
 import { StagesService } from '../stages/stages.service';
 import { GhlSyncService } from '../ghl/ghl-sync.service';
 import { ErrorLogService } from '../platform/error-log.service';
+import { MediaService, mediaMessageContent, type MediaAsset } from '../media/media.service';
 import { newConversationsStartPaused } from '../common/flags';
 import { greetingName, templateSkeleton } from '../common/template';
 import {
@@ -24,8 +25,8 @@ import {
   phoneOfAttendee,
   phoneVariants,
   samePhone,
-  toE164,
   whatsappDigits,
+  contactPhone,
 } from '../common/phone';
 import { prefillCalendarLinksInText } from '../common/calendar-link';
 import { DEBOUNCE_MS, type OutgoingJob, type RespondJob } from './queues';
@@ -121,6 +122,7 @@ export class MessagingService {
     private readonly stages: StagesService,
     private readonly ghlSync: GhlSyncService,
     private readonly errorLog: ErrorLogService,
+    private readonly media: MediaService,
   ) {}
 
   /**
@@ -444,7 +446,7 @@ export class MessagingService {
     const staleIso = new Date(Date.now() - LOCK_STALE_MS).toISOString();
     const { data: rows } = await this.supabase.admin
       .from('outbox')
-      .select('id, organization_id, conversation_id, kind, transport, account_id, attendee_id, chat_id, content, attempts')
+      .select('id, organization_id, conversation_id, kind, transport, account_id, attendee_id, chat_id, content, attempts, media_id')
       .is('sent_at', null)
       .lte('send_after', nowIso)
       .or(`locked_at.is.null,locked_at.lt.${staleIso}`)
@@ -477,7 +479,8 @@ export class MessagingService {
             accountId: (row.account_id as string) ?? undefined,
             attendeeId: (row.attendee_id as string) ?? undefined,
             chatId: (row.chat_id as string) ?? undefined,
-            content: row.content as string,
+            content: (row.content as string) ?? '',
+            mediaId: (row.media_id as string | null) ?? undefined,
           });
           await this.supabase.admin
             .from('outbox')
@@ -694,7 +697,7 @@ export class MessagingService {
 
       const cols = 'id, ai_enabled, source, mode_locked, created_at';
       let conv = await this.findByChat(orgId, channel.id, evt.chatId, cols);
-      let contact: { name: string | null; phone: string | null; selfOnly?: boolean } | null = null;
+      let contact: { name: string | null; phone: string | null; username?: string | null; selfOnly?: boolean } | null = null;
       if (!conv) {
         contact = await this.chatContact(evt.chatId);
         if (contact.selfOnly) return; // chat con uno mismo
@@ -989,7 +992,7 @@ export class MessagingService {
     } else {
       // Aún sin chat (lead de GHL que no ha escrito, o canal reconectado):
       // lo abrimos por teléfono en vez de guardar un mensaje que no se envía.
-      const phone = toE164(conv.contact_handle as string | null);
+      const phone = contactPhone(conv as { contact_handle?: string | null; provider?: string | null });
       const channel = await this.liveUnipileChannel(
         orgId,
         conv.channel_id as string | null,
@@ -1035,12 +1038,68 @@ export class MessagingService {
   }
 
   /**
-   * Envía un texto del bot. Si la conversación aún no tiene chat en Unipile
-   * (canal recién reconectado: los ids de chat cambian con la cuenta nueva) lo
-   * abre por teléfono con ese mismo texto. Devuelve el chat a usar después.
-   * Si Unipile dice que la cuenta está desconectada, marca el canal para que se
-   * vea en el panel.
+   * Envía un archivo de la biblioteca (audio, vídeo, imagen, documento) a una
+   * conversación y lo registra en el historial. Lo usan el chat del panel
+   * (`role: 'agent'`, pausa la IA como un mensaje manual), la IA
+   * (`role: 'assistant'`) y los workflows. Requiere que el chat exista: no se
+   * puede abrir una conversación nueva con un archivo.
    */
+  async sendMediaToConversation(
+    orgId: string,
+    conversationId: string,
+    asset: MediaAsset,
+    opts: { text?: string | null; role: 'agent' | 'assistant'; source: 'manual' | 'ai' | 'workflow' },
+  ): Promise<{ ok: true }> {
+    const { data: conv } = await this.supabase.admin
+      .from('conversations')
+      .select('id, unipile_chat_id, contact_external_id, transport, provider, channel_id')
+      .eq('id', conversationId)
+      .eq('organization_id', orgId)
+      .maybeSingle();
+    if (!conv) throw new BadRequestException('Conversación no encontrada');
+    const chatId = (conv.unipile_chat_id ?? conv.contact_external_id) as string | null;
+    if (!chatId) {
+      throw new BadRequestException('Este contacto aún no tiene chat abierto: envíale primero un mensaje de texto.');
+    }
+
+    const file = await this.media.download(asset);
+    try {
+      await this.transport.sendMedia({
+        transport: conv.transport as string,
+        chatId,
+        provider: conv.provider as string | null,
+        file,
+        text: opts.text ?? null,
+        voiceNote: asset.as_voice_note,
+      });
+    } catch (err) {
+      if (String(err).includes('disconnected_account')) {
+        await this.markChannelDisconnected(conv.channel_id as string | null);
+      }
+      throw err;
+    }
+
+    const now = new Date().toISOString();
+    await this.supabase.admin.from('messages').insert({
+      conversation_id: conversationId,
+      organization_id: orgId,
+      role: opts.role,
+      content: mediaMessageContent(asset, opts.text),
+      metadata: {
+        media: { id: asset.id, name: asset.name, kind: asset.kind, mime_type: asset.mime_type, voice_note: asset.as_voice_note },
+        source: opts.source,
+      },
+    });
+    const update: Record<string, unknown> = { last_outbound_at: now, last_message_at: now };
+    if (opts.source === 'manual' && (await this.setterConfig.getOrCreate(orgId)).pause_on_manual !== false) {
+      update.ai_enabled = false;
+      update.respond_after = null;
+      update.next_followup_at = null;
+    }
+    await this.supabase.admin.from('conversations').update(update).eq('id', conversationId);
+    return { ok: true };
+  }
+
   /**
    * Si el texto lleva el enlace de agenda del agente, lo devuelve con nombre,
    * email y teléfono del lead prellenados: así la cita cae en el MISMO contacto
@@ -1093,7 +1152,7 @@ export class MessagingService {
         return chatId;
       }
 
-      const phone = toE164(conv.contact_handle as string | null);
+      const phone = contactPhone(conv as { contact_handle?: string | null; provider?: string | null });
       const channel = await this.liveUnipileChannel(
         orgId,
         conv.channel_id as string | null,
@@ -1157,11 +1216,15 @@ export class MessagingService {
 
   private async markChannelDisconnected(channelId: string | null) {
     if (!channelId) return;
+    const { data: ch } = await this.supabase.admin.from('channels').select('provider').eq('id', channelId).maybeSingle();
+    const isIg = String(ch?.provider ?? '').toLowerCase() === 'instagram';
     await this.supabase.admin
       .from('channels')
       .update({
         status: 'error',
-        last_error: 'WhatsApp se ha desconectado: hay que volver a conectar el número.',
+        last_error: isIg
+          ? 'Instagram se ha desconectado: hay que volver a conectar la cuenta.'
+          : 'WhatsApp se ha desconectado: hay que volver a conectar el número.',
       })
       .eq('id', channelId)
       .eq('status', 'connected');
@@ -1399,25 +1462,46 @@ export class MessagingService {
       }
 
       // Enlace de agenda con los datos del lead ya rellenos (misma ficha en el CRM).
-      const text = await this.withCalendarPrefill(orgId, conversationId, conv, agent, b.content);
-      try {
-        target = await this.deliverBotText(orgId, conversationId, conv, target, text);
-      } catch (err) {
-        // Se relanza para que generateAndSend reprograme la respuesta: si no,
-        // el lead se queda sin contestar para siempre.
-        this.logger.error(`No se pudo enviar la burbuja: ${String(err)}`);
-        throw err;
+      const text = b.content ? await this.withCalendarPrefill(orgId, conversationId, conv, agent, b.content) : '';
+      if (text) {
+        try {
+          target = await this.deliverBotText(orgId, conversationId, conv, target, text);
+        } catch (err) {
+          // Se relanza para que generateAndSend reprograme la respuesta: si no,
+          // el lead se queda sin contestar para siempre.
+          this.logger.error(`No se pudo enviar la burbuja: ${String(err)}`);
+          throw err;
+        }
+        await this.supabase.admin.from('messages').insert({
+          conversation_id: conversationId,
+          organization_id: orgId,
+          role: 'assistant',
+          content: text,
+        });
+        await this.supabase.admin
+          .from('conversations')
+          .update({ last_outbound_at: new Date().toISOString(), last_message_at: new Date().toISOString() })
+          .eq('id', conversationId);
       }
-      await this.supabase.admin.from('messages').insert({
-        conversation_id: conversationId,
-        organization_id: orgId,
-        role: 'assistant',
-        content: text,
-      });
-      await this.supabase.admin
-        .from('conversations')
-        .update({ last_outbound_at: new Date().toISOString(), last_message_at: new Date().toISOString() })
-        .eq('id', conversationId);
+
+      // Archivo de la biblioteca que la IA decidió enviar tras este texto. Si
+      // falla, no se relanza: el texto ya salió y repetirlo sería peor.
+      if (b.media) {
+        try {
+          const asset = await this.media.get(orgId, b.media.id);
+          await sleep(randomSeconds(1, 3) * 1000);
+          await this.sendMediaToConversation(orgId, conversationId, asset, { role: 'assistant', source: 'ai' });
+          this.logger.log(`Conversación ${conversationId}: enviado archivo "${asset.name}" (${asset.kind})`);
+        } catch (err) {
+          this.logger.error(`No se pudo enviar el archivo "${b.media.name}" (${conversationId}): ${String(err)}`);
+          void this.errorLog.log({
+            level: 'error',
+            source: 'messaging',
+            message: `No se pudo enviar el archivo "${b.media.name}" en la conversación ${conversationId}`,
+            detail: { error: String(err) },
+          });
+        }
+      }
 
       if (calendarLink && onMainPipeline && normalizeLink(b.content).includes(calendarLink)) {
         void this.stages.setConversationStage(orgId, conversationId, 'calendar_sent', {
@@ -1831,7 +1915,7 @@ export class MessagingService {
         .maybeSingle();
       if (!conv) return;
 
-      const phone = toE164(conv.contact_handle as string | null);
+      const phone = contactPhone(conv as { contact_handle?: string | null; provider?: string | null });
       if (phone) {
         const { data: byPhone } = await this.supabase.admin
           .from('leads')
@@ -2020,6 +2104,8 @@ export class MessagingService {
     orgId: string;
     conversationId: string;
     content: string;
+    /** Archivo de la biblioteca a enviar (el `content` pasa a ser su texto opcional). */
+    mediaId?: string | null;
   }): Promise<{ skipped?: string; delayMs?: number }> {
     const { data: conv } = await this.supabase.admin
       .from('conversations')
@@ -2037,12 +2123,19 @@ export class MessagingService {
       kind: 'workflow',
       transport: transport ?? null,
       content: params.content,
+      media_id: params.mediaId ?? null,
     };
 
     if (chatId) {
       insert.chat_id = chatId;
     } else {
-      // Primer contacto: necesitamos cuenta de Unipile + teléfono del lead.
+      // Un archivo no puede abrir una conversación nueva: hace falta chat.
+      if (params.mediaId) return { skipped: 'sin chat abierto para enviar el archivo' };
+      // Primer contacto: necesitamos cuenta de Unipile + teléfono del lead
+      // (solo WhatsApp: en Instagram no se puede escribir a quien no ha escrito).
+      if (!contactPhone(conv as { contact_handle?: string | null; provider?: string | null })) {
+        return { skipped: 'sin destino' };
+      }
       const channel = await this.liveUnipileChannel(
         params.orgId,
         conv.channel_id as string | null,
@@ -2069,6 +2162,17 @@ export class MessagingService {
       .eq('id', job.conversationId)
       .maybeSingle();
     if (!conv) return;
+
+    // Archivo de la biblioteca (con texto opcional).
+    if (job.mediaId) {
+      const asset = await this.media.get(job.orgId, job.mediaId);
+      await this.sendMediaToConversation(job.orgId, job.conversationId, asset, {
+        text: job.content || null,
+        role: 'assistant',
+        source: 'workflow',
+      });
+      return;
+    }
 
     let chatId = (job.chatId ?? conv.unipile_chat_id ?? conv.contact_external_id) as string | null;
 
@@ -2213,11 +2317,19 @@ export class MessagingService {
   /** Nombre y teléfono real del contacto de un chat (vía participantes). */
   async chatContact(
     chatId: string,
-  ): Promise<{ name: string | null; phone: string | null; selfOnly?: boolean }> {
+  ): Promise<{ name: string | null; phone: string | null; username?: string | null; selfOnly?: boolean }> {
     try {
       const attendees = await this.unipile.listChatAttendees(chatId);
       const other = attendees.find((a) => !(a.is_self === 1 || a.is_self === true));
-      if (other) return { name: other.name?.trim() || null, phone: phoneOfAttendee(other) };
+      if (other) {
+        // Instagram/Messenger: el identificador público es el @usuario (en
+        // WhatsApp es el teléfono, que ya va en `phone`).
+        const pub = String(other.public_identifier ?? '')
+          .trim()
+          .replace(/^@/, '');
+        const username = /^[a-z0-9._]{2,60}$/i.test(pub) && /[a-z]/i.test(pub) ? pub : null;
+        return { name: other.name?.trim() || null, phone: phoneOfAttendee(other), username };
+      }
       // Solo estamos nosotros: es el chat "mensajes a mí mismo" de WhatsApp.
       if (attendees.length > 0) return { name: null, phone: null, selfOnly: true };
     } catch (err) {
@@ -2503,7 +2615,7 @@ export class MessagingService {
         provider: channel.provider,
         contact_external_id: evt.chatId,
         unipile_chat_id: evt.chatId,
-        contact_handle: contact.phone ?? evt.senderProviderId ?? null,
+        contact_handle: contact.phone ?? (contact.username ? `@${contact.username}` : null) ?? evt.senderProviderId ?? null,
         contact_name: name,
         is_test: false,
         ai_enabled: initial.ai_enabled && !newConversationsStartPaused(),

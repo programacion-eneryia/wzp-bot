@@ -66,6 +66,11 @@ class SendMessageDto {
   @IsString() @MinLength(1) @MaxLength(4000) content!: string;
 }
 
+class SendMediaDto {
+  @IsUUID() media_id!: string;
+  @IsOptional() @ValidateIf((_, v) => v !== null) @IsString() @MaxLength(1000) text?: string | null;
+}
+
 @Controller('inbox')
 @UseGuards(AuthGuard)
 export class InboxController {
@@ -155,6 +160,16 @@ export class InboxController {
     @Body() dto: SendMessageDto,
   ) {
     return this.inbox.sendAgentMessage(user.organizationId, id, dto.content);
+  }
+
+  /** Envía un archivo de la biblioteca al contacto (como mensaje manual). */
+  @Post('conversations/:id/media')
+  sendMedia(
+    @CurrentUser() user: AuthContext,
+    @Param('id') id: string,
+    @Body() dto: SendMediaDto,
+  ) {
+    return this.inbox.sendMedia(user.organizationId, id, dto.media_id, dto.text ?? null);
   }
 
   /** Genera (o regenera) el análisis IA de la conversación. */

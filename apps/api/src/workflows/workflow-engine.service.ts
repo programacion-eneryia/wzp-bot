@@ -236,6 +236,26 @@ export class WorkflowEngineService {
           node = this.nextNode(def, node.id);
           break;
         }
+        case 'send_media': {
+          const mediaId = node.data?.media_id?.trim();
+          if (mediaId) {
+            const text = renderMessage(
+              node.data?.text ?? '',
+              resolveVariables({ conversation: conv.row, lead: conv.lead }),
+            );
+            const res = await this.messaging.enqueueWorkflowSend({
+              orgId: run.organization_id,
+              conversationId: run.conversation_id,
+              content: text,
+              mediaId,
+            });
+            if (res.skipped) {
+              this.logger.warn(`Workflow ${run.workflow_id}: archivo ${mediaId} no enviado (${res.skipped})`);
+            }
+          }
+          node = this.nextNode(def, node.id);
+          break;
+        }
         case 'wait': {
           const ms = waitMs(node.data?.amount, node.data?.unit);
           const target = this.nextNodeId(def, node.id);

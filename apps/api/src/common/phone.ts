@@ -18,6 +18,21 @@ export function toE164(raw?: string | null): string | null {
 }
 
 /**
+ * Teléfono de una conversación a partir de su `contact_handle`. SOLO en
+ * WhatsApp el handle es un teléfono: en Instagram/Messenger/LinkedIn es el id
+ * numérico del contacto en esa red (15-17 dígitos), que parece un teléfono y no
+ * lo es (llegó a guardarse como tal y se habría enviado a GHL).
+ */
+export function contactPhone(conv: {
+  contact_handle?: string | null;
+  provider?: string | null;
+}): string | null {
+  const provider = (conv.provider ?? 'whatsapp').toLowerCase();
+  if (provider !== 'whatsapp' && provider !== 'whatsapp_cloud') return null;
+  return toE164(conv.contact_handle);
+}
+
+/**
  * Teléfono solo si viene como JID de WhatsApp (`<num>@s.whatsapp.net`). Para
  * ids de proveedor: en Instagram/LinkedIn son dígitos que NO son teléfonos.
  */

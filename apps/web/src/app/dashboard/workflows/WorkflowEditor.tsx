@@ -22,6 +22,7 @@ import "@xyflow/react/dist/style.css";
 import { apiFetch } from "@/lib/api";
 import { useStages, type Pipeline } from "@/lib/stages";
 import { useAgents } from "@/lib/agents";
+import { MEDIA_KIND_LABEL, useMedia, type MediaAsset } from "@/lib/media";
 import { type NodeKind, type Workflow } from "./types";
 import styles from "./workflows.module.css";
 
@@ -39,11 +40,13 @@ type NodeData = {
   headers?: string;
   auth_token?: string;
   agent_id?: string;
+  media_id?: string;
 };
 
 const META: Record<NodeKind, { label: string; branch?: boolean; terminal?: boolean }> = {
   start: { label: "Inicio" },
   message: { label: "Enviar mensaje" },
+  send_media: { label: "Enviar archivo" },
   wait: { label: "Esperar" },
   wait_reply: { label: "Esperar respuesta", branch: true },
   if_replied: { label: "¿Respondió?", branch: true },
@@ -56,6 +59,7 @@ const META: Record<NodeKind, { label: string; branch?: boolean; terminal?: boole
 /** "¿Respondió?" ya no se ofrece: "Esperar respuesta" hace lo mismo con tiempo máximo. */
 const PALETTE: NodeKind[] = [
   "message",
+  "send_media",
   "wait",
   "wait_reply",
   "if_stage",
@@ -92,6 +96,8 @@ function summarize(d: NodeData, stageLabel: (k: string) => string = (k) => k): s
   switch (d.kind) {
     case "message":
       return d.text ? (d.text.length > 60 ? d.text.slice(0, 60) + "…" : d.text) : "(sin texto)";
+    case "send_media":
+      return d.media_id ? "archivo de la biblioteca" : "(elige archivo)";
     case "wait":
       return `${d.amount ?? 0} ${UNIT_LABEL[d.unit ?? "minutes"]}`;
     case "wait_reply":
@@ -114,6 +120,9 @@ function summarize(d: NodeData, stageLabel: (k: string) => string = (k) => k): s
 }
 
 type MenuAnchor = { source: string; handle: string | null; x: number; y: number; between: boolean };
+
+/** Biblioteca de archivos (para mostrar el nombre en los nodos "Enviar archivo"). */
+const MediaCtx = createContext<MediaAsset[]>([]);
 
 /** Acciones del lienzo accesibles desde nodos y flechas personalizados. */
 const FlowCtx = createContext<{
@@ -155,14 +164,20 @@ function WfNode({ id, data, selected }: NodeProps) {
   const ctx = useContext(FlowCtx);
   const free = (h: string | null) =>
     !(ctx?.edges ?? []).some((e) => e.source === id && (e.sourceHandle ?? null) === h);
+  const media = useContext(MediaCtx);
   const agentName =
     d.kind === "ai_handoff" && d.agent_id ? agents.find((a) => a.id === d.agent_id)?.name : null;
+  const mediaAsset = d.kind === "send_media" && d.media_id ? media.find((m) => m.id === d.media_id) : null;
   return (
     <div className={`${styles.node} ${selected ? styles.nodeSel : ""}`} data-kind={d.kind}>
       {d.kind !== "start" && <Handle type="target" position={Position.Top} />}
       <div className={styles.nodeTitle}>{meta.label}</div>
       <div className={styles.nodeBody}>
-        {agentName ? `responde ${agentName}` : summarize(d, stageLabel)}
+        {agentName
+          ? `responde ${agentName}`
+          : mediaAsset
+            ? `${MEDIA_KIND_LABEL[mediaAsset.kind]}: ${mediaAsset.name}`
+            : summarize(d, stageLabel)}
       </div>
       {meta.branch ? (
         <>
@@ -345,6 +360,7 @@ function defToFlow(wf: Workflow): { nodes: Node[]; edges: Edge[] } {
 function Editor({ workflow, onBack }: { workflow: Workflow; onBack: () => void }) {
   const { pipelines } = useStages();
   const { agents } = useAgents();
+  const { assets: mediaAssets } = useMedia();
   const initial = useMemo(() => defToFlow(workflow), [workflow]);
   const [nodes, setNodes, onNodesChange] = useNodesState(initial.nodes);
   const [edges, setEdges, onEdgesChange] = useEdgesState(initial.edges);
@@ -684,6 +700,7 @@ function Editor({ workflow, onBack }: { workflow: Workflow; onBack: () => void }
 
         <div className={styles.canvas} ref={canvasRef}>
           <FlowCtx.Provider value={{ edges, openMenu }}>
+           <MediaCtx.Provider value={mediaAssets}>
             <ReactFlow
               nodes={nodes}
               edges={edges}
@@ -710,6 +727,7 @@ function Editor({ workflow, onBack }: { workflow: Workflow; onBack: () => void }
             >
               <Background gap={16} />
             </ReactFlow>
+           </MediaCtx.Provider>
           </FlowCtx.Provider>
           {menu && (
             <div className={styles.insertMenu} style={{ left: menu.x, top: menu.y }}>
@@ -768,6 +786,45 @@ function Editor({ workflow, onBack }: { workflow: Workflow; onBack: () => void }
                     También puedes usar campos del formulario, p.ej. {"{ciudad}"}.
                   </span>
                 </label>
+              )}
+
+              {selData.kind === "send_media" && (
+                <>
+                  <label className={styles.field}>
+                    Archivo
+                    <select
+                      className={styles.input}
+                      value={selData.media_id ?? ""}
+                      onChange={(e) => patchSelected({ media_id: e.target.value || undefined })}
+                    >
+                      <option value="">— elige un archivo —</option>
+                      {mediaAssets.map((m) => (
+                        <option key={m.id} value={m.id}>
+                          {MEDIA_KIND_LABEL[m.kind]} · {m.name}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  {mediaAssets.length === 0 && (
+                    <p className={styles.hint}>
+                      Aún no hay archivos. Súbelos en <strong>Configuración → Archivos</strong>.
+                    </p>
+                  )}
+                  <label className={styles.field}>
+                    Texto que lo acompaña (opcional)
+                    <textarea
+                      className={styles.textarea}
+                      rows={3}
+                      value={selData.text ?? ""}
+                      onChange={(e) => patchSelected({ text: e.target.value })}
+                      placeholder="te paso un audio donde lo explico mejor"
+                    />
+                  </label>
+                  <p className={styles.hint}>
+                    El archivo se envía al chat del lead. Solo funciona si la conversación ya
+                    tiene chat abierto (el lead ha escrito o ya le has enviado un mensaje).
+                  </p>
+                </>
               )}
 
               {selData.kind === "wait_reply" && (

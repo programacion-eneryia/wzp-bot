@@ -33,4 +33,6 @@ export type OutgoingJob = {
   /** Para 'proactive': cuenta de Unipile y destinatario (teléfono/handle). */
   accountId?: string;
   attendeeId?: string;
+  /** Para 'workflow': archivo de la biblioteca que se envía (con `content` como texto opcional). */
+  mediaId?: string;
 };

@@ -597,6 +597,120 @@
   font-size: 13px;
 }
 
+/* --- Archivos (biblioteca) --- */
+.attachBtn {
+  flex: none;
+  width: 42px;
+  height: 42px;
+  border-radius: 10px;
+  border: 1px solid transparent;
+  background: #2a3942;
+  color: #aebac1;
+  font-size: 20px;
+  line-height: 1;
+  cursor: pointer;
+}
+.attachBtn:hover:not(:disabled),
+.attachBtnOn {
+  color: #e9edef;
+  border-color: #00a884;
+}
+.attachBtn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+.mediaPicker {
+  margin: 0 14px 8px;
+  background: #1f2c33;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 12px;
+  padding: 10px 12px;
+  max-height: 260px;
+  overflow-y: auto;
+}
+.mediaPickerHead {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 8px;
+  font-size: 13px;
+}
+.mediaPickerClose {
+  background: none;
+  border: none;
+  color: #aebac1;
+  cursor: pointer;
+  font-size: 14px;
+}
+.mediaPickerEmpty {
+  margin: 0;
+  color: #aebac1;
+  font-size: 13px;
+}
+.mediaPickerList {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.mediaPickerItem {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  text-align: left;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  padding: 8px 10px;
+  color: #e9edef;
+  cursor: pointer;
+  font-size: 14px;
+}
+.mediaPickerItem:hover:not(:disabled) {
+  background: #2a3942;
+}
+.mediaPickerItem:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+.mediaPickerName {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.mediaPickerKind {
+  font-size: 11px;
+  color: #aebac1;
+  flex: none;
+}
+.mediaIcon {
+  flex: none;
+  width: 26px;
+  height: 26px;
+  border-radius: 8px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 168, 132, 0.18);
+  color: #06cf9c;
+  font-size: 13px;
+}
+.mediaChip {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 4px;
+  padding: 6px 10px 6px 6px;
+  border-radius: 10px;
+  background: rgba(0, 0, 0, 0.18);
+  font-size: 13px;
+}
+
 /* --- Panel de control (derecha) --- */
 .panel {
   display: flex;

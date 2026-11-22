@@ -319,6 +319,42 @@ export class UnipileService implements OnModuleInit {
   }
 
   /**
+   * Envía un archivo (audio, vídeo, imagen o documento) a un chat existente,
+   * con un texto opcional. `voiceNote` lo manda como nota de voz: en WhatsApp
+   * usa el campo `voice_message` (mp3/m4a); en Instagram la nota de voz va
+   * como adjunto normal (así lo indica el proveedor).
+   */
+  async sendAttachmentToChat(
+    chatId: string,
+    file: { data: Buffer; filename: string; mime: string },
+    opts: { text?: string; voiceNote?: boolean; provider?: string | null } = {},
+  ): Promise<void> {
+    const form = new FormData();
+    if (opts.text?.trim()) form.append('text', opts.text.trim());
+    const blob = new Blob([new Uint8Array(file.data)], { type: file.mime });
+    const provider = (opts.provider ?? 'whatsapp').toLowerCase();
+    const asVoice = Boolean(opts.voiceNote) && file.mime.startsWith('audio/') && provider === 'whatsapp';
+    form.append(asVoice ? 'voice_message' : 'attachments', blob, file.filename);
+
+    const res = await fetch(`${this.baseUrl}/chats/${encodeURIComponent(chatId)}/messages`, {
+      method: 'POST',
+      headers: { 'X-API-KEY': this.apiKey, accept: 'application/json' },
+      body: form,
+    });
+    if (!res.ok) {
+      const detail = await res.text();
+      this.logger.error(`Unipile send attachment → ${res.status}: ${detail}`);
+      if (detail.includes('disconnected_account')) {
+        throw new HttpException('No se pudo enviar el archivo: cuenta desconectada (disconnected_account)', res.status);
+      }
+      if (res.status === 415) {
+        throw new HttpException('El canal no acepta este tipo de archivo', 415);
+      }
+      throw new HttpException(`No se pudo enviar el archivo (${res.status})`, res.status);
+    }
+  }
+
+  /**
    * Chat 1:1 que YA existe en la cuenta con un teléfono (dígitos E.164 sin
    * `+`). `null` si no hay chat o WhatsApp no lo expone por teléfono.
    */

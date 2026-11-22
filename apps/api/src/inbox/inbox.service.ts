@@ -17,6 +17,7 @@ import { ConversionsApiService } from '../whatsapp-cloud/conversions-api.service
 import { TagsService } from '../tags/tags.service';
 import { StagesService } from '../stages/stages.service';
 import { AgentsService } from '../agents/agents.service';
+import { MediaService } from '../media/media.service';
 
 type FunnelStage = string;
 
@@ -55,6 +56,7 @@ export class InboxService {
     private readonly setterConfig: SetterConfigService,
     private readonly stages: StagesService,
     private readonly agents: AgentsService,
+    private readonly media: MediaService,
   ) {}
 
   async list(
@@ -168,7 +170,9 @@ export class InboxService {
       //  - el nombre, si sigue como 'Lead' o vacío
       //  - el teléfono real, si el handle es un id interno (@lid / @...) o falta
       const needName = isPlaceholderName(conv.contact_name);
-      const needPhone = !conv.contact_handle || conv.contact_handle.includes('@');
+      // (en Instagram el handle puede ser el id numérico: se cambia por el @usuario si se conoce)
+      const needPhone =
+        !conv.contact_handle || conv.contact_handle.includes('@') || /^\d{10,}$/.test(String(conv.contact_handle));
       if (needName || needPhone) {
         const { name, handle } = await this.resolveAttendee(conv.unipile_chat_id as string);
         const update: Record<string, unknown> = {};
@@ -177,7 +181,7 @@ export class InboxService {
           conv.contact_name = better;
           update.contact_name = better;
         }
-        if (needPhone && handle) {
+        if (needPhone && handle && handle !== conv.contact_handle) {
           conv.contact_handle = handle;
           update.contact_handle = handle;
         }
@@ -199,10 +203,14 @@ export class InboxService {
     // desde el móvil, importado…), no el resto de metadatos.
     const messages = (recent ?? [])
       .reverse()
-      .map(({ metadata, ...m }) => ({
-        ...m,
-        source: ((metadata as { source?: string } | null)?.source ?? null) as string | null,
-      }));
+      .map(({ metadata, ...m }) => {
+        const meta = metadata as { source?: string; media?: Record<string, unknown> } | null;
+        return {
+          ...m,
+          source: (meta?.source ?? null) as string | null,
+          media: meta?.media ?? null,
+        };
+      });
 
     if ((conv.unread_count ?? 0) > 0) {
       await this.supabase.admin
@@ -424,6 +432,12 @@ export class InboxService {
     return this.messaging.sendAgentMessage(orgId, id, content);
   }
 
+  async sendMedia(orgId: string, id: string, mediaId: string, text: string | null) {
+    await this.assertOwned(orgId, id);
+    const asset = await this.media.get(orgId, mediaId);
+    return this.messaging.sendMediaToConversation(orgId, id, asset, { text, role: 'agent', source: 'manual' });
+  }
+
   /**
    * Convierte una conversación real en un "ejemplo ganador" del setter: arma el
    * transcript (Lead / Setter) y lo AÑADE a `winning_examples` para que el bot
@@ -521,8 +535,8 @@ export class InboxService {
   private async resolveAttendee(
     chatId: string,
   ): Promise<{ name?: string; handle?: string; selfOnly?: boolean }> {
-    const { name, phone, selfOnly } = await this.messaging.chatContact(chatId);
-    return { name: name ?? undefined, handle: phone ?? undefined, selfOnly };
+    const { name, phone, username, selfOnly } = await this.messaging.chatContact(chatId);
+    return { name: name ?? undefined, handle: phone ?? (username ? `@${username}` : undefined), selfOnly };
   }
 
   /**

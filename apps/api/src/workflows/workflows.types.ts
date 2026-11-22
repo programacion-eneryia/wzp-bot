@@ -14,6 +14,8 @@ export type WorkflowTrigger =
 export type NodeType =
   | 'start'
   | 'message'
+  /** Envía un archivo de la biblioteca (audio, vídeo, imagen, documento) con texto opcional. */
+  | 'send_media'
   | 'wait'
   /** Espera hasta que el lead responda o venza el tiempo máximo (2 salidas: yes/no). */
   | 'wait_reply'
@@ -27,8 +29,10 @@ export type WaitUnit = 'minutes' | 'hours' | 'days';
 
 /** Datos específicos de cada nodo (según su tipo). */
 export type WorkflowNodeData = {
-  /** message: texto a enviar (admite variables {{name}} / {name}). */
+  /** message: texto a enviar (admite variables {{name}} / {name}). send_media: texto que acompaña al archivo. */
   text?: string;
+  /** send_media: id del archivo de la biblioteca. */
+  media_id?: string;
   /** wait / wait_reply: cantidad + unidad de espera (en wait_reply, tiempo máximo). */
   amount?: number;
   unit?: WaitUnit;

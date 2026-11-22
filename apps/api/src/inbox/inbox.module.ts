@@ -5,12 +5,13 @@ import { SetterModule } from '../setter/setter.module';
 import { TagsModule } from '../tags/tags.module';
 import { StagesModule } from '../stages/stages.module';
 import { AgentsModule } from '../agents/agents.module';
+import { MediaModule } from '../media/media.module';
 import { ConversationAnalysisService } from './conversation-analysis.service';
 import { InboxController } from './inbox.controller';
 import { InboxService } from './inbox.service';
 
 @Module({
-  imports: [MessagingModule, SetterModule, TagsModule, StagesModule, AgentsModule],
+  imports: [MessagingModule, SetterModule, TagsModule, StagesModule, AgentsModule, MediaModule],
   controllers: [InboxController],
   providers: [InboxService, ConversationAnalysisService, AuthGuard],
 })

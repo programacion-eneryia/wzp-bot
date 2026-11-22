@@ -1,6 +1,7 @@
 export type NodeKind =
   | "start"
   | "message"
+  | "send_media"
   | "wait"
   | "wait_reply"
   | "if_replied"
@@ -25,6 +26,8 @@ export type WfNodeData = {
   label?: string;
   /** Agente que toma el chat en "Pasar a IA" (vacío = el del workflow). */
   agent_id?: string;
+  /** Archivo de la biblioteca en "Enviar archivo". */
+  media_id?: string;
 };
 
 export type WfDefNode = {

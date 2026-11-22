@@ -4,6 +4,7 @@ import { Fragment, useCallback, useEffect, useRef, useState } from "react";
 import { apiFetch } from "@/lib/api";
 import { useStages } from "@/lib/stages";
 import { useAgents } from "@/lib/agents";
+import { MEDIA_KIND_LABEL, useMedia, type MediaAsset } from "@/lib/media";
 import styles from "./inbox.module.css";
 
 /** Key de una etapa del pipeline (editable por organización). */
@@ -47,6 +48,7 @@ type Conversation = {
   tags?: ConvTag[];
   agent_id?: string | null;
   channel_id?: string | null;
+  unipile_chat_id?: string | null;
   last_message_at: string | null;
   created_at: string;
 };
@@ -58,15 +60,40 @@ type Message = {
   created_at: string;
   /** Origen de un mensaje nuestro: plantilla de bienvenida, manual desde el móvil, importado… */
   source?: string | null;
+  /** Archivo de la biblioteca enviado con este mensaje. */
+  media?: { id: string; name: string; kind: "audio" | "video" | "image" | "document"; voice_note?: boolean } | null;
 };
 
 /** Etiqueta que acompaña a cada mensaje nuestro según quién lo envió. */
 function messageTag(m: Message): string | null {
-  if (m.role === "assistant") return "Respuesta de IA";
+  if (m.role === "assistant") return m.source === "workflow" ? "Workflow" : "Respuesta de IA";
   if (m.role !== "agent") return null;
   if (m.source === "external_first_contact") return "Mensaje de bienvenida";
   if (m.source === "imported") return "Historial";
   return "Manual";
+}
+
+const MEDIA_ICON: Record<NonNullable<Message["media"]>["kind"], string> = {
+  audio: "♪",
+  video: "▶",
+  image: "▣",
+  document: "▤",
+};
+
+/** Quita la línea "[Audio: nombre]" del texto guardado: el archivo se pinta aparte. */
+function stripMediaLabel(content: string): string {
+  return content.replace(/\n?\[(Audio|Vídeo|Imagen|Documento): [^\]]*\]\s*$/u, "").trim();
+}
+
+/** Cómo mostrar el identificador del contacto según el canal. */
+function contactHandleLabel(c: { contact_handle: string | null; provider: string | null }): string {
+  const h = c.contact_handle ?? "";
+  if (!h) return "—";
+  if (/^\+\d{6,15}$/.test(h)) return formatPhone(h);
+  const p = (c.provider ?? "").toLowerCase();
+  if (p === "instagram") return h.startsWith("@") ? h : /^\d{10,}$/.test(h) ? "Instagram DM" : `@${h}`;
+  if (p === "messenger") return "Messenger";
+  return h;
 }
 
 /** ¿Dos listas de mensajes son equivalentes? (para evitar renders/scroll inútiles) */
@@ -200,6 +227,8 @@ export default function Inbox() {
   const [messages, setMessages] = useState<Message[]>([]);
   const [draft, setDraft] = useState("");
   const [sending, setSending] = useState(false);
+  const [mediaPickerOpen, setMediaPickerOpen] = useState(false);
+  const { assets: mediaAssets } = useMedia();
   const [syncing, setSyncing] = useState(false);
   const [syncInfo, setSyncInfo] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -594,6 +623,26 @@ export default function Inbox() {
       setError(e instanceof Error ? e.message : "No se pudo descargar");
     } finally {
       setExampleBusy(false);
+    }
+  }
+
+  async function sendMedia(asset: MediaAsset) {
+    if (!conv) return;
+    setSending(true);
+    setError(null);
+    const text = draft.trim();
+    try {
+      await apiFetch(`/api/inbox/conversations/${conv.id}/media`, {
+        method: "POST",
+        body: JSON.stringify({ media_id: asset.id, text: text || null }),
+      });
+      setDraft("");
+      setMediaPickerOpen(false);
+      await loadConv(conv.id);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "No se pudo enviar el archivo");
+    } finally {
+      setSending(false);
     }
   }
 
@@ -1161,7 +1210,23 @@ export default function Inbox() {
                           {tag}
                         </span>
                       )}
-                      <span className={styles.msgText}>{m.content}</span>
+                      {m.media ? (
+                        <>
+                          {stripMediaLabel(m.content) && (
+                            <span className={styles.msgText}>{stripMediaLabel(m.content)}</span>
+                          )}
+                          <span className={styles.mediaChip}>
+                            <span className={styles.mediaIcon}>{MEDIA_ICON[m.media.kind]}</span>
+                            <span>
+                              {m.media.kind === "audio" && m.media.voice_note ? "Nota de voz" : MEDIA_KIND_LABEL[m.media.kind]}
+                              {" · "}
+                              {m.media.name}
+                            </span>
+                          </span>
+                        </>
+                      ) : (
+                        <span className={styles.msgText}>{m.content}</span>
+                      )}
                       <span className={styles.msgMeta}>
                         {timeLabel(m.created_at)}
                         {fromUs && <span className={styles.checks}>✓✓</span>}
@@ -1174,7 +1239,52 @@ export default function Inbox() {
 
             {error && <div className={styles.error}>{error}</div>}
 
+            {mediaPickerOpen && (
+              <div className={styles.mediaPicker}>
+                <div className={styles.mediaPickerHead}>
+                  <strong>Enviar un archivo</strong>
+                  <button className={styles.mediaPickerClose} onClick={() => setMediaPickerOpen(false)}>
+                    ✕
+                  </button>
+                </div>
+                {mediaAssets.length === 0 ? (
+                  <p className={styles.mediaPickerEmpty}>
+                    No hay archivos en la biblioteca. Súbelos en Gestión de los agentes → Archivos.
+                  </p>
+                ) : (
+                  <ul className={styles.mediaPickerList}>
+                    {mediaAssets.map((a) => (
+                      <li key={a.id}>
+                        <button
+                          className={styles.mediaPickerItem}
+                          disabled={sending}
+                          onClick={() => sendMedia(a)}
+                          title={a.description ?? ""}
+                        >
+                          <span className={styles.mediaIcon}>{MEDIA_ICON[a.kind]}</span>
+                          <span className={styles.mediaPickerName}>{a.name}</span>
+                          <span className={styles.mediaPickerKind}>{MEDIA_KIND_LABEL[a.kind]}</span>
+                        </button>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </div>
+            )}
             <div className={styles.composer}>
+              <button
+                className={`${styles.attachBtn} ${mediaPickerOpen ? styles.attachBtnOn : ""}`}
+                onClick={() => setMediaPickerOpen((v) => !v)}
+                disabled={sending || !conv.unipile_chat_id}
+                title={
+                  conv.unipile_chat_id
+                    ? "Enviar un archivo de la biblioteca"
+                    : "Este contacto aún no tiene chat abierto: envíale primero un mensaje"
+                }
+                aria-label="Enviar archivo"
+              >
+                ⊕
+              </button>
               <input
                 className={styles.input}
                 placeholder="Escribe un mensaje (pausará la IA)…"
@@ -1202,7 +1312,7 @@ export default function Inbox() {
             </div>
             <div className={styles.infoRow}>
               <span>Contacto</span>
-              <strong>{conv.contact_handle ?? "—"}</strong>
+              <strong>{contactHandleLabel(conv)}</strong>
             </div>
             <div className={styles.infoRow}>
               <span>Canal</span>

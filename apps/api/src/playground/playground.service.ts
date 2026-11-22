@@ -88,7 +88,7 @@ export class PlaygroundService {
 
     if (!reply) return { reply: [] };
     const bubbles = await this.setter.respond(orgId, id);
-    return { reply: bubbles };
+    return { reply: describeMediaBubbles(bubbles) };
   }
 
   /**
@@ -109,7 +109,7 @@ export class PlaygroundService {
     if (!last || last.role !== 'contact') return { reply: [] };
 
     const bubbles = await this.setter.respond(orgId, id);
-    return { reply: bubbles };
+    return { reply: describeMediaBubbles(bubbles) };
   }
 
   private async assertOwned(orgId: string, id: string) {
@@ -123,4 +123,11 @@ export class PlaygroundService {
     if (!data) throw new NotFoundException('Conversación de prueba no encontrada');
     return data;
   }
+}
+
+/** En el playground no se envía nada: el archivo se muestra como texto. */
+function describeMediaBubbles(bubbles: Bubble[]): Bubble[] {
+  return bubbles.map((b) =>
+    b.media ? { ...b, content: [b.content, `[${b.media.kind === 'audio' ? 'Audio' : b.media.kind === 'video' ? 'Vídeo' : b.media.kind === 'image' ? 'Imagen' : 'Documento'}: ${b.media.name}]`].filter(Boolean).join('\n') } : b,
+  );
 }

@@ -105,7 +105,7 @@ export class ManyChatService {
         contactName: name,
         persist: true,
       });
-      texts = bubbles.map((b) => b.content);
+      texts = bubbles.map((b) => b.content).filter(Boolean);
     } catch (err) {
       this.logger.error(`ManyChat: fallo generando respuesta: ${String(err)}`);
       texts = [];
